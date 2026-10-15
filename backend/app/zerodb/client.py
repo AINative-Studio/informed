@@ -899,12 +899,15 @@ class ZeroDBClient:
         ZeroDB is not consistent here: tables, rows and queries come back as
         `{"total": …, "data": [...]}` while events come back as a bare list.
         Both are normalised to a list of dicts so callers see one shape.
+
+        Only for those three. Vector search and graph RAG wrap their own
+        `results` key, and are parsed straight into their typed models.
         """
         payload = response.json_body
         if isinstance(payload, list):
             items = payload
         elif isinstance(payload, dict):
-            raw = payload.get("data", payload.get("results", []))
+            raw = payload.get("data", [])
             items = raw if isinstance(raw, list) else []
         else:
             raise ZeroDBProtocolError(
