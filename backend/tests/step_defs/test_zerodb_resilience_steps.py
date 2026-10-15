@@ -11,10 +11,11 @@ import httpx
 import pytest
 from pytest_bdd import given, parsers, scenarios, then, when
 
-from app.zerodb import ZeroDBClient, errors as zerodb_errors
+from app.zerodb import ZeroDBClient
+from app.zerodb import errors as zerodb_errors
 from app.zerodb.errors import ZeroDBError
-from app.zerodb.transport import ZeroDBTransport
 from app.zerodb.testing import FakeZeroDBTransport
+from app.zerodb.transport import ZeroDBTransport
 
 scenarios("../features/zerodb_resilience.feature")
 
@@ -51,9 +52,7 @@ def client_with_fake(client: ZeroDBClient) -> ZeroDBClient:
 
 
 @given(parsers.parse("the next {count:d} requests fail with status {status:d}"))
-def next_requests_fail_status(
-    fake: FakeZeroDBTransport, count: int, status: int
-) -> None:
+def next_requests_fail_status(fake: FakeZeroDBTransport, count: int, status: int) -> None:
     fake.fail_next(count, status=status)
 
 
@@ -83,9 +82,7 @@ def every_request_returns_garbage(fake: FakeZeroDBTransport) -> None:
 
 
 @when(parsers.parse('I create the table "{table}" with fields "{spec}"'))
-def create_table(
-    client: ZeroDBClient, outcome: dict[str, Any], table: str, spec: str
-) -> None:
+def create_table(client: ZeroDBClient, outcome: dict[str, Any], table: str, spec: str) -> None:
     fields = {name: "string" for name in spec.split(",")}
     try:
         outcome["value"] = client.create_table(table, fields)

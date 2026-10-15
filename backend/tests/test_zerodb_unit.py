@@ -133,9 +133,15 @@ def test_query_rows_sends_filter_sort_limit_and_skip(
         skip=100,
     )
 
-    call = fake.calls[-1]
-    assert call.path == "/projects/proj-test/database/tables/member_votes/query"
-    assert call.json == {
+    # Not calls[-1]: an empty filtered result triggers the documented
+    # client-side filter fallback, which issues a second /rows read.
+    query_calls = [
+        call
+        for call in fake.calls
+        if call.path == "/projects/proj-test/database/tables/member_votes/query"
+    ]
+    assert len(query_calls) == 1
+    assert query_calls[0].json == {
         "filter": {"person_id": "person:B000944"},
         "sort": {"voted_at": -1},
         "limit": 50,
@@ -165,28 +171,36 @@ def test_get_row_returns_none_rather_than_raising_when_absent(
     assert client.get_row("people", "person:NOBODY") is None
 
 
-def test_update_row_puts_only_the_changed_fields(
+def test_update_row_puts_the_merged_row_not_just_the_changed_fields(
     client: ZeroDBClient, fake: FakeZeroDBTransport
 ) -> None:
+    """ZeroDB's PUT replaces `row_data`, so the client must send it complete.
+
+    Sending only the changed field would drop the row's id and every other
+    field — see tests/test_zerodb_idempotency.py.
+    """
     client.create_table("verdicts", {"id": "string"})
-    client.upsert_row("verdicts", "prm:1:v1", {"is_current": "true"})
+    client.upsert_row("verdicts", "prm:1:v1", {"is_current": "true", "verdict": "kept"})
     client.update_row("verdicts", "prm:1:v1", {"is_current": "false"})
 
     call = fake.calls[-1]
     assert call.method == "PUT"
-    assert call.json == {"row_data": {"is_current": "false"}}
+    assert call.json == {"row_data": {"id": "prm:1:v1", "is_current": "false", "verdict": "kept"}}
 
 
-def test_delete_row_targets_the_row_path(
-    client: ZeroDBClient, fake: FakeZeroDBTransport
-) -> None:
+def test_delete_row_targets_the_row_path(client: ZeroDBClient, fake: FakeZeroDBTransport) -> None:
+    """The path carries ZeroDB's internal UUID, not Informed's natural-key id.
+
+    The live API answers 422 for a non-UUID in that segment; see
+    tests/test_zerodb_idempotency.py for the resolution behaviour in full.
+    """
     client.create_table("people", {"id": "string"})
-    client.upsert_row("people", "person:B000944", {})
+    inserted = client.upsert_row("people", "person:B000944", {})
     client.delete_row("people", "person:B000944")
 
     call = fake.calls[-1]
     assert call.method == "DELETE"
-    assert call.path.endswith("/database/tables/people/rows/person:B000944")
+    assert call.path.endswith(f"/database/tables/people/rows/{inserted.row_id}")
 
 
 def test_list_tables_parses_the_envelope(client: ZeroDBClient) -> None:
@@ -283,7 +297,10 @@ def test_graph_upsert_entity_uses_the_nosql_id_as_canonical_name(
 def test_graph_create_edge_sends_predicate_confidence_and_properties(
     client: ZeroDBClient, fake: FakeZeroDBTransport
 ) -> None:
-    client.graph_create_edge(
+    client.graph_upsert_entity(canonical_name="prm:1", entity_type="promise")
+    client.graph_upsert_entity(canonical_name="us-house:119-2:452", entity_type="roll_call")
+
+    edge = client.graph_create_edge(
         source_name="prm:1",
         target_name="us-house:119-2:452",
         predicate="tested_by",
@@ -296,6 +313,25 @@ def test_graph_create_edge_sends_predicate_confidence_and_properties(
     assert call.json["predicate"] == "tested_by"
     assert call.json["confidence"] == 0.82
     assert call.json["properties"]["effect"] == "advances"
+
+    # The response omits the canonical names and properties; the client
+    # restores them from the request so the caller sees the edge it asked for.
+    assert edge.source_name == "prm:1"
+    assert edge.target_name == "us-house:119-2:452"
+    assert edge.properties["effect"] == "advances"
+    assert edge.source_id is not None
+
+
+def test_creating_an_edge_to_a_missing_entity_raises_not_found(
+    client: ZeroDBClient,
+) -> None:
+    """The live API rejects an edge whose endpoint does not exist."""
+    client.graph_upsert_entity(canonical_name="prm:1", entity_type="promise")
+
+    with pytest.raises(ZeroDBNotFoundError):
+        client.graph_create_edge(
+            source_name="prm:1", target_name="no:such:entity", predicate="tested_by"
+        )
 
 
 def test_graph_traverse_sends_hop_and_time_bounds(

@@ -63,27 +63,17 @@ def insert_rows(client: ZeroDBClient, row_ids: str, table: str) -> None:
 
 
 @when(parsers.parse('I create the table "{table}" with fields "{spec}"'))
-def create_table(
-    client: ZeroDBClient, result: dict[str, Any], table: str, spec: str
-) -> None:
+def create_table(client: ZeroDBClient, result: dict[str, Any], table: str, spec: str) -> None:
     result["table"] = client.create_table(table, _fields(spec))
 
 
 @when(parsers.parse('I query "{table}" filtered by id "{row_id}"'))
-def query_rows(
-    client: ZeroDBClient, result: dict[str, Any], table: str, row_id: str
-) -> None:
+def query_rows(client: ZeroDBClient, result: dict[str, Any], table: str, row_id: str) -> None:
     result["rows"] = client.query_rows(table, filter={"id": row_id})
 
 
-@when(
-    parsers.parse(
-        'I update the row "{row_id}" in "{table}" setting "{field}" to "{value}"'
-    )
-)
-def update_row(
-    client: ZeroDBClient, row_id: str, table: str, field: str, value: str
-) -> None:
+@when(parsers.parse('I update the row "{row_id}" in "{table}" setting "{field}" to "{value}"'))
+def update_row(client: ZeroDBClient, row_id: str, table: str, field: str, value: str) -> None:
     client.update_row(table, row_id, {field: value})
 
 
@@ -95,8 +85,7 @@ def delete_row(client: ZeroDBClient, row_id: str, table: str) -> None:
 @then(parsers.parse('the fake recorded a POST to "/projects/{{project}}/database/tables"'))
 def recorded_table_post(fake: FakeZeroDBTransport) -> None:
     assert any(
-        call.method == "POST" and call.path.endswith("/database/tables")
-        for call in fake.calls
+        call.method == "POST" and call.path.endswith("/database/tables") for call in fake.calls
     )
 
 
@@ -114,9 +103,7 @@ def row_is_readable(client: ZeroDBClient, row_id: str, table: str) -> None:
 
 @then(parsers.parse('"{table}" holds exactly {count:d} row with id "{row_id}"'))
 @then(parsers.parse('"{table}" holds exactly {count:d} rows with id "{row_id}"'))
-def table_holds_n_rows(
-    client: ZeroDBClient, table: str, count: int, row_id: str
-) -> None:
+def table_holds_n_rows(client: ZeroDBClient, table: str, count: int, row_id: str) -> None:
     rows = [r for r in client.query_rows(table).rows if r.row_data.get("id") == row_id]
     assert len(rows) == count
 
@@ -133,9 +120,7 @@ def returned_row_id(result: dict[str, Any], row_id: str) -> None:
 
 
 @then(parsers.parse('the row "{row_id}" in "{table}" has "{field}" equal to "{value}"'))
-def row_field_equals(
-    client: ZeroDBClient, row_id: str, table: str, field: str, value: str
-) -> None:
+def row_field_equals(client: ZeroDBClient, row_id: str, table: str, field: str, value: str) -> None:
     row = client.get_row(table, row_id)
     assert row is not None
     assert row.row_data[field] == value
@@ -181,9 +166,7 @@ def hits_carry_metadata(result: dict[str, Any]) -> None:
 
 
 @when(parsers.parse('I upsert an ontology with entity types "{types}"'))
-def upsert_ontology(
-    client: ZeroDBClient, result: dict[str, Any], types: str
-) -> None:
+def upsert_ontology(client: ZeroDBClient, result: dict[str, Any], types: str) -> None:
     result["ontology"] = client.graph_upsert_ontology(
         entity_types=types.split(","),
         predicates={"tested_by": ["promise", "roll_call"]},
@@ -203,9 +186,7 @@ def upsert_entity(client: ZeroDBClient, name: str, entity_type: str) -> None:
 
 @given(parsers.parse('an edge "{predicate}" exists from "{source}" to "{target}"'))
 @when(parsers.parse('I create the edge "{predicate}" from "{source}" to "{target}"'))
-def create_edge(
-    client: ZeroDBClient, predicate: str, source: str, target: str
-) -> None:
+def create_edge(client: ZeroDBClient, predicate: str, source: str, target: str) -> None:
     client.graph_create_edge(
         source_name=source, target_name=target, predicate=predicate, confidence=0.9
     )
@@ -232,9 +213,7 @@ def graph_holds_entity(fake: FakeZeroDBTransport, name: str) -> None:
 
 
 @then(parsers.parse('the graph holds an edge "{predicate}" from "{source}" to "{target}"'))
-def graph_holds_edge(
-    fake: FakeZeroDBTransport, predicate: str, source: str, target: str
-) -> None:
+def graph_holds_edge(fake: FakeZeroDBTransport, predicate: str, source: str, target: str) -> None:
     assert (source, predicate, target) in fake.graph_edges
 
 
@@ -270,9 +249,7 @@ def upload_file(
 
 
 @when(parsers.parse("I generate a presigned URL for that file expiring in {secs:d} seconds"))
-def generate_presigned(
-    client: ZeroDBClient, result: dict[str, Any], secs: int
-) -> None:
+def generate_presigned(client: ZeroDBClient, result: dict[str, Any], secs: int) -> None:
     result["presigned"] = client.generate_presigned_url(
         file_id=result["file"].file_id, expiration=secs
     )
