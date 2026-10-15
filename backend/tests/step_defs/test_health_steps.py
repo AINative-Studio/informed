@@ -25,9 +25,7 @@ def request_health(client: TestClient, response_holder: dict[str, httpx.Response
 
 
 @when("I request an unknown path")
-def request_unknown_path(
-    client: TestClient, response_holder: dict[str, httpx.Response]
-) -> None:
+def request_unknown_path(client: TestClient, response_holder: dict[str, httpx.Response]) -> None:
     response_holder["response"] = client.get("/no-such-path")
 
 
