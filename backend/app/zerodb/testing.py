@@ -37,6 +37,9 @@ class _Failure:
 
     status: int | None = None
     exception: BaseException | None = None
+    #: Overrides the synthetic error body, for pinning a real payload shape
+    #: (the rate limiter's, say) against the client's error mapping.
+    body: dict[str, Any] | None = None
 
 
 @dataclass
@@ -94,10 +97,19 @@ class FakeZeroDBTransport:
             self._queued_failures.append(_Failure(status=status, exception=exception))
 
     def always_fail(
-        self, *, status: int | None = None, exception: BaseException | None = None
+        self,
+        *,
+        status: int | None = None,
+        exception: BaseException | None = None,
+        body: dict[str, Any] | None = None,
     ) -> None:
-        """Fail every request from now on, to test an exhausted retry budget."""
-        self._standing_failure = _Failure(status=status, exception=exception)
+        """Fail every request from now on, to test an exhausted retry budget.
+
+        Pass `body` to serve a captured real error payload instead of the
+        synthetic one — the rate limiter's shape differs from every other
+        ZeroDB error, and the client's mapping has to handle both.
+        """
+        self._standing_failure = _Failure(status=status, exception=exception, body=body)
 
     def always_return_non_json(self) -> None:
         """Answer 200 with a body that is not JSON, to test protocol errors."""
@@ -135,14 +147,16 @@ class FakeZeroDBTransport:
         if failure is not None:
             if failure.exception is not None:
                 raise failure.exception
+            status = failure.status or 500
+            error_body = failure.body or {
+                "detail": self.FAILURE_DETAIL,
+                "error_code": _ERROR_CODES.get(status, "ERROR"),
+                "next_action": "retry",
+            }
             return ZeroDBResponse(
-                status_code=failure.status or 500,
-                json_body={
-                    "detail": self.FAILURE_DETAIL,
-                    "error_code": _ERROR_CODES.get(failure.status or 500, "ERROR"),
-                    "next_action": "retry",
-                },
-                text=self.FAILURE_DETAIL,
+                status_code=status,
+                json_body=error_body,
+                text=json_module.dumps(error_body),
             )
 
         if self._non_json:

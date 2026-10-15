@@ -828,7 +828,7 @@ class ZeroDBClient:
                 last_error = error
 
             if attempt < self._max_attempts:
-                delay = self._backoff_delay(attempt)
+                delay = self._backoff_delay(attempt, retry_after=last_error.retry_after)
                 logger.warning(
                     "ZeroDB %s %s failed (attempt %d/%d), retrying in %.2fs",
                     method,
@@ -843,13 +843,21 @@ class ZeroDBClient:
         logger.error("ZeroDB %s %s failed after %d attempts", method, path, self._max_attempts)
         raise last_error
 
-    def _backoff_delay(self, attempt: int) -> float:
+    def _backoff_delay(self, attempt: int, *, retry_after: float | None = None) -> float:
         """Exponential backoff with full jitter, capped at `backoff_max`.
 
         Jitter matters with several workers: without it, every one of them
         retries on the same schedule and re-hammers a ZeroDB that is only just
         recovering.
+
+        When ZeroDB sends a `retry_after` (its rate limiter does), that wins:
+        the server knows when its throttle window clears, and retrying sooner
+        just burns an attempt. It is still capped at `backoff_max`, because a
+        60-second wait inside a web request is worse than a failed request.
         """
+        if retry_after is not None:
+            return min(retry_after, self._backoff_max)
+
         ceiling = min(self._backoff_base * (2 ** (attempt - 1)), self._backoff_max)
         if ceiling <= 0:
             return 0.0
@@ -867,17 +875,24 @@ class ZeroDBClient:
                 str(item.get("msg", item)) if isinstance(item, dict) else str(item)
                 for item in detail
             )
+        # Most errors carry `detail` + `error_code`, but the rate limiter answers
+        # with `message` + `error` instead, so both shapes are read rather than
+        # falling back to a stringified body.
+        if not detail:
+            detail = body.get("message")
         message = str(detail) if detail else (response.text[:200] or "ZeroDB request failed")
 
         error_class = _STATUS_ERRORS.get(response.status_code)
         if error_class is None:
             error_class = ZeroDBServerError if response.status_code >= 500 else ZeroDBError
-        return error_class(
+        error = error_class(
             f"ZeroDB {method} {path}: {message}",
             status_code=response.status_code,
-            error_code=body.get("error_code"),
+            error_code=body.get("error_code") or body.get("error"),
             next_action=body.get("next_action"),
         )
+        error.retry_after = _positive_float(body.get("retry_after"))
+        return error
 
     def _body(self, response: ZeroDBResponse) -> dict[str, Any]:
         """The response body as a dict, or raise if it is not one."""
@@ -1019,6 +1034,20 @@ _TRANSPORT_ERROR_NAMES = frozenset(
         "httpx.RemoteProtocolError",
     }
 )
+
+
+def _positive_float(value: Any) -> float | None:
+    """Coerce a server-supplied wait to a positive float, or None.
+
+    ZeroDB's `retry_after` drives how long a worker sleeps, so a malformed or
+    negative value is discarded in favour of the client's own backoff rather
+    than trusted.
+    """
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds > 0 else None
 
 
 def _default_sleep(seconds: float) -> None:

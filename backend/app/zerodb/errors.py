@@ -27,12 +27,17 @@ class ZeroDBError(Exception):
         status_code: int | None = None,
         error_code: str | None = None,
         next_action: str | None = None,
+        retry_after: float | None = None,
     ) -> None:
         super().__init__(message)
         self.message = message
         self.status_code = status_code
         self.error_code = error_code
         self.next_action = next_action
+        #: Seconds ZeroDB asked us to wait, when it said. The client prefers
+        #: this over its own backoff, because the server knows when the
+        #: throttle window actually clears.
+        self.retry_after = retry_after
 
     def __str__(self) -> str:
         parts = [self.message]

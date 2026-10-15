@@ -23,6 +23,7 @@ from typing import Any
 import pytest
 
 from app.zerodb import ZeroDBClient
+from app.zerodb.errors import ZeroDBRateLimitError
 from app.zerodb.models import (
     Event,
     GraphEdge,
@@ -184,6 +185,89 @@ def test_the_client_parses_a_bare_json_array_from_the_events_endpoint() -> None:
 
     assert page.total == 1
     assert page.events[0].topic == "live.check"
+
+
+#: The rate limiter's body, which uses `message`/`error` rather than
+#: `detail`/`error_code` like every other ZeroDB error. Captured live.
+LIVE_RATE_LIMIT: dict[str, Any] = {
+    "error": "rate_limit_exceeded",
+    "message": "Too many requests. Please try again later.",
+    "client_type": "human",
+    "cost_tier": "standard",
+    "limit": 60,
+    "window_seconds": 60,
+    "retry_after": 60,
+    "next_steps": {"action": "backoff", "retry_after_ms": 60000},
+}
+
+
+def _client_hitting_rate_limit(
+    body: dict[str, Any], sleeps: list[float], *, backoff_max: float = 5.0
+) -> ZeroDBClient:
+    """A client whose every request is rejected with the given 429 body."""
+    fake = FakeZeroDBTransport()
+    fake.always_fail(status=429, body=body)
+    return ZeroDBClient(
+        transport=fake,
+        project_id="p",
+        max_attempts=2,
+        backoff_base=0.01,
+        backoff_max=backoff_max,
+        sleep=sleeps.append,
+    )
+
+
+def test_the_rate_limit_body_yields_a_readable_message_and_code() -> None:
+    """It uses `message`/`error`, not `detail`/`error_code`, so both are read."""
+    sleeps: list[float] = []
+    client = _client_hitting_rate_limit(LIVE_RATE_LIMIT, sleeps)
+
+    with pytest.raises(ZeroDBRateLimitError) as caught:
+        client.create_table("people", {"id": "string"})
+
+    assert "Too many requests" in str(caught.value)
+    assert caught.value.error_code == "rate_limit_exceeded"
+    assert caught.value.retry_after == 60
+
+
+def test_the_client_waits_as_long_as_zerodb_asked_capped_at_backoff_max() -> None:
+    """The server knows when its throttle clears, so its retry_after wins.
+
+    Capped all the same: a 60s sleep inside a web request is worse than a
+    failed request. The live body asks for 60s against a 5s cap.
+    """
+    sleeps: list[float] = []
+    client = _client_hitting_rate_limit(LIVE_RATE_LIMIT, sleeps, backoff_max=5.0)
+
+    with pytest.raises(ZeroDBRateLimitError):
+        client.create_table("people", {"id": "string"})
+
+    assert sleeps == [5.0]
+
+
+def test_a_retry_after_under_the_cap_is_honoured_exactly() -> None:
+    sleeps: list[float] = []
+    client = _client_hitting_rate_limit({**LIVE_RATE_LIMIT, "retry_after": 2}, sleeps)
+
+    with pytest.raises(ZeroDBRateLimitError):
+        client.create_table("people", {"id": "string"})
+
+    assert sleeps == [2.0]
+
+
+@pytest.mark.parametrize("bad", [None, "soon", -5, 0])
+def test_a_malformed_retry_after_falls_back_to_the_clients_own_backoff(bad: Any) -> None:
+    """A bad value would drive a worker's sleep, so it is discarded, not trusted."""
+    sleeps: list[float] = []
+    client = _client_hitting_rate_limit(
+        {**LIVE_RATE_LIMIT, "retry_after": bad}, sleeps, backoff_max=5.0
+    )
+
+    with pytest.raises(ZeroDBRateLimitError):
+        client.create_table("people", {"id": "string"})
+
+    # The client's own jittered backoff, not the junk value.
+    assert sleeps and all(0 < s <= 5.0 for s in sleeps)
 
 
 @pytest.mark.parametrize(
