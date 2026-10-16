@@ -48,8 +48,10 @@ jobs:
       - name: Lint
         run: ruff check . && ruff format --check .
 
+      # -rxX lists the pending (xfailed) PRD scenarios with the story that will
+      # implement each one, so the shared step library's backlog stays visible.
       - name: Unit and BDD tests
-        run: pytest --cov=app --cov-report=term-missing
+        run: pytest -rxX --cov=app --cov-report=term-missing
 
   frontend:
     name: Frontend (Vitest + Playwright/Cucumber)

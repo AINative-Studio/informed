@@ -1,8 +1,12 @@
-"""Shared pytest fixtures for the Informed backend test suite.
+"""Shared pytest fixtures and the shared BDD step library for the backend suite.
 
-Story 1.7 replaces this with the shared BDD step library. For story 1.1 it only
-needs to hand tests an HTTP client bound to the FastAPI app so the walking
-skeleton can be exercised without a live server.
+``pytest_plugins`` registers tests/step_defs/common_steps.py globally, so every
+step and fixture it defines is visible to every feature file without an import.
+That is what "API and UI steps share fixtures" means on this side: a new feature
+file writes only the steps unique to it.
+
+See tests/step_defs/common_steps.py for how to add a feature and for the pending
+(xfail) idiom used by not-yet-implemented steps.
 """
 
 from collections.abc import Iterator
@@ -11,6 +15,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
+
+pytest_plugins = ["tests.step_defs.common_steps"]
 
 
 @pytest.fixture

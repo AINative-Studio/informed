@@ -9,7 +9,10 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./tests/setup.ts'],
-    include: ['src/**/*.test.{ts,tsx}'],
+    // tests/ holds suites about the test tooling itself (story 1.7's
+    // pending-step idiom), which run in Node rather than jsdom.
+    include: ['src/**/*.test.{ts,tsx}', 'tests/**/*.test.ts'],
+    environmentMatchGlobs: [['tests/**', 'node']],
     coverage: { reporter: ['text'], include: ['src/**'] },
   },
 });
