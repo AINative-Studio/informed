@@ -87,6 +87,7 @@ class FakeZeroDBTransport:
     _standing_failure: _Failure | None = field(default=None, repr=False)
     _non_json: bool = field(default=False, repr=False)
     _fixed_json: Any | None = field(default=None, repr=False)
+    _server_side_filter_broken: bool = field(default=False, repr=False)
 
     # --- failure injection ------------------------------------------------
 
@@ -115,6 +116,31 @@ class FakeZeroDBTransport:
         ZeroDB error, and the client's mapping has to handle both.
         """
         self._standing_failure = _Failure(status=status, exception=exception, body=body)
+
+    def break_server_side_filter(self) -> None:
+        """Answer every filtered `/query` with nothing, as the live API does.
+
+        **Measured live against the real "informed" project during story 1.4**
+        (the raw requests are in that story's PR): a row inserted and then
+        queried with `filter={"id": "<that id>"}` came back
+        `total=0, data=[]` — under the bare `id` and the `row_data.id`
+        spelling both — while the same table read unfiltered returned it
+        plainly. Story 1.2 observed the same thing and added the client's
+        client-side fallback for it; datamodel.md tracks it as an open question
+        escalated to AINative.
+
+        The fake's default `_query_rows` filters correctly, which is the right
+        default: most tests are about Informed's logic, not about ZeroDB's bug,
+        and they read better when a filter works. But a fake that only ever
+        filters correctly **never exercises the fallback path at all** — and
+        that is exactly how the fallback's one-page limitation survived a full
+        green CI run while being reproducible live in a single request.
+
+        So any test whose subject is "does this still work when the server-side
+        filter matches nothing" turns this on. See
+        `tests/test_repository_live_shapes.py`.
+        """
+        self._server_side_filter_broken = True
 
     def always_return_non_json(self) -> None:
         """Answer 200 with a body that is not JSON, to test protocol errors."""
@@ -295,6 +321,10 @@ class FakeZeroDBTransport:
     def _query_rows(self, table: str, body: dict[str, Any]) -> ZeroDBResponse:
         rows = list(self.rows.get(table, {}).values())
         query_filter = body.get("filter") or {}
+        if query_filter and self._server_side_filter_broken:
+            # The live behaviour: 200 with an empty result set rather than an
+            # error, which is what makes the bug so easy to miss.
+            return _ok({"total": 0, "skip": 0, "limit": 0, "has_more": False, "data": []})
         matched = [
             row
             for row in rows
