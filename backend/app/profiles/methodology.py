@@ -43,6 +43,23 @@ that needs a row to exist before anything else can work (2.1's jurisdiction
 seed) ships its own seed rather than documenting a manual setup step, and a
 missing `methodology_versions` row would otherwise make tier-editing
 silently un-weighted on a fresh environment.
+
+Relationship to story 12.2
+==========================
+
+Story 12.2 (`app.methodology`) publishes this same table to the public, and
+reuses this module's stored model and its seeding decision rather than keeping
+a second opinion about one table — a fresh environment's public methodology
+page must show the same weights its profile editor is using.
+
+What 12.2 needed and this module does not provide is a read of a SUPERSEDED
+row: `current_version()` only ever asks for `is_current = True`, which is
+right for "what are today's weights" and useless for "what weights produced
+this years-old verdict". That read lives in `app.methodology.service`, not
+here, and nothing about this module changed to accommodate it.
+
+The one thing 12.2 did change here is `DEFAULT_CHANGELOG_URL` — see its own
+comment.
 """
 
 from __future__ import annotations
@@ -70,6 +87,24 @@ DEFAULT_TIER_WEIGHTS: dict[str, float] = {
 #: bump to `2027.1` or similar) that is an ordinary re-publish, handled the
 #: same as any other `is_current` move.
 DEFAULT_METHODOLOGY_VERSION = "2026.1"
+
+#: Where the seeded version's changelog is published. Story 12.2 replaced
+#: story 4.2's `https://informed.example/methodology/{version}` placeholder
+#: with this: 4.2's job was the tier weights and a dead link cost it nothing,
+#: but 12.2 publishes this field to voters and journalists on an endpoint whose
+#: entire purpose is that a skeptical reader can follow it. A page that offers
+#: a changelog link to a domain that does not exist is worse than one that
+#: offers none.
+#:
+#: It points at `docs/methodology-changelog.md` in this repository, which is a
+#: deliberate choice over a page on a product domain that is not stood up yet:
+#: the changelog is version-controlled, publicly readable, and its history is
+#: itself auditable. When a public docs site exists, this becomes its URL and
+#: story 6.1's publish path writes the new one per version.
+DEFAULT_CHANGELOG_URL = (
+    "https://github.com/AINative-Studio/informed/blob/main/docs/"
+    "methodology-changelog.md#20261--the-first-published-methodology"
+)
 
 TABLE_NAME = "methodology_versions"
 
@@ -153,7 +188,7 @@ class MethodologyVersionService:
             id=DEFAULT_METHODOLOGY_VERSION,
             published_at=_now(),
             weights={"tiers": dict(DEFAULT_TIER_WEIGHTS)},
-            changelog_url=f"https://informed.example/methodology/{DEFAULT_METHODOLOGY_VERSION}",
+            changelog_url=DEFAULT_CHANGELOG_URL,
             is_current=True,
         )
         self._client.upsert_row(TABLE_NAME, version.id, version.model_dump(mode="json"))
@@ -165,6 +200,7 @@ def _now() -> str:
 
 
 __all__ = [
+    "DEFAULT_CHANGELOG_URL",
     "DEFAULT_METHODOLOGY_VERSION",
     "DEFAULT_TIER_WEIGHTS",
     "TABLE_NAME",
