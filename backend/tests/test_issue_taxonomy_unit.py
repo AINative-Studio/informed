@@ -24,12 +24,14 @@ from app.repositories.models import IssueTopic
 from app.seed_taxonomy import (
     EXPECTED_SUBTOPIC_COUNT,
     EXPECTED_TOPIC_COUNT,
+    SLUG_WORDS_NOT_IN_LABEL,
     STANCE_PRESUPPOSING_WORDS,
     TAXONOMY_LOCALE,
     TAXONOMY_VERSION,
     TOPICS,
     Topic,
     contains_stance_presupposing_word,
+    slug_words_absent_from_label,
     taxonomy_row_ids,
     taxonomy_rows,
 )
@@ -187,6 +189,68 @@ def test_every_slug_is_lowercase_kebab_case() -> None:
     kebab = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
     bad = [topic.slug for topic in _all_topics() if not kebab.match(topic.slug)]
     assert not bad, f"slugs that are not lowercase kebab-case: {bad}"
+
+
+def test_no_slug_contains_a_word_its_label_does_not_explain() -> None:
+    """A slug may abbreviate its label, but must not contradict it.
+
+    A slug is half of a stored id, and those ids are live and permanent, so
+    renaming one does not edit a row — it writes a new row and abandons the
+    old, orphaning anything citing it. Requiring slug == slugify(name) would
+    therefore demand exactly the rename that breaks ids, and would also flag
+    every harmless abbreviation (`minimum-wage-and-overtime` for "Minimum wage
+    and overtime rules").
+
+    So the invariant is narrower and more useful: every *word* in a slug is
+    either in its label, a joining word, or listed in
+    `SLUG_WORDS_NOT_IN_LABEL` with a reason. That catches a relabelling that
+    left its slug behind (and a typo), while saying nothing about length.
+    """
+    unexplained = {
+        topic.slug: sorted(extra - SLUG_WORDS_NOT_IN_LABEL)
+        for topic in _all_topics()
+        if (extra := slug_words_absent_from_label(topic.slug, topic.name))
+        and extra - SLUG_WORDS_NOT_IN_LABEL
+    }
+    assert not unexplained, (
+        f"slugs containing words their label does not: {unexplained}. Either the "
+        "label was revised and the word belongs in SLUG_WORDS_NOT_IN_LABEL with a "
+        "reason, or one of the two is a typo. Do NOT rename a slug that has "
+        "already been seeded live — that abandons the stored row."
+    )
+
+
+def test_every_listed_slug_word_is_really_used_by_some_slug() -> None:
+    """The list must not accumulate entries for words no slug carries any more.
+
+    A stale entry would silently excuse a future relabelling that happened to
+    involve the same word, which is the opposite of what the list is for.
+    """
+    carried: set[str] = set()
+    for topic in _all_topics():
+        carried |= slug_words_absent_from_label(topic.slug, topic.name)
+    stale = sorted(SLUG_WORDS_NOT_IN_LABEL - carried)
+    assert not stale, f"listed slug words that no slug/label pair needs: {stale}"
+
+
+@pytest.mark.parametrize(
+    ("slug", "name", "expected"),
+    [
+        # An exact match, and a slug that merely abbreviates: nothing flagged.
+        ("healthcare", "Healthcare", set()),
+        ("minimum-wage-and-overtime", "Minimum wage and overtime rules", set()),
+        # Joining words appearing or dropping out are ignored.
+        ("roads-bridges-and-transit", "Roads, bridges and transit", set()),
+        # A relabelling leaves its old word behind, which is the whole point.
+        ("gun-safety", "Firearms policy", {"gun", "safety"}),
+        ("food-safety-inspection", "Food inspection and labeling", {"safety"}),
+    ],
+)
+def test_slug_word_comparison_flags_a_relabelling_but_not_an_abbreviation(
+    slug: str, name: str, expected: set[str]
+) -> None:
+    """Pinned so the drift test above cannot pass because the helper is broken."""
+    assert slug_words_absent_from_label(slug, name) == expected
 
 
 def test_every_row_id_matches_the_documented_pattern() -> None:

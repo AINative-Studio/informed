@@ -86,14 +86,13 @@ never a desired direction:
   * quantities: "Prescription drug pricing", "Federal deficit and debt",
     "Housing supply and construction".
 
-The words rejected and why they are in `STANCE_PRESUPPOSING_WORDS`: "safety",
-"rights", "protection", "reform", "freedom", "security" (in the civil-liberties
-sense), "fairness", "crisis", "burden", "relief", "sensible", "commonsense",
-"responsible", "modernize", "strengthen", "fix", "defend", "restore". Each one
-smuggles in a direction — "Immigration reform" presumes the status quo is
-broken, "Border security" presumes enforcement is the frame, "Voting rights"
-and "Election integrity" are the two sides of the same topic — and
-`tests/test_issue_taxonomy_unit.py` fails the build if one appears in a label.
+`STANCE_PRESUPPOSING_WORDS` holds the words a label may not contain, grouped
+there by what each one smuggles in. The pattern they share: "Immigration
+reform" presumes the status quo is broken, "Border security" presumes
+enforcement is the frame, and "Voting rights" / "Election integrity" are the
+two sides of one topic. `tests/test_issue_taxonomy_unit.py` fails the build if
+any of them appears in a label, and `scripts/verify_issue_taxonomy_live.py`
+re-checks the same rule against what is actually stored.
 
 Two deliberate exceptions, both because the word is part of a proper name
 rather than a framing:
@@ -298,6 +297,78 @@ def _topic(slug: str, name: str, *subtopics: tuple[str, str]) -> Topic:
         name=name,
         subtopics=tuple(Topic(slug=sub_slug, name=sub_name) for sub_slug, sub_name in subtopics),
     )
+
+
+#: Words that appear in a slug but not in its label, with a reason each.
+#:
+#: Why this list exists rather than a rule that a slug must simply match its
+#: label: **a slug is half of a stored id, and these ids are live and
+#: permanent** (see "Why these rows are PERMANENT"). Renaming a slug does not
+#: edit a row — it writes a *new* row under a new id and abandons the old one,
+#: orphaning anything already citing it. So when a label is revised inside a
+#: taxonomy version, the label changes and the slug stays exactly as it is.
+#:
+#: A slug being *shorter* than its label is normal and unremarkable
+#: (`minimum-wage-and-overtime` for "Minimum wage and overtime rules"), so
+#: that is not tracked. What is tracked is a slug containing a word its label
+#: does not, because that is the signature of either a relabelling or a typo,
+#: and the two need telling apart.
+#:
+#: Three entries are relabellings from story 3.1's own neutrality pass, made
+#: after the slugs were fixed:
+#:
+#:   * `safety` — `food-safety-inspection` became "Food inspection and
+#:     labeling". "Food safety" frames inspection as protection, and `safety`
+#:     is on the stance list.
+#:   * `choice`, `school`, `charters` — `school-choice-and-charters` became
+#:     "Public, charter and private schooling". "School choice" is one side's
+#:     term for the policy; the neutral label names the three sectors instead.
+#:   * `forgiveness` — `student-loan-repayment-and-forgiveness` became
+#:     "Student loan repayment and cancellation". "Forgiveness" implies a debt
+#:     that ought to be excused; "cancellation" names the mechanism.
+#:
+#: Three are ordinary abbreviations, not relabellings:
+#:
+#:   * `speech` — `free-speech-and-assembly` for "Free expression and
+#:     assembly"; "free speech" is the common short form of the domain.
+#:   * `k12` — `education-k12` for "Education (K-12)"; the hyphen and
+#:     parentheses are dropped from the slug.
+#:   * `id` — `voter-registration-and-id` for "Voter registration and
+#:     identification".
+SLUG_WORDS_NOT_IN_LABEL: frozenset[str] = frozenset(
+    {
+        # relabelled during the neutrality pass
+        "safety",
+        "choice",
+        "school",
+        "charters",
+        "forgiveness",
+        # ordinary abbreviations
+        "speech",
+        "k12",
+        "id",
+    }
+)
+
+#: Words ignored when comparing a slug's words against its label's. Joining
+#: words carry no meaning for this comparison and appear or drop out freely.
+_SLUG_STOP_WORDS: frozenset[str] = frozenset({"and", "or", "of", "the", "a", "an", "to", "in"})
+
+
+def slug_words_absent_from_label(slug: str, name: str) -> set[str]:
+    """Words in `slug` that `name` does not contain, ignoring joining words.
+
+    Used only by the drift test, never by the seeder: a stored slug is never
+    recomputed from its label, because that would change an id. See
+    `SLUG_WORDS_NOT_IN_LABEL`.
+    """
+    slug_words = _words(slug) - _SLUG_STOP_WORDS
+    label_words = _words(name) - _SLUG_STOP_WORDS
+    return slug_words - label_words
+
+
+def _words(text: str) -> set[str]:
+    return set(re.sub(r"[^a-z0-9]+", " ", text.lower()).split())
 
 
 #: The en-US taxonomy, version 1: 20 top-level policy areas, 3 subtopics each.
@@ -606,6 +677,7 @@ __all__ = [
     "ALLOWED_PHRASES",
     "EXPECTED_SUBTOPIC_COUNT",
     "EXPECTED_TOPIC_COUNT",
+    "SLUG_WORDS_NOT_IN_LABEL",
     "STANCE_PRESUPPOSING_WORDS",
     "TAXONOMY_LOCALE",
     "TAXONOMY_VERSION",
@@ -614,6 +686,7 @@ __all__ = [
     "TaxonomySeeder",
     "Topic",
     "contains_stance_presupposing_word",
+    "slug_words_absent_from_label",
     "taxonomy_row_ids",
     "taxonomy_rows",
 ]
