@@ -351,17 +351,36 @@ def test_resolver_asks_the_geographies_endpoint_with_the_documented_parameters()
     assert call["timeout"] > 0
 
 
-def test_resolver_requests_only_the_layers_it_reads() -> None:
-    """Narrowing `layers` keeps the voter's address out of a bigger response.
+def test_resolver_narrows_layers_by_numeric_id_not_by_name() -> None:
+    """`layers` must be the numeric ids, because a name here fails *silently*.
 
-    Also faster, but the privacy reason is the load-bearing one: every geography
-    the response carries is one more place the geocoder's echo of the address
-    can travel inside.
+    Confirmed live, and the reason this test is strict about the value rather
+    than merely checking that something was sent. The live service does not
+    reject an unknown layer name:
+
+      * `layers=Congressional Districts` — ignored outright, so the response
+        comes back with all eleven default layers and everything appears to
+        work;
+      * `layers=States,Congressional Districts` — the unrecognised half poisons
+        the request and **only `States`** comes back, so every lookup fails with
+        "we couldn't work out your congressional district" and no clue why;
+      * `layers=54,80` — the documented numeric ids for Congressional Districts
+        and States, which returns exactly those two.
+
+    The numeric ids are also the stable spelling. The layer's *name* carries the
+    Congress number ("120th Congressional Districts"), which is precisely the
+    drifting literal `_congressional_layer` exists to avoid depending on — so
+    naming it in the request would reintroduce on the way out the fragility the
+    parsing carefully avoids on the way in.
     """
     get = RecordingGet(FIXTURES["seattle_wa_07"])
     resolver(get).resolve(ADDRESS)
-    layers = get.calls[0]["params"].get("layers", "")
-    assert "Congressional" in layers or layers == ""
+
+    layers = get.calls[0]["params"]["layers"]
+    assert sorted(layers.split(",")) == ["54", "80"]
+    # A name would be silently dropped, so none may appear.
+    assert "Congressional" not in layers
+    assert "States" not in layers
 
 
 def test_resolver_satisfies_the_address_resolver_protocol() -> None:

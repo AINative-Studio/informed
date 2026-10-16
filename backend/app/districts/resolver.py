@@ -118,7 +118,10 @@ prd.md's privacy rule and this story's own acceptance criterion
   * **It is sent to exactly one third party**, the Census Geocoder, which is
     the irreducible cost of geocoding at all, and is the source prd.md picked.
     `layers` narrows the response to the two geographies actually read, so the
-    geocoder returns less address-adjacent data than its default.
+    geocoder returns less address-adjacent data than its default — nine fewer
+    layers, including census blocks and ZIP code tabulation areas, each of which
+    would otherwise locate the voter more precisely than the district does.
+    See `CENSUS_LAYERS` for why that parameter is sent as numeric ids.
 """
 
 from __future__ import annotations
@@ -146,11 +149,23 @@ CENSUS_GEOCODER_URL = "https://geocoding.geo.census.gov/geocoder/geographies/one
 CENSUS_BENCHMARK = "Public_AR_Current"
 CENSUS_VINTAGE = "Current_Current"
 
-#: Only the two geography layers this resolver reads. The default response
-#: carries eleven (census blocks, tracts, urban areas, state legislative
-#: districts...); narrowing it is a small privacy win — fewer address-adjacent
-#: geographies come back — as well as a smaller payload.
-CENSUS_LAYERS = "States,Congressional Districts"
+#: Only the two geography layers this resolver reads, as the service's **numeric
+#: layer ids**: `54` is Congressional Districts and `80` is States. The default
+#: response carries eleven (census blocks, tracts, urban areas, state
+#: legislative districts...); narrowing it is a small privacy win — fewer
+#: address-adjacent geographies come back — as well as a smaller payload.
+#:
+#: Numeric, not named, and this is not a style preference. Confirmed live: the
+#: service does **not** reject an unknown layer name, it silently mis-handles it.
+#: `layers=Congressional Districts` is ignored outright (all eleven layers come
+#: back, so nothing looks wrong), while `layers=States,Congressional Districts`
+#: returns **only** `States` — every lookup then fails with "we couldn't work out
+#: your congressional district" and nothing in the response says why. Named
+#: layers would also be the wrong spelling even if they worked: the layer's name
+#: carries the Congress number ("120th Congressional Districts"), the same
+#: drifting literal `_congressional_layer` deliberately avoids depending on when
+#: *reading* the response.
+CENSUS_LAYERS = "54,80"
 
 #: The live API's own cap, enforced locally so an over-long address is a
 #: message about the address rather than a wasted round trip and a raw upstream
