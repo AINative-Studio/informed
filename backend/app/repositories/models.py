@@ -562,6 +562,62 @@ class CandidatePosition(RowModel):
         return self
 
 
+# --- Governance and provenance --------------------------------------------
+
+
+class ProvenanceLog(RowModel):
+    """One fetch of one external record, keyed `prov:{sha256}` (story 5.1).
+
+    datamodel.md: id pattern `prov:{sha256}`; fields entity_table, entity_id,
+    source_url, fetched_at, adapter_version; retained indefinitely,
+    append-only ("never updated in place").
+
+    Modelled here, not as a `version_key` append-only table like `Verdict`,
+    because its id scheme is a different kind of append-only. `Verdict`'s id
+    is `{promise_id}:v{n}` — sequential, numbered by `Repository.append_version`
+    from what is already stored. `provenance_log`'s id is content-addressed:
+    the sha256 of what was fetched (see `app.ingest.house_rollcalls.provenance_id`),
+    so two fetches of byte-identical content deterministically produce the
+    SAME id rather than two sequential versions of it. That gives idempotency
+    for free — re-ingesting unchanged data naturally lands on a row that
+    already exists — but it means `Repository.append_version`'s version-number
+    bookkeeping does not apply and must not be used here: there is no
+    `{prefix}:v{n}` to number, and forcing one would fight the id this table
+    is documented to have.
+
+    What "append-only" means operationally for THIS table, then, is simpler
+    than `Verdict`'s: never call `Repository.upsert` on it (that would silently
+    replace one fetch's provenance with another's under a shared id, which
+    cannot happen anyway since the id is content-derived, but `upsert` is still
+    the wrong verb). Write with `Repository.append_version`'s sibling —
+    `app.ingest.house_rollcalls.write_provenance`, which does a plain
+    check-then-insert (`get` by the content-addressed id; `insert_row` only if
+    absent) through `ZeroDBClient` directly, since there is no version number
+    to compute and no `is_current` flag to move. A later story that writes
+    `provenance_log` for a different source should reuse that helper rather
+    than inventing a second append-only pattern for the same table.
+
+    `references` is intentionally empty even though datamodel.md's integrity
+    rule ties every provenance row to the row it documents ("Every NoSQL row
+    with a source_url has a matching provenance_log entry"): `entity_table` is
+    a table NAME, not a row id, and the generic reference check (`field ->
+    fixed table`) has no way to express "look up `entity_id` in whichever
+    table `entity_table` names". Checking that association is this story's
+    adapter's job (`house_rollcalls.py` writes the `roll_calls` row first, in
+    the same call that writes its provenance entry), and the nightly
+    integrity audit datamodel.md specifies is the backstop, not a declared
+    reference here.
+    """
+
+    table_name: ClassVar[str] = "provenance_log"
+
+    entity_table: str
+    entity_id: str
+    source_url: str
+    fetched_at: str
+    adapter_version: str
+
+
 __all__ = [
     "Body",
     "CandidatePosition",
@@ -572,6 +628,7 @@ __all__ = [
     "JurisdictionLevel",
     "MemberVote",
     "Person",
+    "ProvenanceLog",
     "QaStatus",
     "RollCall",
     "RowModel",

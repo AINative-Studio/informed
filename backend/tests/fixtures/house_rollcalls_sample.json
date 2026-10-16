@@ -1,0 +1,248 @@
+{
+  "_comment": [
+    "A small, realistic sample of Congress.gov API v3 house-vote responses, in",
+    "the field shapes documented live at",
+    "https://github.com/LibraryOfCongress/api.congress.gov/blob/main/Documentation/HouseRollCallVoteEndpoint.md",
+    "(fetched 2026-10-16) and cross-checked against",
+    "https://blogs.loc.gov/law/2025/05/introducing-house-roll-call-votes-in-the-congress-gov-api/",
+    "and a live, unauthenticated probe of https://api.congress.gov/v3/house-vote/118/2/452",
+    "which confirmed the URL scheme and that api.congress.gov is reachable (it",
+    "returned API_KEY_MISSING, not a DNS or routing failure) -- see story 5.1's",
+    "PR for the probe. No real API key was available this session, so this file",
+    "is a hand-built approximation of the real shape, not a captured live",
+    "response: field names and enum values are taken directly from the cited",
+    "documentation; specific vote counts, bill numbers and dates are invented",
+    "but internally consistent, and the roll numbers/congress/session match",
+    "datamodel.md's own worked example id `us-house:119-2:452`.",
+    "",
+    "The real API's JSON uses the same camelCase field names as the XML tags",
+    "the doc describes (confirmed by Congress.gov API convention across every",
+    "other endpoint this repo already ingests against, e.g. bill/member), with",
+    "list results wrapped under a plural container key and item results under",
+    "the singular -- mirrored here as houseRollCallVotes / houseRollCallVote.",
+    "",
+    "Used by tests/step_defs/test_house_rollcalls_steps.py and",
+    "tests/test_house_rollcalls_unit.py. Never fetched over the network in CI."
+  ],
+
+  "list_page_118_2": {
+    "houseRollCallVotes": [
+      {
+        "startDate": "2023-11-14T18:32:00-05:00",
+        "updateDate": "2023-11-15T09:10:00-05:00",
+        "identifier": 1182202397,
+        "congress": 118,
+        "sessionNumber": 2,
+        "rollCallNumber": 397,
+        "voteType": "Yea-And-Nay",
+        "result": "Passed",
+        "legislationType": "HR",
+        "legislationNumber": "6363",
+        "legislationUrl": "https://www.congress.gov/bill/118th-congress/house-bill/6363",
+        "url": "https://api.congress.gov/v3/house-vote/118/2/397"
+      },
+      {
+        "startDate": "2023-11-14T20:05:00-05:00",
+        "updateDate": "2023-11-15T09:10:00-05:00",
+        "identifier": 1182202398,
+        "congress": 118,
+        "sessionNumber": 2,
+        "rollCallNumber": 398,
+        "voteType": "Recorded Vote",
+        "result": "Failed",
+        "amendmentType": "HAMDT",
+        "amendmentNumber": "12",
+        "amendmentAuthor": "Tlaib of Michigan Amendment No. 12",
+        "legislationUrl": "https://www.congress.gov/bill/118th-congress/house-bill/6363",
+        "url": "https://api.congress.gov/v3/house-vote/118/2/398"
+      }
+    ],
+    "pagination": {
+      "count": 2,
+      "next": null
+    },
+    "request": {
+      "congress": "118",
+      "session": "2",
+      "contentType": "application/json"
+    }
+  },
+
+  "item_final_passage": {
+    "houseRollCallVote": {
+      "startDate": "2025-03-11T14:22:00-04:00",
+      "updateDate": "2025-03-12T08:00:00-04:00",
+      "identifier": 1192204520,
+      "congress": 119,
+      "sessionNumber": 2,
+      "rollCallNumber": 452,
+      "voteType": "Yea and Nay",
+      "result": "Passed",
+      "legislationType": "HR",
+      "legislationNumber": "1234",
+      "voteQuestion": "On Motion to Suspend the Rules and Pass",
+      "votePartyTotal": {
+        "item": [
+          {
+            "party": {"type": "R", "name": "Republican"},
+            "yeaTotal": 210,
+            "nayTotal": 5,
+            "presentTotal": 0,
+            "notVotingTotal": 3
+          },
+          {
+            "party": {"type": "D", "name": "Democratic"},
+            "yeaTotal": 198,
+            "nayTotal": 10,
+            "presentTotal": 1,
+            "notVotingTotal": 2
+          }
+        ]
+      },
+      "legislationUrl": "https://www.congress.gov/bill/119th-congress/house-bill/1234",
+      "url": "https://api.congress.gov/v3/house-vote/119/2/452"
+    }
+  },
+
+  "item_amendment": {
+    "houseRollCallVote": {
+      "startDate": "2025-03-10T11:05:00-04:00",
+      "updateDate": "2025-03-10T18:40:00-04:00",
+      "identifier": 1192204519,
+      "congress": 119,
+      "sessionNumber": 2,
+      "rollCallNumber": 451,
+      "voteType": "Recorded Vote",
+      "result": "Failed",
+      "voteQuestion": "On Agreeing to the Amendment",
+      "amendmentType": "HAMDT",
+      "amendmentNumber": "6",
+      "amendmentAuthor": "Tlaib of Michigan Amendment No. 6",
+      "votePartyTotal": {
+        "item": [
+          {
+            "party": {"type": "R", "name": "Republican"},
+            "yeaTotal": 2,
+            "nayTotal": 214,
+            "presentTotal": 0,
+            "notVotingTotal": 2
+          },
+          {
+            "party": {"type": "D", "name": "Democratic"},
+            "yeaTotal": 150,
+            "nayTotal": 55,
+            "presentTotal": 2,
+            "notVotingTotal": 4
+          }
+        ]
+      },
+      "legislationUrl": "https://www.congress.gov/bill/119th-congress/house-bill/1234",
+      "url": "https://api.congress.gov/v3/house-vote/119/2/451"
+    }
+  },
+
+  "item_motion_to_recommit": {
+    "houseRollCallVote": {
+      "startDate": "2025-03-11T13:50:00-04:00",
+      "updateDate": "2025-03-12T08:00:00-04:00",
+      "identifier": 1192204521,
+      "congress": 119,
+      "sessionNumber": 2,
+      "rollCallNumber": 453,
+      "voteType": "Yea and Nay",
+      "result": "Failed",
+      "legislationType": "HR",
+      "legislationNumber": "1234",
+      "voteQuestion": "On Motion to Recommit",
+      "votePartyTotal": {
+        "item": [
+          {
+            "party": {"type": "R", "name": "Republican"},
+            "yeaTotal": 0,
+            "nayTotal": 215,
+            "presentTotal": 0,
+            "notVotingTotal": 3
+          },
+          {
+            "party": {"type": "D", "name": "Democratic"},
+            "yeaTotal": 205,
+            "nayTotal": 1,
+            "presentTotal": 0,
+            "notVotingTotal": 5
+          }
+        ]
+      },
+      "legislationUrl": "https://www.congress.gov/bill/119th-congress/house-bill/1234",
+      "url": "https://api.congress.gov/v3/house-vote/119/2/453"
+    }
+  },
+
+  "item_cloture_like_procedural": {
+    "houseRollCallVote": {
+      "startDate": "2025-03-11T13:10:00-04:00",
+      "updateDate": "2025-03-12T08:00:00-04:00",
+      "identifier": 1192204522,
+      "congress": 119,
+      "sessionNumber": 2,
+      "rollCallNumber": 454,
+      "voteType": "Recorded Vote",
+      "result": "Agreed to",
+      "voteQuestion": "On Ordering the Previous Question",
+      "votePartyTotal": {
+        "item": [
+          {
+            "party": {"type": "R", "name": "Republican"},
+            "yeaTotal": 213,
+            "nayTotal": 2,
+            "presentTotal": 0,
+            "notVotingTotal": 3
+          },
+          {
+            "party": {"type": "D", "name": "Democratic"},
+            "yeaTotal": 3,
+            "nayTotal": 200,
+            "presentTotal": 0,
+            "notVotingTotal": 8
+          }
+        ]
+      },
+      "url": "https://api.congress.gov/v3/house-vote/119/2/454"
+    }
+  },
+
+  "item_unrecognized_question": {
+    "houseRollCallVote": {
+      "startDate": "2025-03-11T12:00:00-04:00",
+      "updateDate": "2025-03-12T08:00:00-04:00",
+      "identifier": 1192204523,
+      "congress": 119,
+      "sessionNumber": 2,
+      "rollCallNumber": 455,
+      "voteType": "Quorum",
+      "result": "Agreed to",
+      "voteQuestion": "On Some Future Question Type This Loader Has Never Seen",
+      "votePartyTotal": {
+        "item": []
+      },
+      "url": "https://api.congress.gov/v3/house-vote/119/2/455"
+    }
+  },
+
+  "item_missing_totals": {
+    "houseRollCallVote": {
+      "startDate": "2025-03-09T09:00:00-04:00",
+      "updateDate": "2025-03-09T09:00:00-04:00",
+      "identifier": 1192204518,
+      "congress": 119,
+      "sessionNumber": 2,
+      "rollCallNumber": 450,
+      "voteType": "Yea and Nay",
+      "result": "Passed",
+      "legislationType": "HRES",
+      "legislationNumber": "88",
+      "voteQuestion": "On Agreeing to the Resolution",
+      "legislationUrl": "https://www.congress.gov/bill/119th-congress/house-resolution/88",
+      "url": "https://api.congress.gov/v3/house-vote/119/2/450"
+    }
+  }
+}
