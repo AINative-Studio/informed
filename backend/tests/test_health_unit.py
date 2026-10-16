@@ -18,7 +18,8 @@ def test_health_payload_shape(client: TestClient) -> None:
 
 
 def test_routes_are_only_the_ones_built_so_far(client: TestClient) -> None:
-    """Story 1.5 mounted `/v1/ballot`; story 4.1 adds the onboarding trio.
+    """Story 1.5 mounted `/v1/ballot`; story 4.1 added the onboarding trio;
+    story 3.5 adds `/v1/topics/suggest`.
 
     Replaces story 1.1's "health is the only route" assertion, whose own
     docstring named 1.5 as the story that would change it, and that story's
@@ -30,7 +31,13 @@ def test_routes_are_only_the_ones_built_so_far(client: TestClient) -> None:
     # included router is wrapped rather than flattened, so its paths are not on
     # `app.routes` at all, and the schema is the surface clients actually see.
     paths = {path for path in client.get("/openapi.json").json()["paths"] if path.startswith("/v1")}
-    assert paths == {"/v1/ballot", "/v1/topics", "/v1/topics/{topic_id}/stances", "/v1/profiles"}
+    assert paths == {
+        "/v1/ballot",
+        "/v1/topics",
+        "/v1/topics/suggest",
+        "/v1/topics/{topic_id}/stances",
+        "/v1/profiles",
+    }
 
     # The remaining Core API endpoints are genuinely absent, not merely untested.
     for not_yet in (
