@@ -2,19 +2,27 @@
 
 Routes so far:
 
-    GET /health      — liveness and readiness (story 1.1)
-    GET /v1/ballot   — districts and sitting officeholders for an address (1.5)
+    GET /health                       — liveness and readiness (story 1.1)
+    GET /v1/ballot                    — districts and sitting officeholders for an address (1.5)
+    GET /v1/topics                    — the issue taxonomy as a tree (4.1)
+    GET /v1/topics/{id}/stances       — stance cards for one subtopic, randomized (4.1)
+    POST /v1/profiles                 — save a tiered interest profile (4.1, building on 14.1)
 
-The later endpoints in prd.md's Core API table (`/v1/profiles`,
-`/v1/candidates/{id}/alignment`, `/v1/candidates/{id}/promise-record`,
-`/v1/agent/ask`, `/v1/corrections`) each mount their own router here behind
-their own failing tests first.
+The remaining endpoints in prd.md's Core API table (`/v1/candidates/{id}/
+alignment`, `/v1/candidates/{id}/promise-record`, `/v1/agent/ask`,
+`/v1/corrections`) each mount their own router here behind their own failing
+tests first.
 
 `zerodb_client` is re-exported from `app.ballot.router` so tests and future
 routers have one import path for the dependency they override:
 
     app = create_app()
     app.dependency_overrides[zerodb_client] = lambda: fake_client
+
+The three story-4.1 routers each declare their own `zerodb_client_for_*`
+dependency rather than sharing this one — see `app.topics.router`'s docstring
+for why: a test overriding the ballot router's client must not have to know
+every other router shares it.
 """
 
 from fastapi import FastAPI
@@ -24,6 +32,9 @@ from pydantic import BaseModel
 from app import __version__
 from app.ballot import router as ballot_router
 from app.ballot.router import zerodb_client
+from app.profiles import router as profiles_router
+from app.stances import router as stances_router
+from app.topics import router as topics_router
 
 SERVICE_NAME = "informed-api"
 
@@ -77,6 +88,9 @@ def create_app() -> FastAPI:
         return HealthResponse(status="ok", service=SERVICE_NAME, version=__version__)
 
     app.include_router(ballot_router)
+    app.include_router(topics_router)
+    app.include_router(stances_router)
+    app.include_router(profiles_router)
 
     return app
 
