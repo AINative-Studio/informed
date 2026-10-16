@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ProfileLoadError, fetchTierWeights, loadProfile } from './profiles';
+import {
+  ProfileLoadError,
+  ProfileSaveError,
+  fetchTierWeights,
+  followPerson,
+  loadProfile,
+  unfollowPerson,
+} from './profiles';
 
 /**
  * `GET /v1/profiles/{user_id}` and `GET /v1/profiles/methodology` clients
@@ -90,5 +97,52 @@ describe('fetchTierWeights', () => {
   it('throws ProfileLoadError on a non-2xx response', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'boom' }, 500));
     await expect(fetchTierWeights()).rejects.toThrow(ProfileLoadError);
+  });
+});
+
+describe('followPerson', () => {
+  it('POSTs /v1/profiles/{user_id}/follow/{person_id} and returns the updated list', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ followed_person_ids: ['person:B000944'] }),
+    );
+
+    const result = await followPerson('voter-1', 'person:B000944');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/v1/profiles/voter-1/follow/person%3AB000944'),
+      expect.objectContaining({ method: 'POST' }),
+    );
+    expect(result).toEqual({ followed_person_ids: ['person:B000944'] });
+  });
+
+  it('throws ProfileSaveError naming the problem on a 404 for an unknown person', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'not a known person' }, 404));
+    await expect(followPerson('voter-1', 'person:does-not-exist')).rejects.toThrow(
+      ProfileSaveError,
+    );
+  });
+
+  it('throws ProfileSaveError on a 422 (e.g. no saved profile yet)', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'needs a primary interest' }, 422));
+    await expect(followPerson('voter-1', 'person:B000944')).rejects.toThrow(ProfileSaveError);
+  });
+});
+
+describe('unfollowPerson', () => {
+  it('DELETEs /v1/profiles/{user_id}/follow/{person_id} and returns the updated list', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ followed_person_ids: [] }));
+
+    const result = await unfollowPerson('voter-1', 'person:B000944');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/v1/profiles/voter-1/follow/person%3AB000944'),
+      expect.objectContaining({ method: 'DELETE' }),
+    );
+    expect(result).toEqual({ followed_person_ids: [] });
+  });
+
+  it('throws ProfileSaveError on a non-2xx response', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'boom' }, 500));
+    await expect(unfollowPerson('voter-1', 'person:B000944')).rejects.toThrow(ProfileSaveError);
   });
 });

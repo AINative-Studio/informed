@@ -22,6 +22,12 @@
  *   * `fetchTierWeights` — GETs the live primary/secondary/nice_to_have
  *     weights from `methodology_versions` (story 4.2), so a tier-editing UI
  *     never hard-codes "3.0 / 1.5 / 0.5" itself.
+ *   * `followPerson` / `unfollowPerson` — `POST`/`DELETE
+ *     /v1/profiles/{user_id}/follow/{person_id}` (story 15.1). Dedicated
+ *     endpoints rather than resubmitting the whole profile through
+ *     `saveProfile`: the backend still writes through the same encrypted
+ *     `VoterProfileService`, this is just the ergonomic call shape for a
+ *     single follow/unfollow action.
  */
 
 import { apiUrl } from './ballot';
@@ -156,6 +162,87 @@ export async function fetchTierWeights(signal?: AbortSignal): Promise<TierWeight
     );
   }
   return (await response.json()) as TierWeightsResponse;
+}
+
+/** Mirrors `backend/app/profiles/router.py`'s `FollowResponse`. */
+export interface FollowResponse {
+  followed_person_ids: string[];
+}
+
+/**
+ * Follow an incumbent: `POST /v1/profiles/{user_id}/follow/{person_id}`.
+ *
+ * Reuses `ProfileSaveError` (not a new error type) because the failure
+ * modes are the same shape as a profile save: a 404 means `person_id` is not
+ * a real, currently-loaded person (the backend's reference check, story
+ * 1.4's philosophy applied to a field inside the encrypted payload), a 422
+ * means this voter has no identity or no profile yet to attach a follow to.
+ * Idempotent on the backend: following someone already followed succeeds
+ * again rather than erroring.
+ */
+export async function followPerson(
+  userId: string,
+  personId: string,
+  signal?: AbortSignal,
+): Promise<FollowResponse> {
+  const url = apiUrl(
+    API_BASE_URL,
+    `/v1/profiles/${encodeURIComponent(userId)}/follow/${encodeURIComponent(personId)}`,
+    window.location.origin,
+  );
+  const response = await fetch(url.toString(), {
+    method: 'POST',
+    signal,
+    headers: { accept: 'application/json' },
+  });
+  if (!response.ok) {
+    throw new ProfileSaveError(await messageForFollow(response), response.status);
+  }
+  return (await response.json()) as FollowResponse;
+}
+
+/**
+ * Unfollow an incumbent: `DELETE /v1/profiles/{user_id}/follow/{person_id}`.
+ *
+ * No existence check on the backend — unfollowing a person_id that is no
+ * longer a real person, or was never followed, always succeeds, so the only
+ * realistic failure here is a network or server problem.
+ */
+export async function unfollowPerson(
+  userId: string,
+  personId: string,
+  signal?: AbortSignal,
+): Promise<FollowResponse> {
+  const url = apiUrl(
+    API_BASE_URL,
+    `/v1/profiles/${encodeURIComponent(userId)}/follow/${encodeURIComponent(personId)}`,
+    window.location.origin,
+  );
+  const response = await fetch(url.toString(), {
+    method: 'DELETE',
+    signal,
+    headers: { accept: 'application/json' },
+  });
+  if (!response.ok) {
+    throw new ProfileSaveError(await messageForFollow(response), response.status);
+  }
+  return (await response.json()) as FollowResponse;
+}
+
+async function messageForFollow(response: Response): Promise<string> {
+  if (response.status === 404) {
+    return 'That person could not be found, so following them was not saved.';
+  }
+  if (response.status === 422) {
+    try {
+      const body = (await response.json()) as { detail?: unknown };
+      if (typeof body.detail === 'string') return body.detail;
+    } catch {
+      // Fall through to the generic message below.
+    }
+    return 'That could not be saved. Please check your profile and try again.';
+  }
+  return 'We could not update who you follow just now. Please try again.';
 }
 
 async function messageFor(response: Response): Promise<string> {

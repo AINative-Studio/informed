@@ -84,6 +84,8 @@ from app.profiles.models import (
     InterestProfile,
     VoterProfileRow,
 )
+from app.repositories.base import Repository
+from app.repositories.models import Person
 from app.zerodb.client import ZeroDBClient
 from app.zerodb.errors import ZeroDBNotFoundError
 
@@ -100,6 +102,19 @@ class AnonymousModeError(RuntimeError):
     """
 
 
+class PersonNotFoundError(ValueError):
+    """A follow was attempted for a `person_id` that is not a live `people` row.
+
+    Story 15.1's reference-validation requirement, in the same spirit as story
+    1.4's repository-layer rule: a field that *could* point at a record that
+    does not exist is a field some future bug will leave dangling, and a
+    voter's followed-person list is exactly that field. Checked at follow time
+    rather than only at save/load time, so the rejection happens before
+    anything is written — the same "validate before you touch storage" order
+    `save()`'s own docstring describes for tier limits.
+    """
+
+
 class VoterProfileService:
     """Reads and writes voter profiles, encrypted, one voter at a time.
 
@@ -110,6 +125,13 @@ class VoterProfileService:
     def __init__(self, *, client: ZeroDBClient, keyring: ProfileKeyring) -> None:
         self._client = client
         self._keyring = keyring
+        # `people` is read-only from here: this service never writes a
+        # `people` row, only checks one exists before letting a voter follow
+        # it (story 15.1). A plain `Repository`, not a cached reference-check
+        # dict like `app.repositories.base.Repository._check_references` —
+        # one follow/unfollow call is one lookup, not the batch-ingest case
+        # that cache exists for.
+        self._people: Repository[Person] = Repository(client=client, model=Person)
 
     # --- validation (also the anonymous-mode path) ------------------------
 
@@ -176,6 +198,81 @@ class VoterProfileService:
         # 19:20" plus an access log is a re-identification path.
         logger.info("voter profile saved at version %d under %s", version, row.key_ref)
         return row
+
+    def follow(self, user_id: str | None, person_id: str) -> InterestProfile:
+        """Add `person_id` to the voter's followed persons, then save.
+
+        Story 15.1: "Follows are stored inside the encrypted profile
+        payload" — so this is deliberately a read-modify-write through the
+        same `save()` path every other profile change takes, not a second
+        storage mechanism. A voter who has never saved a profile gets one
+        created here with the minimum this model requires: `save()` already
+        refuses a profile with zero primary interests (`InterestProfile`'s
+        own validator), so following an incumbent cannot be someone's very
+        first action before they have stated any interest — matching the
+        onboarding order every other path in this app already enforces.
+
+        Idempotent: following someone already followed is a no-op write (same
+        set, bumped version like any other save) rather than an error — a
+        double-tap of a follow button must not surface a failure.
+
+        Raises:
+            PersonNotFoundError: `person_id` is not a live row in `people`.
+                Checked BEFORE the profile is touched, so a rejected follow
+                leaves the stored profile exactly as it was.
+            AnonymousModeError: `user_id` is None.
+        """
+        self._require_identified(user_id, "follow a person")
+        self._require_person_exists(person_id)
+
+        profile = self.load(user_id) or _blank_profile_for_first_follow()
+        if person_id in profile.followed_person_ids:
+            updated = profile
+        else:
+            updated = profile.model_copy(
+                update={"followed_person_ids": [*profile.followed_person_ids, person_id]}
+            )
+        self.save(user_id, updated.payload())
+        return self.load(user_id)  # type: ignore[return-value]  # just saved; cannot be None
+
+    def unfollow(self, user_id: str | None, person_id: str) -> InterestProfile:
+        """Remove `person_id` from the voter's followed persons, then save.
+
+        No existence check: unfollowing a person_id that no longer exists (or
+        never did) must always succeed — a voter removing a stale follow is
+        never the wrong action, unlike adding one. Idempotent for the same
+        reason `follow` is: unfollowing someone not followed is a no-op save.
+
+        Raises:
+            AnonymousModeError: `user_id` is None.
+
+        A voter with no saved profile has nothing to unfollow: this returns an
+        unvalidated, unsaved blank profile (zero interests) rather than
+        raising or writing anything — there is no row to touch, and a retried
+        or out-of-order unfollow must stay harmless rather than surface the
+        "needs a primary interest" error a bare save would, since nothing was
+        ever asked to be saved here.
+        """
+        self._require_identified(user_id, "unfollow a person")
+        profile = self.load(user_id)
+        if profile is None:
+            # Nothing stored means nothing followed. `model_construct` skips
+            # validation deliberately: a blank profile would fail the "at
+            # least one primary interest" rule, but nothing is being saved
+            # here, so there is nothing for that rule to protect.
+            return _blank_profile_for_first_follow()
+        if person_id not in profile.followed_person_ids:
+            updated = profile
+        else:
+            updated = profile.model_copy(
+                update={
+                    "followed_person_ids": [
+                        pid for pid in profile.followed_person_ids if pid != person_id
+                    ]
+                }
+            )
+        self.save(user_id, updated.payload())
+        return self.load(user_id)  # type: ignore[return-value]  # just saved; cannot be None
 
     def delete(self, user_id: str | None) -> None:
         """Delete a profile and shred its data key. Idempotent.
@@ -292,6 +389,23 @@ class VoterProfileService:
                 "profile stays in the browser (datamodel.md, prd.md privacy rules)"
             )
 
+    def _require_person_exists(self, person_id: str) -> None:
+        """Story 15.1: reject a follow for a `person_id` not in `people`.
+
+        The same reference-integrity philosophy as `Repository._check_references`
+        (story 1.4) — "a field that *could* hold a dangling reference is a
+        field some future code will leave dangling" — applied here because
+        `followed_person_ids` cannot go through that repository check itself:
+        it lives inside an encrypted payload the generic `Repository` layer
+        never sees (see `VoterProfileRow`'s docstring on why that table is
+        deliberately not a `RowModel`).
+        """
+        if self._people.get(person_id) is None:
+            raise PersonNotFoundError(
+                f"{person_id!r} is not a known person; only a real, currently "
+                "loaded legislator or candidate can be followed"
+            )
+
     def __repr__(self) -> str:
         return "VoterProfileService(<redacted>)"
 
@@ -301,4 +415,27 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-__all__ = ["AnonymousModeError", "VoterProfileService"]
+def _blank_profile_for_first_follow() -> InterestProfile:
+    """A minimally-valid profile for a voter who follows before they save.
+
+    `InterestProfile` requires at least one primary interest (prd.md: "no
+    candidate score is shown until at least one primary interest exists"),
+    so `follow()` cannot write an *empty* profile for a brand-new voter —
+    it would be rejected the same way a save with no interests is. This is
+    not a product decision this story makes silently: a voter reaching the
+    follow button with no profile yet is expected to have gone through
+    onboarding already in the normal flow, but `follow()` must not crash if
+    they somehow have not. Rather than invent a fabricated "interest" with a
+    real topic id (which would misrepresent what the voter actually said),
+    this returns an InterestProfile with zero interests and lets the
+    model's own validator raise `ValidationError` naming the real rule — the
+    same error a bare `POST /v1/profiles` with no interests would produce —
+    so the router can turn it into the same 422 a client already knows how
+    to handle, rather than a bespoke "follow before onboarding" error shape.
+    """
+    return InterestProfile.model_construct(
+        interests=[], evidence_mode="blend", followed_person_ids=[], history=[]
+    )
+
+
+__all__ = ["AnonymousModeError", "PersonNotFoundError", "VoterProfileService"]

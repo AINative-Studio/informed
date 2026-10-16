@@ -69,7 +69,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.profiles.crypto import ProfileKeyring, ProfileRootKey, RootKeyMissingError
 from app.profiles.methodology import MethodologyVersionService
-from app.profiles.service import AnonymousModeError, VoterProfileService
+from app.profiles.service import AnonymousModeError, PersonNotFoundError, VoterProfileService
 from app.zerodb import ZeroDBClient
 
 router = APIRouter(prefix="/v1", tags=["profiles"])
@@ -231,6 +231,22 @@ class LoadedProfile(BaseModel):
     followed_person_ids: list[str]
 
 
+class FollowResponse(BaseModel):
+    """What `POST`/`DELETE /v1/profiles/{user_id}/follow/{person_id}` return.
+
+    Just the updated list, same shape as `LoadedProfile.followed_person_ids` —
+    deliberately not the whole profile: a follow action should not round-trip
+    a voter's interests back to the client that just asked to follow someone,
+    mirroring why `SaveProfileResponse` withholds the interests it was handed.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    followed_person_ids: list[str] = Field(
+        description="Every person_id this voter currently follows, after this action"
+    )
+
+
 @router.get(
     "/profiles/methodology",
     response_model=TierWeightsResponse,
@@ -351,6 +367,80 @@ def save_profile(
     return SaveProfileResponse(version=row.version, locale=row.locale, updated_at=row.updated_at)
 
 
+@router.post(
+    "/profiles/{user_id}/follow/{person_id}",
+    response_model=FollowResponse,
+    summary="Follow an incumbent (story 15.1)",
+    description=(
+        "Adds person_id to the voter's followed persons and saves — a "
+        "read-modify-write through the same encrypted VoterProfileService "
+        "path every other profile change takes (datamodel.md: 'Follows are "
+        "stored inside the encrypted profile payload'), never a second, "
+        "unencrypted storage path. Rejects a person_id that is not a live "
+        "row in the people table with a 404, consistent with the "
+        "repository layer's reference-validation rule (story 1.4). "
+        "Idempotent: following someone already followed just re-saves the "
+        "same list."
+    ),
+    responses={
+        404: {"description": "person_id is not a known person"},
+        422: {
+            "description": "The voter has no user_id (anonymous mode), or no "
+            "saved profile with at least one primary interest to attach a "
+            "follow to"
+        },
+    },
+)
+def follow_person(
+    service: Annotated[VoterProfileService, Depends(profile_service)],
+    user_id: str,
+    person_id: str,
+) -> FollowResponse:
+    try:
+        profile = service.follow(user_id, person_id)
+    except PersonNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except AnonymousModeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"could not save the follow: {_safe_error_summary(exc)}",
+        ) from exc
+    return FollowResponse(followed_person_ids=profile.followed_person_ids)
+
+
+@router.delete(
+    "/profiles/{user_id}/follow/{person_id}",
+    response_model=FollowResponse,
+    summary="Unfollow an incumbent (story 15.1)",
+    description=(
+        "Removes person_id from the voter's followed persons and saves. No "
+        "existence check against the people table — unfollowing someone who "
+        "no longer exists, or was never followed, always succeeds, unlike "
+        "following. A voter with no saved profile has nothing to unfollow: "
+        "this returns an empty list rather than erroring."
+    ),
+    responses={
+        422: {"description": "The voter has no user_id (anonymous mode)"},
+    },
+)
+def unfollow_person(
+    service: Annotated[VoterProfileService, Depends(profile_service)],
+    user_id: str,
+    person_id: str,
+) -> FollowResponse:
+    try:
+        profile = service.unfollow(user_id, person_id)
+    except AnonymousModeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    return FollowResponse(followed_person_ids=profile.followed_person_ids)
+
+
 def _safe_error_summary(exc: ValidationError) -> str:
     """A validation error's field names and counts, never its values.
 
@@ -367,16 +457,19 @@ def _safe_error_summary(exc: ValidationError) -> str:
 
 
 __all__ = [
+    "FollowResponse",
     "LoadedInterest",
     "LoadedProfile",
     "SaveProfileRequest",
     "SaveProfileResponse",
     "TierWeightsResponse",
+    "follow_person",
     "get_tier_weights",
     "load_profile",
     "methodology_service",
     "profile_service",
     "router",
     "save_profile",
+    "unfollow_person",
     "zerodb_client_for_profiles",
 ]
