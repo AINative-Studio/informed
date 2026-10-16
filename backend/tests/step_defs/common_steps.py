@@ -235,11 +235,21 @@ def profile_saved_with_weights(
     second: float,
     third: float,
 ) -> None:
-    # The builder already knows the tier weights, so assert the shape locally;
-    # persisting an encrypted profile is story 3.3.
+    # The builder already knows the tier weights, so assert the shape locally.
+    #
+    # The pending pointer below said "story 3.3" and was stale: story 14.1
+    # built the encrypted profile persistence and 4.2/4.4 wired it to HTTP, so
+    # the remaining gap is not persistence at all — it is that THIS prd.md
+    # scenario asserts the stored weights, and weights are deliberately not
+    # stored (datamodel.md: "the live values come from methodology_versions
+    # and are never hard-coded", and `app.profiles.models` has no weight
+    # field by design). Re-pointed at 6.1 ("Methodology versions"), which owns
+    # publishing a version and the tier weights inside it — the story that
+    # would let this scenario assert on real published values rather than on
+    # the constants a test fixture happens to carry.
     assert context.voter is not None
     assert context.voter.weights == [first, second, third]
-    pending(request, "3.3", "encrypted voter profile persistence")
+    pending(request, "6.1", "tier weights read back from the published methodology version")
 
 
 @then("no candidate score is shown until at least one primary interest exists")

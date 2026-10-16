@@ -122,6 +122,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -414,8 +415,28 @@ class PanelReviewService:
     wording whose approval had been superseded.
     """
 
-    def __init__(self, client: ZeroDBClient) -> None:
+    def __init__(self, client: ZeroDBClient, *, pace: Callable[[], None] | None = None) -> None:
+        """Build the service.
+
+        `pace` is the same injectable pacer the seeders and the bootstrap use,
+        and it is called before each ledger write. It matters for exactly one
+        caller — `grandfather_existing_corpus`, which writes 281 rows against a
+        project observed to throttle at 60 requests per minute (datamodel.md
+        "Open questions"), each one an upsert costing a find and a write.
+
+        **It defaults to a no-op, not to the real pacer**, which is the
+        opposite of `TaxonomySeeder`'s and `StanceSeeder`'s default and is
+        worth justifying. Those two have exactly one production caller each, a
+        CLI, and their only job is a bulk write. This service's production
+        caller is an HTTP request handler recording ONE decision, and a pacer
+        there would put a deliberate sleep in a request path for no benefit. So
+        the bulk caller pays for pacing explicitly — `scripts/backfill_panel_
+        review.py` passes `pace=default_pacer()` — and the per-request path
+        stays fast. The cost of getting that backwards is visible either way: a
+        throttled backfill or a slow endpoint, not silent data loss.
+        """
         self._client = client
+        self._pace: Callable[[], None] = pace if pace is not None else lambda: None
         self._reviews: Repository[PanelReview] = Repository(client=client, model=PanelReview)
         self._topics: Repository[IssueTopic] = Repository(client=client, model=IssueTopic)
         self._stances: Repository[Stance] = Repository(client=client, model=Stance)
@@ -1054,6 +1075,7 @@ class PanelReviewService:
             would get wrong here, since several decisions about one row at one
             version are all simultaneously true history.
         """
+        self._pace()
         fields = proposed or {}
         row_id = review_id(
             subject_table=subject_table,
