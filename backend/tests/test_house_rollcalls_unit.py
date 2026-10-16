@@ -14,6 +14,7 @@ import pytest
 from app.bootstrap import Bootstrapper
 from app.ingest import house_rollcalls as house_rollcalls_module
 from app.ingest.house_rollcalls import (
+    ADAPTER_VERSION,
     HouseRollCallLoader,
     HouseRollCallSourceError,
     content_hash_for,
@@ -456,6 +457,7 @@ def test_write_provenance_inserts_a_row_with_the_content_addressed_id() -> None:
         source_url="https://api.congress.gov/v3/house-vote/119/2/452",
         fetched_at="2026-10-16T00:00:00+00:00",
         content_hash="abc123",
+        adapter_version=ADAPTER_VERSION,
     )
     assert written is not None
     assert written.id == "prov:abc123"
@@ -469,6 +471,7 @@ def test_write_provenance_is_a_noop_when_the_same_content_hash_already_exists() 
         source_url="https://api.congress.gov/v3/house-vote/119/2/452",
         fetched_at="2026-10-16T00:00:00+00:00",
         content_hash="abc123",
+        adapter_version=ADAPTER_VERSION,
     )
     first = write_provenance(client, **kwargs)
     second = write_provenance(client, **{**kwargs, "fetched_at": "2026-10-17T00:00:00+00:00"})
@@ -483,6 +486,7 @@ def test_write_provenance_writes_a_second_row_for_a_different_content_hash() -> 
         entity_id="us-house:119-2:452",
         source_url="https://api.congress.gov/v3/house-vote/119/2/452",
         fetched_at="2026-10-16T00:00:00+00:00",
+        adapter_version=ADAPTER_VERSION,
     )
     first = write_provenance(client, **base, content_hash="abc123")
     second = write_provenance(client, **base, content_hash="def456")
