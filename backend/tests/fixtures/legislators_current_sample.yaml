@@ -1,0 +1,161 @@
+# A small, realistic subset of unitedstates/congress-legislators'
+# legislators-current.yaml, in the exact shape the live file publishes
+# (confirmed against the live file during story 2.2 — see
+# app/ingest/legislators.py's module docstring). Used by CI so the backend
+# suite never depends on GitHub being reachable; the live file itself is only
+# fetched by scripts/load_legislators.py and the live verification script.
+#
+# Three real legislators, chosen to exercise distinct paths:
+#   - C000127 (Maria Cantwell, WA): a senator with a long term history,
+#     including a term that straddles into the 118th/119th boundary and one
+#     fully inside the 119th.
+#   - N000147 (Eleanor Holmes Norton, DC): a non-voting House delegate with
+#     district 0 — the real source's convention for an at-large/territorial
+#     seat with no numbered congressional district.
+#   - S000033 (Bernie Sanders, VT): a senator who caucuses with Democrats but
+#     is registered "Independent" — proves the loader does not force a
+#     two-party vocabulary onto `party`.
+- id:
+    bioguide: C000127
+    thomas: '00172'
+    lis: S275
+    govtrack: 300018
+    opensecrets: N00007836
+    votesmart: 27122
+    fec:
+      - S8WA00194
+      - H2WA01054
+    cspan: 26137
+    wikipedia: Maria Cantwell
+    house_history: 10608
+    ballotpedia: Maria Cantwell
+    maplight: 544
+    icpsr: 39310
+    wikidata: Q22250
+    google_entity_id: kg:/m/01x68t
+    pictorial: 13398
+  name:
+    first: Maria
+    last: Cantwell
+    official_full: Maria Cantwell
+  bio:
+    birthday: '1958-10-13'
+    gender: F
+  terms:
+    - type: sen
+      start: '2013-01-03'
+      end: '2019-01-03'
+      state: WA
+      party: Democrat
+      class: 1
+      url: https://www.cantwell.senate.gov
+    - type: sen
+      start: '2019-01-03'
+      end: '2025-01-03'
+      state: WA
+      class: 1
+      party: Democrat
+      state_rank: junior
+      url: https://www.cantwell.senate.gov
+    - type: sen
+      start: '2025-01-03'
+      end: '2031-01-03'
+      state: WA
+      class: 1
+      state_rank: junior
+      party: Democrat
+      url: https://www.cantwell.senate.gov
+- id:
+    bioguide: N000147
+    thomas: '00868'
+    govtrack: 400295
+    opensecrets: N00001692
+    votesmart: 775
+    fec:
+      - H0DC00058
+    cspan: 882
+    wikipedia: Eleanor Holmes Norton
+    house_history: 19016
+    ballotpedia: Eleanor Holmes Norton
+    maplight: 390
+    wikidata: Q461649
+    google_entity_id: kg:/m/01s_vp
+    pictorial: 12980
+  name:
+    first: Eleanor
+    last: Norton
+    middle: Holmes
+    official_full: Eleanor Holmes Norton
+  bio:
+    birthday: '1937-06-13'
+    gender: F
+  terms:
+    - district: 0
+      end: '2021-01-03'
+      party: Democrat
+      start: '2019-01-03'
+      state: DC
+      type: rep
+    - district: 0
+      end: '2023-01-03'
+      party: Democrat
+      start: '2021-01-03'
+      state: DC
+      type: rep
+    - district: 0
+      end: '2025-01-03'
+      party: Democrat
+      start: '2023-01-03'
+      state: DC
+      type: rep
+    - district: 0
+      end: '2027-01-03'
+      party: Democrat
+      start: '2025-01-03'
+      state: DC
+      type: rep
+- id:
+    bioguide: S000033
+    thomas: '01010'
+    lis: S313
+    govtrack: 400357
+    opensecrets: N00000528
+    votesmart: 27110
+    fec:
+      - H8VT01016
+      - S4VT00033
+    cspan: 994
+    wikipedia: Bernie Sanders
+    house_history: 2117
+    ballotpedia: Bernie Sanders
+    maplight: 450
+    icpsr: 29147
+    wikidata: Q359442
+    pictorial: 11926
+  name:
+    first: Bernard
+    nickname: Bernie
+    last: Sanders
+    official_full: Bernie Sanders
+  bio:
+    birthday: '1941-09-08'
+    gender: M
+  terms:
+    - type: sen
+      start: '2019-01-03'
+      end: '2025-01-03'
+      state: VT
+      class: 1
+      party: Independent
+      caucus: Democrat
+      state_rank: senior
+      url: https://www.sanders.senate.gov
+    - type: sen
+      start: '2025-01-03'
+      end: '2031-01-03'
+      state: VT
+      class: 1
+      party: Independent
+      caucus: Democrat
+      state_rank: senior
+      url: https://www.sanders.senate.gov
