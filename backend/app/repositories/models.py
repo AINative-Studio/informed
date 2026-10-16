@@ -21,8 +21,10 @@ can be caught.
 
 **Only some of the 22 tables are modelled here**, on purpose: a table gets its
 model in the story that first reads or writes it. Story 1.4 modelled the five
-that exercise all of the generic repository machinery, and story 2.1 added
-`jurisdictions` and `bodies` because it seeds them.
+that exercise all of the generic repository machinery, story 2.1 added
+`jurisdictions` and `bodies` because it seeds them, and story 3.1 added
+`issue_topics` — the first table whose declared reference points back at
+itself.
 
 Story 1.4's five and what each one proves:
 `districts` (no references at all), `people` (an embedded `terms[]` list),
@@ -280,6 +282,66 @@ class Body(RowModel):
     seats: int = Field(ge=1)
 
 
+class IssueTopic(RowModel):
+    """One node of the issue taxonomy, keyed `{locale}:{slug}:v{n}` (story 3.1).
+
+    datamodel.md: id pattern `{locale}:{slug}:v{n}`; fields parent_id, name,
+    locale, taxonomy_version; main query "tree by locale".
+
+    The id is supplied rather than derived, even though it looks composable.
+    `build_id` joins natural-key values with ":" verbatim, which would give
+    `en-US:healthcare:1` — the version segment needs the literal `v` prefix
+    datamodel.md documents, and a natural key cannot express that. Composing it
+    in the one place that knows the pattern (`app.seed_taxonomy.Topic.row_id`)
+    and letting the repository require it, exactly as `Jurisdiction` and `Body`
+    do for their slugs, keeps the stored id matching the doc rather than
+    matching whatever `build_id` happens to produce.
+
+    `parent_id` is a **self-reference**: a subtopic points at the top-level
+    topic above it, in the same table. Declared as a reference so the
+    repository refuses a subtopic whose parent is not stored (datamodel.md rule
+    5), which is what forces the seed to write parents first. It is None for a
+    top-level topic — an absent optional reference is not a dangling one, which
+    is the case `Repository._check_references` already skips.
+
+    What a self-reference does NOT buy, and why the validator below exists: the
+    reference check asks only "does a row with this id exist", so a row naming
+    *itself* as its parent resolves happily — the row is there, it is this one.
+    That is an infinite tree, and a tree walk over it would not terminate. It
+    is cheap to reject here and impossible to detect downstream, so it is
+    rejected here.
+
+    Deeper cycles (a -> b -> a) are NOT caught by this model: detecting one
+    needs the whole tree, which a single row's validation cannot see. Story
+    3.1's seed emits a fixed two-level tree and its tests assert that depth, so
+    no cycle can arise from this story's data; a later story that lets an
+    editor re-parent a topic is where a whole-tree acyclicity check belongs
+    (and it is in this story's PR as an open question).
+
+    `taxonomy_version` is the taxonomy's own revision, not a row version — the
+    whole tree is published at a version, and all of story 3.1's rows are at 1.
+    It is bounded below because a version 0 or negative is not a published
+    taxonomy, and `issue_topics` is deliberately NOT append-only: a new
+    taxonomy version writes new rows under new ids (`:v2`), so the previous
+    version's rows survive untouched without `is_current` bookkeeping.
+    """
+
+    table_name: ClassVar[str] = "issue_topics"
+    references: ClassVar[dict[str, str]] = {"parent_id": "issue_topics"}
+
+    parent_id: str | None = None
+    name: str = Field(min_length=1)
+    locale: str
+    taxonomy_version: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def _a_topic_is_not_its_own_parent(self) -> IssueTopic:
+        """Reject a self-parented row; see the class docstring for why here."""
+        if self.parent_id is not None and self.parent_id == self.id:
+            raise ValueError(f"issue topic {self.id!r} is its own parent")
+        return self
+
+
 class District(RowModel):
     """A legislative district, keyed by its OCD-ID.
 
@@ -505,6 +567,7 @@ __all__ = [
     "CandidatePosition",
     "Chamber",
     "District",
+    "IssueTopic",
     "Jurisdiction",
     "JurisdictionLevel",
     "MemberVote",

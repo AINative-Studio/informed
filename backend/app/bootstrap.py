@@ -491,7 +491,7 @@ class Bootstrapper:
         min_interval_seconds: float = DEFAULT_MIN_INTERVAL_SECONDS,
     ) -> None:
         self._client = client
-        self._pace = pace if pace is not None else _default_pacer(min_interval_seconds)
+        self._pace = pace if pace is not None else default_pacer(min_interval_seconds)
 
     # --- the whole job ------------------------------------------------------
 
@@ -711,12 +711,17 @@ class Bootstrapper:
         logger.info("bootstrap: recorded schema version %r", SCHEMA_VERSION)
 
 
-def _default_pacer(min_interval_seconds: float) -> Callable[[], None]:
+def default_pacer(min_interval_seconds: float = DEFAULT_MIN_INTERVAL_SECONDS) -> Callable[[], None]:
     """Sleep at least `min_interval_seconds` since the pacer's last call.
 
     Deliberately measures from the last call rather than always sleeping the
     full interval, so a client whose own request time already ate some of the
     budget doesn't needlessly double-pace. The first call never sleeps.
+
+    Public because the 60 req/min ceiling (datamodel.md "Open questions") is a
+    property of the live project, not of the bootstrap: story 3.1's taxonomy
+    seeder makes ~80 paced writes of its own and uses the same pacer rather
+    than inventing a second rate-limit policy that could drift from this one.
     """
     state = {"last": None}
 
@@ -771,5 +776,6 @@ __all__ = [
     "VECTOR_NAMESPACES",
     "Bootstrapper",
     "BootstrapReport",
+    "default_pacer",
     "get_schema_version",
 ]

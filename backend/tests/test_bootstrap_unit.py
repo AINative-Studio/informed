@@ -21,7 +21,7 @@ from app.bootstrap import (
     VECTOR_NAMESPACES,
     Bootstrapper,
     BootstrapReport,
-    _default_pacer,
+    default_pacer,
     get_schema_version,
 )
 from app.zerodb import ZeroDBClient
@@ -340,15 +340,15 @@ def test_schema_version_row_uses_a_fixed_well_known_id(client: ZeroDBClient) -> 
 # --- the real pacer -----------------------------------------------------------
 
 
-def test_default_pacer_does_not_sleep_on_the_first_call() -> None:
-    pace = _default_pacer(min_interval_seconds=5.0)
+def testdefault_pacer_does_not_sleep_on_the_first_call() -> None:
+    pace = default_pacer(min_interval_seconds=5.0)
     started = time.monotonic()
     pace()
     assert time.monotonic() - started < 0.1
 
 
-def test_default_pacer_sleeps_to_enforce_the_minimum_interval() -> None:
-    pace = _default_pacer(min_interval_seconds=0.05)
+def testdefault_pacer_sleeps_to_enforce_the_minimum_interval() -> None:
+    pace = default_pacer(min_interval_seconds=0.05)
     pace()  # first call: no sleep
     started = time.monotonic()
     pace()  # second call: should wait out the remaining interval
@@ -356,8 +356,8 @@ def test_default_pacer_sleeps_to_enforce_the_minimum_interval() -> None:
     assert elapsed >= 0.04  # a little under 0.05 to tolerate scheduler jitter
 
 
-def test_default_pacer_does_not_oversleep_once_the_interval_has_elapsed() -> None:
-    pace = _default_pacer(min_interval_seconds=0.01)
+def testdefault_pacer_does_not_oversleep_once_the_interval_has_elapsed() -> None:
+    pace = default_pacer(min_interval_seconds=0.01)
     pace()
     time.sleep(0.02)  # already longer than the interval
     started = time.monotonic()
@@ -365,7 +365,7 @@ def test_default_pacer_does_not_oversleep_once_the_interval_has_elapsed() -> Non
     assert time.monotonic() - started < 0.01
 
 
-def test_bootstrapper_uses_the_default_pacer_when_none_is_injected(
+def test_bootstrapper_uses_thedefault_pacer_when_none_is_injected(
     client: ZeroDBClient,
 ) -> None:
     """Confirms the production code path paces for real when a caller does

@@ -237,6 +237,34 @@ Row-seeding lives in `backend/app/seed.py`, separate from the schema work in
 three rows against the live project (and is itself the one verify script that
 deliberately leaves what it wrote in place).
 
+### `scripts/seed_taxonomy.py` — a second, separate permanent seed
+
+The issue taxonomy (story 3.1) is **not** written by the bootstrap. Run it once
+per environment, after the bootstrap has created the tables:
+
+```sh
+set -a; . local.env; set +a
+python backend/scripts/seed_taxonomy.py
+```
+
+It writes 80 `issue_topics` rows — 20 top-level topics and 60 subtopics, all
+`locale = en-US` and `taxonomy_version = 1` — idempotently, so re-running it
+restates them rather than duplicating them. Expect it to take a couple of
+minutes: the writes are paced for the live project's 60 req/min ceiling, which
+is also why it is a separate command rather than a step inside every bootstrap.
+
+**Do not delete those rows either.** They are the vocabulary the whole product
+is measured against: every voter interest, stance card (story 3.2), topic
+embedding (story 3.4) and alignment score cites a topic id such as
+`en-US:healthcare:v1`. If one is deleted, re-run the script to put it back.
+
+The taxonomy itself lives in `backend/app/seed_taxonomy.py` (one module, so a
+wording change reviewed by the advisory panel never touches the reference-tree
+seed), and `backend/scripts/verify_issue_taxonomy_live.py` checks the stored
+tree against the live project — counts, parent links, locale and version, the
+PUT-not-POST idempotency mechanism, and that no stored label presupposes a
+political stance. Like `verify_seed_live.py`, it leaves what it wrote in place.
+
 ### If ZeroDB calls 403 with `API_KEY_PROJECT_MISMATCH`
 
 A key's **name** on AINative's platform and the **project it is actually
