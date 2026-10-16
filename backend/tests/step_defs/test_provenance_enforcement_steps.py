@@ -18,8 +18,8 @@ from app.bootstrap import Bootstrapper
 from app.repositories import MissingProvenanceError, ProvenanceContext, Repository
 from app.repositories.models import Person, RollCall
 from app.repositories.provenance import (
+    check_app_tree,
     check_ingest_module,
-    check_ingest_tree,
     models_requiring_provenance,
 )
 from app.zerodb import ZeroDBClient
@@ -252,7 +252,9 @@ def write_refused(result: dict[str, Any]) -> None:
 
 @when("I run the provenance integrity check over the repository models and ingest modules")
 def run_integrity_check(result: dict[str, Any]) -> None:
-    result["violations"] = check_ingest_tree()
+    # The whole `app/` tree, not just `app/ingest/`: a sourced write is not
+    # confined to the ingest package. See `check_app_tree`.
+    result["violations"] = check_app_tree()
     result["sourced_models"] = models_requiring_provenance()
 
 

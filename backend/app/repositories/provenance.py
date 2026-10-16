@@ -25,10 +25,12 @@ write path, assert a provenance entry appeared. Proves the mechanism works, but
 only for paths a test happens to exercise — and a brand-new adapter with no
 test is exactly the case that forgets.
 
-**(b) A static check.** Parse every module under `app/ingest/` and look for a
-sourced-model write with no provenance. Covers code no test touches, but it is
-pattern matching: a write spelled a way the check does not recognize slips
-through.
+**(b) A static check.** Parse every module under `app/` — not only
+`app/ingest/`, since nothing confines a sourced write to the ingest package —
+and look for a sourced-model write with no provenance. Covers code no test
+touches, but it is pattern matching: a write spelled a way the check does not
+recognize slips through. Its limits are stated as tests in
+`tests/test_provenance_unit.py` rather than left for a reader to discover.
 
 **(c) Make forgetting impossible in the repository.** `Repository.upsert` sees
 the model, so it can tell whether the row it is about to write carries a
@@ -142,10 +144,15 @@ SOURCE_URL_FIELD = "source_url"
 #: The table the rule writes into.
 PROVENANCE_TABLE = ProvenanceLog.table_name
 
-#: Where the ingest adapters live. The static check walks this directory rather
-#: than a list of modules, so a source added in a future story is covered the
-#: day it lands.
-INGEST_PACKAGE_PATH = Path(__file__).resolve().parent.parent / "ingest"
+#: The application package. `check_app_tree` walks all of it (bar the
+#: repository layer), so a sourced write added anywhere — not only under
+#: `app/ingest/` — is covered the day it lands.
+APP_PACKAGE_PATH = Path(__file__).resolve().parent.parent
+
+#: Where the ingest adapters live: the subset of the above where sourced writes
+#: belong. The static check walks this directory rather than a list of modules,
+#: so a source added in a future story is covered the day it lands.
+INGEST_PACKAGE_PATH = APP_PACKAGE_PATH / "ingest"
 
 
 def utc_now_iso() -> str:
@@ -548,12 +555,52 @@ def check_ingest_tree(root: Path | None = None) -> list[ProvenanceViolation]:
     return violations
 
 
+def check_app_tree_includes(path: Path) -> bool:
+    """Whether `check_app_tree` should check this file.
+
+    Everything under `app/` except the repository package itself. That package
+    is excluded because it is the code IMPLEMENTING the rule: `provenance.py`
+    writes `insert_row(PROVENANCE_TABLE, ...)` and `base.py` writes every
+    sourced table through `upsert_row`, so a check that reported them would be
+    reporting the mechanism as a violation of itself.
+
+    Excluded by path rather than by a special case inside the matcher, so the
+    exclusion is one readable predicate a reviewer can check, and so no module
+    can earn an exemption by how it happens to spell a call.
+    """
+    return Path(path).parent.name != "repositories"
+
+
+def check_app_tree(root: Path | None = None) -> list[ProvenanceViolation]:
+    """Every module under `app/`, except the repository layer itself.
+
+    Wider than `check_ingest_tree` on purpose. `app/ingest/` is where sourced
+    writes BELONG, not where they are confined to: `app/seed.py`,
+    `app/seed_taxonomy.py`, `app/districts/store.py` and `app/ballot/service.py`
+    all build repositories today (all for unsourced models), and nothing stops
+    a future `app/seed_bills.py` from writing `bills` rows — which carry a
+    `source_url` — from outside the ingest package. Scanning the whole package
+    covers that module the day it is written rather than the day someone
+    remembers this check exists.
+    """
+    directory = APP_PACKAGE_PATH if root is None else Path(root)
+    violations: list[ProvenanceViolation] = []
+    for path in sorted(directory.rglob("*.py")):
+        if not check_app_tree_includes(path):
+            continue
+        violations.extend(check_ingest_module(path))
+    return violations
+
+
 __all__ = [
+    "APP_PACKAGE_PATH",
     "INGEST_PACKAGE_PATH",
     "PROVENANCE_TABLE",
     "SOURCE_URL_FIELD",
     "ProvenanceContext",
     "ProvenanceViolation",
+    "check_app_tree",
+    "check_app_tree_includes",
     "check_ingest_module",
     "check_ingest_tree",
     "check_source",

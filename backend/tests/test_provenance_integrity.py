@@ -38,8 +38,11 @@ from app.bootstrap import Bootstrapper
 from app.repositories import MissingProvenanceError, ProvenanceContext, Repository
 from app.repositories.models import RowModel
 from app.repositories.provenance import (
+    APP_PACKAGE_PATH,
     INGEST_PACKAGE_PATH,
     ProvenanceViolation,
+    check_app_tree,
+    check_app_tree_includes,
     check_ingest_module,
     check_ingest_tree,
     models_requiring_provenance,
@@ -167,6 +170,42 @@ def test_writing_a_sourced_row_with_no_provenance_context_is_refused(
 def test_the_ingest_tree_has_no_provenance_violations() -> None:
     violations = check_ingest_tree()
     assert violations == [], "\n".join(str(violation) for violation in violations)
+
+
+def test_the_whole_app_tree_has_no_provenance_violations() -> None:
+    """The ingest tree is where sourced writes BELONG; it is not where they are
+    confined to.
+
+    `app/seed.py`, `app/seed_taxonomy.py`, `app/districts/store.py` and
+    `app/ballot/service.py` all build repositories today, and all of them are
+    for unsourced models — but nothing stops a future `app/seed_bills.py` from
+    writing `bills` rows (which carry a `source_url`) outside `app/ingest/`.
+    Scanning the whole package rather than one directory means that module is
+    covered without this check being edited, which is the same property the
+    directory walk gives inside `app/ingest/`.
+    """
+    violations = check_app_tree()
+    assert violations == [], "\n".join(str(violation) for violation in violations)
+
+
+def test_the_app_tree_check_is_strictly_wider_than_the_ingest_one() -> None:
+    """Pinned so the wider check cannot quietly become the narrower one."""
+    scanned = {path.name for path in APP_PACKAGE_PATH.rglob("*.py")}
+    assert "seed.py" in scanned
+    assert "service.py" in scanned
+    assert "house_rollcalls.py" in scanned
+
+
+def test_the_repository_layer_itself_is_excluded() -> None:
+    """`provenance.py` writes `insert_row(PROVENANCE_TABLE, ...)` and `base.py`
+    writes every sourced table through `upsert_row` — they are the code
+    implementing the rule, so the check must not report them. Excluded by path
+    rather than by a special case in the matcher, so the exclusion is visible.
+    """
+    scanned = {path for path in APP_PACKAGE_PATH.rglob("*.py")}
+    repository_files = {path for path in scanned if path.parent.name == "repositories"}
+    assert repository_files, "the repository layer should exist to be excluded"
+    assert all(check_app_tree_includes(path) is False for path in repository_files)
 
 
 def test_the_ingest_tree_actually_contains_modules() -> None:
