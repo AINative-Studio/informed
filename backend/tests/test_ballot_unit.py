@@ -210,6 +210,67 @@ def test_service_never_puts_the_address_in_its_result(client: ZeroDBClient) -> N
     assert "Private Lane" not in str(ballot.model_dump(mode="json"))
 
 
+def test_service_pages_through_people_rather_than_reading_one_page(
+    client: ZeroDBClient,
+) -> None:
+    """The delegation must not be limited to `people`'s first page.
+
+    The members are seeded *after* a page's worth of unrelated rows, so a
+    service that read one page would find the district but none of its
+    representatives — the same one-page bug story 1.4 found live in the client's
+    filter fallback, which looked fine against a small fixture.
+    """
+    from app.ballot.service import PEOPLE_PAGE_SIZE
+
+    seed_district(client)
+    people: Repository[Person] = Repository(client=client, model=Person)
+    for index in range(PEOPLE_PAGE_SIZE + 5):
+        people.upsert(
+            person(
+                f"person:ZZFILL{index:04d}",
+                "us-house",
+                "ocd-division/country:us/state:tx/cd:1",
+                name=f"Rep. Filler {index}",
+            )
+        )
+    people.upsert(person("person:ZZ000001", "us-house", HOUSE_DISTRICT, name="Rep. Synthetic"))
+    people.upsert(person("person:ZZ000002", "us-senate", SENATE_DISTRICT, name="Sen. One"))
+    people.upsert(person("person:ZZ000003", "us-senate", SENATE_DISTRICT, name="Sen. Two"))
+
+    ballot = BallotService(client=client).ballot_for(ADDRESS)
+    assert [o.name for o in ballot.officeholders] == ["Rep. Synthetic", "Sen. One", "Sen. Two"]
+
+
+def test_service_logs_an_error_rather_than_silently_truncating(
+    client: ZeroDBClient, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Hitting the scan cap must be loud.
+
+    A voter quietly missing a senator is indistinguishable from a voter who has
+    none, so the cap logs an error naming the read model that should replace the
+    scan. The cap is lowered here rather than seeding 5,000 rows.
+    """
+    import app.ballot.service as service_module
+
+    monkeypatch.setattr(service_module, "MAX_PEOPLE_SCANNED", service_module.PEOPLE_PAGE_SIZE)
+    seed_district(client)
+    people: Repository[Person] = Repository(client=client, model=Person)
+    for index in range(service_module.PEOPLE_PAGE_SIZE):
+        people.upsert(
+            person(
+                f"person:ZZFILL{index:04d}",
+                "us-house",
+                "ocd-division/country:us/state:tx/cd:1",
+            )
+        )
+
+    with caplog.at_level("ERROR"):
+        BallotService(client=client).ballot_for(ADDRESS)
+
+    assert "stopped scanning" in caplog.text
+    assert "candidate_cards" in caplog.text
+
+
 def test_service_skips_a_term_with_no_district(client: ZeroDBClient) -> None:
     """`Term.district_id` is optional in the model, so None must not match.
 

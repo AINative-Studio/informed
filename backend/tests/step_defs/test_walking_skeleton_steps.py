@@ -18,6 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pytest_bdd import given, parsers, scenarios, then, when
 
+from app.ballot.models import BallotResponse
 from app.ballot.service import BallotService
 from app.districts.resolver import StubAddressResolver
 from app.main import create_app, zerodb_client
@@ -181,12 +182,17 @@ def submit_address_in_district(api: TestClient, context: Any, zdb: ZeroDBClient)
 
 
 def payload(context: Any) -> dict[str, Any]:
-    """The ballot payload, whether the step called HTTP or the service."""
+    """The ballot payload, whether the step called HTTP or the service.
+
+    Dispatches on `status_code` rather than on `json`, because a Pydantic model
+    still carries a (deprecated) `json` attribute and would be mistaken for an
+    HTTP response.
+    """
     response = context.response
-    if hasattr(response, "json"):
-        assert response.status_code == 200, response.text
-        return response.json()
-    return response.model_dump(mode="json")
+    if isinstance(response, BallotResponse):
+        return response.model_dump(mode="json")
+    assert response.status_code == 200, response.text
+    return response.json()
 
 
 @then("the ballot response names the voter's House district")
