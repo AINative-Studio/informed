@@ -189,6 +189,14 @@ def schema_version_queryable(client: ZeroDBClient, result: dict[str, Any]) -> No
     assert version == result["report"].schema_version
 
 
+# --- reference data (story 2.1) --------------------------------------------
+
+
+@then(parsers.parse("the bootstrap report says {count:d} reference rows were seeded"))
+def reference_rows_seeded(result: dict[str, Any], count: int) -> None:
+    assert result["report"].seed.row_count == count
+
+
 @then("the schema version is unchanged from what was noted")
 def schema_version_unchanged(client: ZeroDBClient, result: dict[str, Any]) -> None:
     assert get_schema_version(client) == result["noted_version"]
