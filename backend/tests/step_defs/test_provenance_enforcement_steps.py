@@ -137,9 +137,7 @@ def write_unsourced_row(zerodb: ZeroDBClient) -> None:
     "I try to write a roll_calls row with a source_url "
     "through a repository with no provenance context"
 )
-def try_write_without_provenance(
-    zerodb: ZeroDBClient, result: dict[str, Any]
-) -> None:
+def try_write_without_provenance(zerodb: ZeroDBClient, result: dict[str, Any]) -> None:
     repo: Repository[RollCall] = Repository(client=zerodb, model=RollCall)
     try:
         repo.upsert(_roll_call_row())
@@ -187,9 +185,7 @@ def person_stored(zerodb: ZeroDBClient, row_id: str) -> None:
 
 
 @then(parsers.parse('a provenance_log entry exists for roll_calls "{entity_id}"'))
-def provenance_exists(
-    fake: FakeZeroDBTransport, entity_id: str, result: dict[str, Any]
-) -> None:
+def provenance_exists(fake: FakeZeroDBTransport, entity_id: str, result: dict[str, Any]) -> None:
     rows = _provenance_rows(fake, entity_id)
     assert rows, f"no provenance_log entry for roll_calls {entity_id!r}"
     result["provenance_row"] = rows[0]
@@ -272,7 +268,9 @@ def check_covers_table(result: dict[str, Any], table: str) -> None:
     assert table in tables, f"{table!r} not among the discovered sourced tables {sorted(tables)}"
 
 
-@given("an ingest module that writes a source_url row through a repository with no provenance context")
+@given(
+    "an ingest module that writes a source_url row through a repository with no provenance context"
+)
 def broken_ingest_module(result: dict[str, Any]) -> None:
     """A deliberately-broken module kept as a fixture, not generated: the
     negative control has to be a real file the real check parses, or it proves

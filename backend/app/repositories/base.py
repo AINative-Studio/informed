@@ -82,10 +82,16 @@ from pydantic import ValidationError
 
 from app.repositories.errors import (
     AppendOnlyViolationError,
+    MissingProvenanceError,
     MissingReferenceError,
     RowValidationError,
 )
 from app.repositories.models import RowModel
+from app.repositories.provenance import (
+    ProvenanceContext,
+    requires_provenance,
+    write_provenance_for_row,
+)
 from app.zerodb.client import ZeroDBClient
 from app.zerodb.models import Row
 
@@ -120,9 +126,31 @@ class Repository[ModelT: RowModel]:
     that has since been deleted.
     """
 
-    def __init__(self, *, client: ZeroDBClient, model: type[ModelT]) -> None:
+    def __init__(
+        self,
+        *,
+        client: ZeroDBClient,
+        model: type[ModelT],
+        provenance: ProvenanceContext | None = None,
+    ) -> None:
+        """Build the repository for one table.
+
+        `provenance` is required exactly for the models datamodel.md's
+        integrity rule covers — those declaring a `source_url` — and refused
+        for every other model. See `provenance.py` for why the repository
+        refuses rather than defaulting, and `_provenance_for` for when the
+        requirement actually bites.
+        """
+        if provenance is not None and not requires_provenance(model):
+            raise MissingProvenanceError(
+                f"{model.table_name} rows carry no source_url, so a ProvenanceContext "
+                "has nothing to record. Passing one is a sign the model or the table "
+                "is not the one intended.",
+                table=model.table_name,
+            )
         self._client = client
         self._model = model
+        self._provenance = provenance
 
     @property
     def table_name(self) -> str:
@@ -187,10 +215,13 @@ class Repository[ModelT: RowModel]:
         self._refuse_if_append_only("upsert")
         instance = self._validated(row)
         assert instance.id is not None  # noqa: S101 - _validated guarantees it
+        self._refuse_if_untraceable(instance)
         if check_references:
             self._check_references(instance, cache={})
         stored = self._client.upsert_row(self.table_name, instance.id, instance.row_data())
-        return self._parse_row(stored)
+        written = self._parse_row(stored)
+        self._record_provenance(written)
+        return written
 
     def upsert_many(
         self, rows: Iterable[dict[str, Any]], *, check_references: bool = True
@@ -216,10 +247,13 @@ class Repository[ModelT: RowModel]:
         for row in rows:
             instance = self._validated(row)
             assert instance.id is not None  # noqa: S101 - _validated guarantees it
+            self._refuse_if_untraceable(instance)
             if check_references:
                 self._check_references(instance, cache=cache)
             written = self._client.upsert_row(self.table_name, instance.id, instance.row_data())
-            stored.append(self._parse_row(written))
+            parsed = self._parse_row(written)
+            self._record_provenance(parsed)
+            stored.append(parsed)
         return stored
 
     def append_version(self, row: dict[str, Any], *, check_references: bool = True) -> ModelT:
@@ -292,6 +326,11 @@ class Repository[ModelT: RowModel]:
         row_id = f"{prefix}:v{next_version}"
         payload = {**draft.row_data(), "id": row_id, "is_current": True}
         instance = self._validated(payload, versioned=True)
+        # The same rule as `upsert`, checked once the id exists: no append-only
+        # table carries a `source_url` today, but the rule is about rows, not
+        # about which write verb reaches them, and a sourced append-only table
+        # arriving later must not be a hole in it.
+        self._refuse_if_untraceable(instance)
         written = self._client.insert_row(self.table_name, instance.row_data())
 
         # Clear EVERY previously-current row, not just the newest. Starting
@@ -309,7 +348,9 @@ class Repository[ModelT: RowModel]:
             # the superseded row survives the flag flip.
             self._client.update_row(self.table_name, str(stale_id), {"is_current": False})
 
-        return self._parse_row(written)
+        appended = self._parse_row(written)
+        self._record_provenance(appended)
+        return appended
 
     def delete(self, row_id: str) -> None:
         """Delete one row by its natural-key id.
@@ -487,6 +528,54 @@ class Repository[ModelT: RowModel]:
                     referenced_table=referenced_table,
                     referenced_id=referenced_id,
                 )
+
+    def _refuse_if_untraceable(self, instance: ModelT) -> None:
+        """Refuse a row citing a source this repository cannot record (16.3).
+
+        datamodel.md's integrity check — "every NoSQL row with a `source_url`
+        has a matching `provenance_log` entry" — made structural: the write is
+        refused BEFORE it happens rather than succeeding into a row no audit
+        can trace. See `provenance.py`'s module docstring for why a refusal and
+        not a default.
+
+        Scoped to the rule exactly: only when the model declares a `source_url`
+        AND this row actually carries one. A `roll_calls` row with no source
+        cites nothing, so there is nothing to log and nothing to refuse.
+        """
+        if self._provenance is not None or not requires_provenance(self._model):
+            return
+        if not getattr(instance, "source_url", None):
+            return
+        raise MissingProvenanceError(
+            f"{self.table_name} row {instance.id!r} carries a source_url, so "
+            "datamodel.md requires a matching provenance_log entry — and this "
+            "repository was built without a ProvenanceContext, so it has no "
+            "adapter_version or fetch time to record. Build it with "
+            "provenance=ProvenanceContext(adapter_version=...) rather than "
+            "writing evidence nothing can trace.",
+            table=self.table_name,
+        )
+
+    def _record_provenance(self, instance: ModelT) -> None:
+        """Write the just-written row's `provenance_log` entry, if it needs one.
+
+        Entity row first, provenance second, non-atomically — see
+        `provenance.py` for why that order and why the nightly audit, not this
+        method, is the backstop for a crash between them.
+
+        A no-op when the model has no `source_url`, when the row's is null, or
+        when the content-addressed entry already exists (an unchanged
+        re-ingest). The provenance id is content-addressed, so that last case
+        needs no bookkeeping here.
+        """
+        if self._provenance is None:
+            return
+        write_provenance_for_row(
+            self._client,
+            model=self._model,
+            row_data=instance.row_data(),
+            context=self._provenance,
+        )
 
     def _refuse_if_append_only(self, operation: str) -> None:
         if self.is_append_only:

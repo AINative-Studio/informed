@@ -92,8 +92,40 @@ class AppendOnlyViolationError(RepositoryError):
         self.table = table
 
 
+class MissingProvenanceError(RepositoryError):
+    """A row citing a source would have been written with nothing to trace it to.
+
+    datamodel.md's integrity check: "Every NoSQL row with a `source_url` has a
+    matching `provenance_log` entry, so no evidence goes untraced." Story 16.3
+    makes the repository write that entry itself — but it can only do so when it
+    was told WHO fetched the record (`adapter_version`) and WHEN
+    (`ProvenanceContext`'s clock). Neither is a property of the row, and both
+    are the audit trail's entire content.
+
+    So a repository asked to write a sourced row with no `ProvenanceContext`
+    raises this instead, before anything reaches ZeroDB. The alternative —
+    writing a provenance entry with a placeholder adapter_version — would
+    satisfy the letter of the integrity check while leaving a journalist who
+    follows the citation at "unknown adapter, time of write". prd.md's
+    "evidence over opinion" treats a broken citation as worse than no claim,
+    and an unattributed provenance entry is a broken citation that looks
+    satisfied.
+
+    Also raised, in the other direction, for a `ProvenanceContext` handed to a
+    model that has no `source_url` at all: that is a sign the caller has the
+    wrong model or the wrong table, and ignoring it quietly would hide the
+    mistake.
+    """
+
+    def __init__(self, message: str, *, table: str) -> None:
+        super().__init__(message)
+        self.message = message
+        self.table = table
+
+
 __all__ = [
     "AppendOnlyViolationError",
+    "MissingProvenanceError",
     "MissingReferenceError",
     "RepositoryError",
     "RowValidationError",

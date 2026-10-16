@@ -19,6 +19,7 @@ from pytest_bdd import given, parsers, scenarios, then, when
 from app.repositories import (
     AppendOnlyViolationError,
     MissingReferenceError,
+    ProvenanceContext,
     Repository,
     RowValidationError,
 )
@@ -30,6 +31,7 @@ from app.repositories.models import (
     RollCall,
     Verdict,
 )
+from app.repositories.provenance import requires_provenance
 from app.zerodb import ZeroDBClient
 from app.zerodb.testing import FakeZeroDBTransport
 
@@ -49,6 +51,9 @@ TABLES = (
     "member_votes",
     "verdicts",
     "promises",
+    # Story 16.3: a `roll_calls` write now also writes its provenance entry,
+    # so the table it lands in has to exist here too.
+    "provenance_log",
 )
 
 
@@ -98,8 +103,20 @@ def bootstrapped_fake(repo_context: RepoContext) -> None:
 
 @given("a repository for each of people, districts, roll_calls, member_votes and verdicts")
 def repositories_for_each_table(repo_context: RepoContext) -> None:
+    """One repository per table these scenarios touch.
+
+    A model whose rows carry a `source_url` (`roll_calls`) is given a
+    `ProvenanceContext`, because story 16.3 makes such a write refuse without
+    one — datamodel.md's integrity rule. `provenance_log` is in `TABLES` so
+    that the entry the repository now writes has somewhere to land.
+    """
     for model in (Person, Jurisdiction, District, RollCall, MemberVote, Verdict):
-        repo = Repository(client=repo_context.client, model=model)
+        provenance = (
+            ProvenanceContext(adapter_version="repository_feature/v1")
+            if requires_provenance(model)
+            else None
+        )
+        repo = Repository(client=repo_context.client, model=model, provenance=provenance)
         repo_context.repos[repo.table_name] = repo
 
 

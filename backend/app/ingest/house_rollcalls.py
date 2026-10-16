@@ -154,8 +154,8 @@ motion at all, so no House roll call's `voteQuestion` will ever say
 left as a silent gap so a reviewer does not read the missing case as an
 oversight.
 
-Idempotency and provenance -- the design this story had to choose
-=====================================================================
+Idempotency and provenance
+===========================
 
 `roll_calls` is an ordinary (non-append-only) table: `RollCall.load` writes
 it with `Repository.upsert`, exactly like `legislators.py` writes `people` --
@@ -166,34 +166,23 @@ duplicating it (datamodel.md rule 1/2).
 place") AND, per this story's acceptance criterion, must gain "a provenance
 entry" for every roll call ingested -- including a RE-ingested one, but
 WITHOUT spamming a duplicate entry for data that did not actually change.
-Two designs were available:
+This story chose content-addressed idempotency (`prov:{sha256}` of the
+fetched record, check-then-insert) over sequential versioning, and **story
+16.3 promoted that choice into the repository layer**: see
+`app.repositories.provenance`, which now holds the full reasoning and the
+code, and `app.repositories.base.Repository._record_provenance`, which writes
+the entry as part of the `roll_calls` write rather than as a second step this
+loader has to remember.
 
-  * Treat it like `Verdict`/`CandidatePosition` and run every write through
-    `Repository.append_version`, numbering `prov:{roll_call_id}:v{n}`. Rejected:
-    datamodel.md's documented id for this table is `prov:{sha256}`, not
-    `prov:{entity_id}:v{n}` -- forcing the sequential-version shape onto a
-    table documented with a content-addressed one would store an id nothing
-    else in this codebase expects, and `append_version`'s "exactly one
-    `is_current` row" bookkeeping has no meaning here (the write that reads
-    "every stored version" to number the next one is solving a problem this
-    table's id scheme does not have).
-  * **Chosen: content-addressed idempotency.** The provenance row's id is
-    `prov:{content_hash}`, where `content_hash` is the sha256 of the exact
-    fetched record (the same hash stored on the `roll_calls` row). Writing it
-    is `write_provenance`, below: read by that id first; insert ONLY if
-    absent. A byte-identical re-fetch produces the same hash, so it lands on
-    the row that already exists and nothing new is written -- "append-only"
-    here means "once this exact fetch is recorded, it is never recorded a
-    second time or edited", which is a stronger, simpler reading of
-    datamodel.md's rule than sequential versioning would give, and it is
-    also why `ProvenanceLog` (`app.repositories.models`) carries no
-    `version_key`: there is no "current version" to track, only "has this
-    exact content been logged yet". A genuinely CHANGED roll call (a
-    correction to its result, say) hashes differently and therefore writes a
-    SECOND, distinct provenance row -- which is correct: the record now has
-    two fetches on file, at two different times, and datamodel.md's
-    reproducibility goal ("what did Informed see, and when") is served by
-    keeping both, never by overwriting the first.
+What changed for this module, concretely: `HouseRollCallLoader` builds its
+repository with a `ProvenanceContext(adapter_version=ADAPTER_VERSION)` and
+calls `upsert` once. The row and its provenance entry are one call; the
+behaviour (a byte-identical re-fetch records nothing, a corrected roll call
+records a second entry) is unchanged and still asserted by
+`tests/features/house_rollcalls.feature`. `content_hash_for` and
+`write_provenance` are re-exported from here so this module's documented
+surface is stable, but both now live in the repository layer where every
+future source reaches them.
 
 Fetching
 ========
@@ -212,18 +201,16 @@ yet, for lack of a key.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 
-from app.repositories import Repository
-from app.repositories.models import ProvenanceLog, RollCall, Tally
+from app.repositories import ProvenanceContext, Repository
+from app.repositories.models import RollCall, Tally
+from app.repositories.provenance import content_hash_for, write_provenance
 from app.zerodb.client import ZeroDBClient
 
 logger = logging.getLogger(__name__)
@@ -392,22 +379,6 @@ def fetch_roll_call_item(
     return body
 
 
-def content_hash_for(record: dict[str, Any]) -> str:
-    """The sha256 hex digest of one fetched record, for `content_hash` and
-    the provenance row's content-addressed id.
-
-    Hashed via `json.dumps(..., sort_keys=True)` rather than the raw response
-    bytes: key order in a JSON object carries no meaning, and hashing the
-    raw bytes would make two byte-for-byte-different-but-semantically-equal
-    responses (a reordered object, different whitespace) hash differently --
-    exactly the spurious "content changed" this story's idempotency design
-    depends on NOT happening. `sort_keys=True` makes the hash a function of
-    the data, not of the source's serialization choices.
-    """
-    canonical = json.dumps(record, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
 def roll_call_id(*, congress: int, session: int, roll_call_number: int) -> str:
     """datamodel.md's documented id: `us-house:{congress}-{session}:{roll}`."""
     return f"{HOUSE_BODY}:{congress}-{session}:{roll_call_number}"
@@ -550,49 +521,6 @@ def _classify_vote_type(vote: dict[str, Any]) -> str:
     return "other"
 
 
-def write_provenance(
-    client: ZeroDBClient,
-    *,
-    entity_table: str,
-    entity_id: str,
-    source_url: str,
-    fetched_at: str,
-    content_hash: str,
-    adapter_version: str = ADAPTER_VERSION,
-) -> ProvenanceLog | None:
-    """Insert one provenance_log row if, and only if, it is not already there.
-
-    See the module docstring's "Idempotency and provenance" section for why
-    this is a plain check-then-insert through `ZeroDBClient` rather than
-    `Repository.append_version`: `provenance_log`'s id is content-addressed
-    (`prov:{content_hash}`), not sequentially versioned, so there is no
-    version number to compute here. `Repository.upsert` is equally wrong --
-    it would make this table non-append-only in spirit even though it could
-    never actually overwrite a differently-hashed row under the same id
-    (the ids would simply never collide for different content).
-
-    Returns the written row, or None when a row with this exact content hash
-    already existed (nothing was written) -- the caller uses this to decide
-    whether to count it in `LoadReport.provenance_written`.
-    """
-    row_id = f"prov:{content_hash}"
-    existing = client.get_row("provenance_log", row_id)
-    if existing is not None:
-        return None
-    row = ProvenanceLog.model_validate(
-        {
-            "id": row_id,
-            "entity_table": entity_table,
-            "entity_id": entity_id,
-            "source_url": source_url,
-            "fetched_at": fetched_at,
-            "adapter_version": adapter_version,
-        }
-    )
-    client.insert_row("provenance_log", row.row_data())
-    return row
-
-
 class HouseRollCallLoader:
     """Writes transformed roll-call rows and their provenance, paced.
 
@@ -606,47 +534,51 @@ class HouseRollCallLoader:
 
     def __init__(self, client: ZeroDBClient, *, pace: Callable[[], None] | None = None) -> None:
         self._client = client
-        self._roll_calls: Repository[RollCall] = Repository(client=client, model=RollCall)
         self._pace = pace if pace is not None else (lambda: None)
+        # Provenance is no longer this loader's second step -- story 16.3
+        # promoted the pattern into the repository layer, so the `roll_calls`
+        # write and its `provenance_log` entry are one call that cannot be
+        # half-done by forgetting. `_newly_recorded` is where the context's
+        # `on_write` callback deposits the entries this run actually inserted,
+        # which is what `LoadReport.provenance_written` reports.
+        self._newly_recorded: list[str] = []
+        self._roll_calls: Repository[RollCall] = Repository(
+            client=client,
+            model=RollCall,
+            provenance=ProvenanceContext(
+                adapter_version=ADAPTER_VERSION,
+                on_write=lambda entry: self._newly_recorded.append(str(entry.id)),
+            ),
+        )
 
     def load(self, rows: Sequence[dict[str, Any]]) -> LoadReport:
-        """Upsert every roll call, writing its provenance entry alongside it.
+        """Upsert every roll call; the repository records its provenance.
 
         For each row:
           1. pace;
-          2. `Repository.upsert` the `roll_calls` row (idempotent by id);
-          3. `write_provenance` for it, keyed off the row's own
-             `content_hash` -- so a row whose content has not changed since
-             the last run writes NO new provenance entry, and a row whose
-             content HAS changed writes a second, distinct one. See the
-             module docstring.
+          2. `Repository.upsert` the `roll_calls` row (idempotent by id),
+             which -- because `RollCall` carries a `source_url` and this
+             repository was built with a `ProvenanceContext` -- also writes
+             the matching `provenance_log` entry, keyed off the row's own
+             `content_hash`. A row whose content has not changed since the
+             last run writes NO new provenance entry; a row whose content HAS
+             changed writes a second, distinct one. Same behaviour story 5.1
+             implemented by hand, now a property of the write rather than a
+             step this loader has to remember.
 
-        `fetched_at` is stamped as "now" at call time, once per row -- it
-        records when THIS loader fetched the data, which is distinct from
+        `fetched_at` is stamped by the `ProvenanceContext`'s clock at write
+        time -- when THIS loader fetched the data, which is distinct from
         `voted_at` (when the House voted) and cannot be derived from the
         row's own fields.
         """
         report = LoadReport()
         for row in rows:
             self._pace()
+            self._newly_recorded.clear()
             stored = self._roll_calls.upsert(row)
             assert stored.id is not None  # noqa: S101 - upsert guarantees it
             report.roll_calls_written.append(stored.id)
-
-            content_hash = row.get("content_hash")
-            source_url = row.get("source_url")
-            if content_hash and source_url:
-                written = write_provenance(
-                    self._client,
-                    entity_table="roll_calls",
-                    entity_id=stored.id,
-                    source_url=str(source_url),
-                    fetched_at=datetime.now(UTC).isoformat(),
-                    content_hash=str(content_hash),
-                )
-                if written is not None:
-                    report.provenance_written.append(written.id)  # type: ignore[arg-type]
-
+            report.provenance_written.extend(self._newly_recorded)
             logger.info("house_rollcalls: wrote %s", stored.id)
         return report
 
