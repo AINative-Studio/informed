@@ -111,16 +111,50 @@ class SearchResults(_ZeroDBModel):
 class VectorIndex(_ZeroDBModel):
     """A search index created over one vector namespace.
 
-    Story 1.3's bootstrap creates one of these per namespace in datamodel.md,
-    at the live `bge-m3` model's 1024 dimensions, and checks `list_vector_indexes`
-    before creating one again so a second bootstrap run is a no-op.
+    Field names and shape are exactly what the live API returns (confirmed
+    against the real "informed" project during story 1.3, not inferred from
+    the OpenAPI summary): `{index_name, index_type, namespace, created_at,
+    status}`. There is no `dimensions` or `distance_metric` in the response —
+    the live endpoint does not echo either back, unlike `EmbedResult`, which
+    does report dimensions.
+
+    IMPORTANT, confirmed live: calling `create_vector_index` twice for the
+    same namespace does NOT error and does NOT return the existing index —
+    it silently creates a second, differently-named index
+    (`idx_{namespace}_{index_type}_{timestamp}`). This endpoint is NOT
+    idempotent on ZeroDB's side, and — unlike tables — there is no
+    "list existing indexes" endpoint to check against before creating one:
+    the only such endpoint (`/public/zerodb/vectors/indexes`) is marked
+    deprecated/removed (410) in the live OpenAPI schema, pointing instead at
+    `/database/vectors/stats`, which reports per-namespace vector *counts*,
+    not configured indexes. Story 1.3's bootstrap therefore tracks which
+    namespaces it has already indexed in its own `schema_versions` row rather
+    than asking ZeroDB, which is the only idempotency mechanism available
+    given this gap.
     """
 
     namespace: str
+    index_name: str | None = None
     index_type: str | None = None
-    distance_metric: str | None = None
-    dimensions: int | None = None
     status: str | None = None
+    created_at: str | None = None
+
+
+class VectorStats(_ZeroDBModel):
+    """Vector counts per namespace for one project.
+
+    Wraps the live, non-deprecated `/projects/{project_id}/database/vectors/
+    stats` endpoint. `namespaces` maps namespace name to its vector count;
+    the create-index endpoint requires at least one vector to already exist
+    in a namespace before an index can be created over it, so this is also
+    how a caller checks that precondition before calling
+    `ZeroDBClient.create_vector_index`.
+    """
+
+    total_count: int = 0
+    namespaces: dict[str, int] = Field(default_factory=dict)
+    avg_dimensions: float | None = None
+    total_storage_bytes: int | None = None
 
 
 # --- knowledge graph ------------------------------------------------------
@@ -296,4 +330,5 @@ __all__ = [
     "Traversal",
     "TraversalNode",
     "VectorIndex",
+    "VectorStats",
 ]

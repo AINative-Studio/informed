@@ -13,23 +13,35 @@ What "idempotent" means for each primitive here:
     present is skipped. `create_table` itself is not idempotent on the live
     API (calling it twice is not documented as a safe no-op), so the
     check-before-create is this module's responsibility, not the client's.
-  * Vector namespaces/indexes — `ZeroDBClient.list_vector_indexes()` is
-    checked first, same reasoning.
+  * Vector namespaces/indexes — **confirmed live during this story**:
+    `create_vector_index` is NOT idempotent (a second call for an
+    already-indexed namespace silently creates a second, independent index
+    rather than erroring or no-op'ing), and there is no live "list existing
+    indexes" endpoint to check against first (the one that once existed is
+    deprecated/410; see `ZeroDBClient.create_vector_index`'s docstring).
+    So this module tracks which namespaces it has indexed in the
+    `schema_versions` row itself — the only idempotency guard available —
+    and reads that row FIRST, before writing anything, so it knows what to
+    skip. It is also confirmed live that a namespace must already hold at
+    least one vector before it can be indexed, so each new namespace is
+    seeded with one small marker vector before its index is created.
   * The ontology — `graph_upsert_ontology` is a true upsert on ZeroDB's side
     (the name says so, and the fake transport models it that way), so it is
-    safe to call every run. It is still only called when missing or
-    different, so a bootstrap run against an already-current project makes
-    zero graph-ontology calls either.
+    safe to call every run; it never duplicates an edge type even though it
+    is always called (there is no cheap "already has this ontology" check
+    to skip it on).
   * The schema version — written with `ZeroDBClient.upsert_row`, which story
     1.2 already made idempotent (find-then-write by natural-key id).
 
 Rate limiting: the live "informed" project was observed to throttle at 60
-requests/minute (datamodel.md "Open questions"). Bootstrap makes roughly 27
-calls on a cold project (22 tables + 4 indexes + 1 ontology), close enough to
-that ceiling that this module paces every call through an injectable `pace`
-callback rather than relying on the client's retry-on-429 as the only
-defense. The default pacer sleeps `60 / max_calls_per_minute` seconds before
-each call; tests inject a no-op or a recording pacer instead of waiting.
+requests/minute (datamodel.md "Open questions"). A cold bootstrap makes
+roughly 31 calls (23 tables incl. `schema_versions` + 4 namespaces x 2 calls
+each [seed vector, then index] + 1 ontology + 1 schema-version write), close
+enough to that ceiling that this module paces every call through an
+injectable `pace` callback rather than relying on the client's retry-on-429
+as the only defense. The default pacer sleeps enough to keep calls at least
+`DEFAULT_MIN_INTERVAL_SECONDS` apart; tests inject a no-op or a recording
+pacer instead of waiting.
 """
 
 from __future__ import annotations
@@ -63,7 +75,11 @@ SCHEMA_VERSION_ROW_ID = "current"
 DEFAULT_MIN_INTERVAL_SECONDS = 1.1
 
 #: ZeroDB's live `bge-m3` model emits 1024-dimension vectors (datamodel.md,
-#: corrected from an earlier 768-dimension assumption during story 1.2).
+#: corrected from an earlier 768-dimension assumption during story 1.2;
+#: re-confirmed live during this story via `embed_and_store`'s own response).
+#: Documentation only: the live `create_vector_index` endpoint takes no
+#: dimension parameter at all — the dimension is a property of whatever
+#: embedding model wrote the namespace's vectors, not of the index.
 VECTOR_DIMENSIONS = 1024
 
 #: The four namespaces datamodel.md specifies, each indexed with HNSW.
@@ -425,13 +441,40 @@ class Bootstrapper:
         Idempotent: each step below checks before it writes, so calling this
         twice against the same project produces an unchanged second
         `BootstrapReport` (every list empty, `schema_version_changed = False`).
+
+        Tables use `list_tables` as their existence check, because that
+        primitive is real and current on the live API. Vector namespaces
+        cannot: there is no live "list existing indexes" endpoint any more
+        (confirmed during this story — see `create_vector_index`'s
+        docstring), so the *only* record of which namespaces this bootstrap
+        already indexed is the `indexed_namespaces` list this module itself
+        writes into the `schema_versions` row. That row is therefore read
+        FIRST, before any writing happens, so `_bootstrap_vector_namespaces`
+        has something to check against.
         """
         report = BootstrapReport()
+        previously_indexed = self._previously_indexed_namespaces()
         self._bootstrap_tables(report)
-        self._bootstrap_vector_namespaces(report)
+        self._bootstrap_vector_namespaces(report, previously_indexed)
         self._bootstrap_ontology(report)
-        self._record_schema_version(report)
+        self._record_schema_version(report, previously_indexed)
         return report
+
+    def _previously_indexed_namespaces(self) -> set[str]:
+        """Namespaces a prior run of this bootstrap already indexed.
+
+        Returns the empty set on a project's first-ever bootstrap (the
+        `schema_versions` table does not exist yet, so the lookup is wrapped
+        exactly like `get_schema_version`'s own tolerance of that).
+        """
+        try:
+            row = self._client.get_row("schema_versions", SCHEMA_VERSION_ROW_ID)
+        except ZeroDBNotFoundError:
+            return set()
+        if row is None:
+            return set()
+        indexed = row.row_data.get("indexed_namespaces") or []
+        return set(indexed)
 
     # --- tables ---------------------------------------------------------
 
@@ -467,20 +510,40 @@ class Bootstrapper:
 
     # --- vector namespaces + HNSW indexes --------------------------------
 
-    def _bootstrap_vector_namespaces(self, report: BootstrapReport) -> None:
-        existing = {index.namespace for index in self._client.list_vector_indexes()}
+    def _bootstrap_vector_namespaces(
+        self, report: BootstrapReport, previously_indexed: set[str]
+    ) -> None:
+        """Seed one marker vector per namespace, then index it.
+
+        Two live-confirmed facts drive this, both documented on
+        `ZeroDBClient.create_vector_index`:
+
+          1. `create_vector_index` 404s on a namespace with no vectors in it
+             yet, so a namespace must be seeded with at least one vector
+             before it can be indexed. The marker text embedded here is
+             schema bootstrap metadata, not voter or candidate data — it
+             never touches a table and carries no PII, so it is not subject
+             to the privacy rules in datamodel.md/prd.md.
+          2. `create_vector_index` is NOT idempotent — a second call for an
+             already-indexed namespace creates a second, independent index
+             rather than erroring or no-op'ing. So `previously_indexed`
+             (read from `schema_versions` before this method runs, per
+             `run()`'s docstring) is checked first and is the only guard
+             against ever calling this twice for the same namespace.
+        """
         for namespace in VECTOR_NAMESPACES:
-            if namespace in existing:
+            if namespace in previously_indexed:
                 report.namespaces_skipped.append(namespace)
                 logger.info("bootstrap: namespace %r already indexed, skipping", namespace)
                 continue
             self._pace()
-            self._client.create_vector_index(
+            self._client.embed_and_store(
+                texts=[f"informed schema bootstrap marker for namespace {namespace}"],
                 namespace=namespace,
-                index_type="hnsw",
-                distance_metric="cosine",
-                index_params={"dimensions": VECTOR_DIMENSIONS},
+                metadata_list=[{"bootstrap_marker": True, "schema_version": SCHEMA_VERSION}],
             )
+            self._pace()
+            self._client.create_vector_index(namespace=namespace, index_type="hnsw")
             report.namespaces_indexed.append(namespace)
             logger.info("bootstrap: created HNSW index for namespace %r", namespace)
 
@@ -514,17 +577,35 @@ class Bootstrapper:
 
     # --- schema version -----------------------------------------------------
 
-    def _record_schema_version(self, report: BootstrapReport) -> None:
+    def _record_schema_version(self, report: BootstrapReport, previously_indexed: set[str]) -> None:
+        """Write (or leave alone) the one `schema_versions` row.
+
+        `indexed_namespaces` is this row's record of which vector namespaces
+        have been indexed across every run, because there is nowhere else to
+        ask (see `_bootstrap_vector_namespaces`). That makes this write
+        necessary not just when the version string changes, but whenever
+        THIS run indexed a namespace that a prior run had not — otherwise
+        the next run would re-read an empty/stale list and try to index an
+        already-indexed namespace again, which is exactly the non-idempotent
+        call this module exists to prevent.
+        """
+        indexed_namespaces = sorted(previously_indexed | set(report.namespaces_indexed))
         existing = self._client.get_row("schema_versions", SCHEMA_VERSION_ROW_ID)
         payload = {
             "id": SCHEMA_VERSION_ROW_ID,
             "version": SCHEMA_VERSION,
             "tables": sorted(TABLE_SCHEMAS),
             "vector_namespaces": list(VECTOR_NAMESPACES),
+            "indexed_namespaces": indexed_namespaces,
             "ontology_registered": True,
             "bootstrapped_at": _now_iso(),
         }
-        if existing is not None and existing.row_data.get("version") == SCHEMA_VERSION:
+        unchanged = (
+            existing is not None
+            and existing.row_data.get("version") == SCHEMA_VERSION
+            and set(existing.row_data.get("indexed_namespaces") or []) == set(indexed_namespaces)
+        )
+        if unchanged:
             report.schema_version_changed = False
             logger.info(
                 "bootstrap: schema_versions already at %r, leaving it alone", SCHEMA_VERSION

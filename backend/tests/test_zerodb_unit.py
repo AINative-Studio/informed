@@ -261,25 +261,27 @@ def test_semantic_search_passes_threshold_and_metadata_filter(
     assert call.json["filter_metadata"] == {"body_id": "us-house"}
 
 
-def test_create_vector_index_posts_namespace_and_index_params(
+def test_create_vector_index_posts_namespace_and_index_type_to_the_real_live_path(
     client: ZeroDBClient, fake: FakeZeroDBTransport
 ) -> None:
     """Story 1.3 calls this once per namespace at the live bge-m3 model's
-    1024 dimensions, with an HNSW index (datamodel.md)."""
-    index = client.create_vector_index(
-        namespace="promises",
-        index_type="hnsw",
-        distance_metric="cosine",
-        index_params={"dimensions": 1024},
-    )
+    1024 dimensions, with an HNSW index (datamodel.md).
+
+    The path and the project-as-query-param shape are confirmed against the
+    live OpenAPI schema during story 1.3: unlike every other call in this
+    client, the vector-index endpoint is NOT under `/projects/{project_id}/
+    ...` — `project_id` travels as a query parameter instead.
+    """
+    client.embed_and_store(texts=["lower drug prices"], namespace="promises")
+    index = client.create_vector_index(namespace="promises", index_type="hnsw")
 
     call = fake.calls[-1]
-    assert call.path == "/projects/proj-test/embeddings/index"
+    assert call.path == "/public/v1/vectors/index"
+    assert call.params == {"project_id": "proj-test"}
     assert call.json["namespace"] == "promises"
     assert call.json["index_type"] == "hnsw"
-    assert call.json["index_params"] == {"dimensions": 1024}
     assert index.namespace == "promises"
-    assert index.dimensions == 1024
+    assert index.status == "created"
 
 
 def test_create_vector_index_rejects_an_empty_namespace(client: ZeroDBClient) -> None:
@@ -287,23 +289,54 @@ def test_create_vector_index_rejects_an_empty_namespace(client: ZeroDBClient) ->
         client.create_vector_index(namespace="")
 
 
-def test_list_vector_indexes_returns_every_created_index(client: ZeroDBClient) -> None:
-    client.create_vector_index(namespace="promises")
-    client.create_vector_index(namespace="topics")
+def test_create_vector_index_fails_on_a_namespace_with_no_vectors(
+    client: ZeroDBClient,
+) -> None:
+    """Confirmed live: the endpoint 404s on an empty namespace rather than
+    creating an index with nothing to index."""
+    with pytest.raises(ZeroDBNotFoundError):
+        client.create_vector_index(namespace="never-embedded-anything")
 
-    indexes = {index.namespace for index in client.list_vector_indexes()}
-    assert indexes == {"promises", "topics"}
+
+def test_create_vector_index_is_not_idempotent(
+    client: ZeroDBClient, fake: FakeZeroDBTransport
+) -> None:
+    """Confirmed live: calling this twice for the same namespace does not
+    error and does not return the existing index — it silently creates a
+    second, independently-named index. Callers that must not double-index
+    (story 1.3's bootstrap) have to track what they already created
+    themselves; this client does not paper over the gap."""
+    client.embed_and_store(texts=["lower drug prices"], namespace="promises")
+    first = client.create_vector_index(namespace="promises")
+    second = client.create_vector_index(namespace="promises")
+
+    assert first.index_name != second.index_name
+    assert len(fake.vector_indexes["promises"]) == 2
 
 
-def test_create_vector_index_is_safe_to_call_twice(client: ZeroDBClient) -> None:
-    """Bootstrap's own idempotency comes from checking `list_vector_indexes`
-    first, but calling this twice on the same namespace must still settle
-    into one index, not two, matching the live API's upsert-by-namespace
-    behaviour the fake models here."""
-    client.create_vector_index(namespace="promises")
-    client.create_vector_index(namespace="promises")
+def test_get_vector_stats_reports_counts_per_namespace(client: ZeroDBClient) -> None:
+    client.embed_and_store(texts=["a", "b"], namespace="promises")
+    client.embed_and_store(texts=["c"], namespace="topics")
 
-    assert len(client.list_vector_indexes()) == 1
+    stats = client.get_vector_stats()
+    assert stats.namespaces == {"promises": 2, "topics": 1}
+    assert stats.total_count == 3
+
+
+def test_get_vector_stats_filters_by_namespace(client: ZeroDBClient) -> None:
+    client.embed_and_store(texts=["a"], namespace="promises")
+    client.embed_and_store(texts=["b"], namespace="topics")
+
+    stats = client.get_vector_stats(namespace="promises")
+    assert stats.namespaces == {"promises": 1}
+
+
+def test_get_vector_stats_reports_no_vectors_for_an_empty_namespace(
+    client: ZeroDBClient,
+) -> None:
+    stats = client.get_vector_stats(namespace="nothing-here")
+    assert stats.namespaces == {}
+    assert stats.total_count == 0
 
 
 # --- graph ----------------------------------------------------------------

@@ -114,20 +114,39 @@ def no_table_creation_calls(fake: FakeZeroDBTransport, method: str) -> None:
 
 
 # --- vector namespaces ---------------------------------------------------
+#
+# There is no live "list configured indexes" endpoint (confirmed during this
+# story: the one that once existed is deprecated/410, and vector stats report
+# vector counts, not indexes — see ZeroDBClient.create_vector_index's
+# docstring), so these steps read the fake transport's own `vector_indexes`
+# state directly, the same way other scenarios in this suite read
+# `fake.ontology` or `fake.graph_entities` when there is no client-level read
+# for what they need to assert on.
 
 
 @then(parsers.parse("exactly {count:d} vector namespaces have an index"))
-def exactly_n_namespaces_indexed(client: ZeroDBClient, count: int) -> None:
-    assert len(client.list_vector_indexes()) == count
+def exactly_n_namespaces_indexed(fake: FakeZeroDBTransport, count: int) -> None:
+    assert len(fake.vector_indexes) == count
 
 
 @then(parsers.parse('the namespace "{namespace}" has an HNSW index at {dims:d} dimensions'))
-def namespace_has_hnsw_index(client: ZeroDBClient, namespace: str, dims: int) -> None:
-    indexes = {index.namespace: index for index in client.list_vector_indexes()}
-    assert namespace in indexes
-    index = indexes[namespace]
-    assert index.index_type == "hnsw"
-    assert index.dimensions == dims
+def namespace_has_hnsw_index(
+    client: ZeroDBClient, fake: FakeZeroDBTransport, namespace: str, dims: int
+) -> None:
+    assert namespace in fake.vector_indexes
+    # Exactly one index per namespace: create_vector_index is confirmed NOT
+    # idempotent on the live API, so a second call would show up here as a
+    # second entry, which is exactly what "no duplicate vector namespaces"
+    # needs to be able to catch.
+    assert len(fake.vector_indexes[namespace]) == 1
+    index = fake.vector_indexes[namespace][0]
+    assert index["index_type"] == "hnsw"
+    # The live create-index endpoint reports no dimension field at all (see
+    # ZeroDBClient.create_vector_index's docstring) — dimension is a property
+    # of the embedding model that wrote the namespace's vectors, not of the
+    # index, so it is asserted via vector stats instead.
+    stats = client.get_vector_stats(namespace=namespace)
+    assert stats.avg_dimensions == dims
 
 
 # --- ontology -------------------------------------------------------------
@@ -182,9 +201,11 @@ def schema_version_unchanged(client: ZeroDBClient, result: dict[str, Any]) -> No
 @then("the pacer was invoked before every ZeroDB write call")
 def pacer_invoked(pacer_calls: list[None], result: dict[str, Any]) -> None:
     report = result["report"]
-    expected_min_calls = len(report.tables_created) + len(report.namespaces_indexed) + 1
-    # +1 for the ontology upsert, which always calls through. The schema
-    # version write adds one more when it actually writes.
+    # Each newly indexed namespace paces twice (embed the marker vector, then
+    # create the index — see Bootstrapper._bootstrap_vector_namespaces), plus
+    # one table-create call per new table, one ontology upsert (always
+    # called), and one schema_versions write when it actually writes.
+    expected_min_calls = len(report.tables_created) + 2 * len(report.namespaces_indexed) + 1
     if report.schema_version_changed:
         expected_min_calls += 1
     assert len(pacer_calls) >= expected_min_calls

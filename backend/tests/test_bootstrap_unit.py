@@ -194,6 +194,29 @@ def test_second_run_report_is_a_noop(client: ZeroDBClient) -> None:
     assert second.schema_version_changed is False
 
 
+def test_second_run_never_calls_create_vector_index_again(
+    client: ZeroDBClient, fake: FakeZeroDBTransport
+) -> None:
+    """The single most important idempotency property this module has to
+    uphold: `create_vector_index` is confirmed NOT idempotent on the live
+    API (a second call for the same namespace silently creates a second,
+    independent index — see ZeroDBClient.create_vector_index's docstring),
+    so a correct bootstrap must never call it twice for one namespace
+    across any number of runs. This asserts that directly against the
+    fake's own record of every index it was asked to create, rather than
+    only checking the higher-level report."""
+    bootstrapper = Bootstrapper(client, pace=lambda: None)
+    bootstrapper.run()
+    bootstrapper.run()
+    bootstrapper.run()
+
+    for namespace in VECTOR_NAMESPACES:
+        assert len(fake.vector_indexes.get(namespace, [])) == 1, (
+            f"namespace {namespace!r} was indexed "
+            f"{len(fake.vector_indexes.get(namespace, []))} times, expected exactly once"
+        )
+
+
 # --- schema version -----------------------------------------------------------
 
 

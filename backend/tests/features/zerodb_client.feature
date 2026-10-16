@@ -55,14 +55,15 @@ Feature: Typed ZeroDB client covers every primitive
     Then the search returns at least 1 hit
     And each hit carries the metadata it was stored with
 
-  Scenario: The client creates an HNSW index for a namespace
+  Scenario: The client creates an HNSW index for a namespace that already has a vector
+    Given the text "lower out-of-pocket drug costs" is stored in namespace "promises"
     When I create an HNSW index for namespace "promises"
     Then namespace "promises" has an index
 
-  Scenario: The client lists every namespace that has an index
-    Given an HNSW index exists for namespace "topics"
-    When I list vector indexes
-    Then the index list includes namespace "topics"
+  Scenario: The client reports vector stats per namespace
+    Given the text "lower out-of-pocket drug costs" is stored in namespace "promises"
+    When I read vector stats
+    Then the vector stats show 1 vector in namespace "promises"
 
   # --- Knowledge graph (datamodel.md: evidence graph) ---
 

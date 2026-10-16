@@ -71,7 +71,11 @@ class FakeZeroDBTransport:
     tables: dict[str, dict[str, Any]] = field(default_factory=dict)
     rows: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
     vectors: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
-    vector_indexes: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: namespace -> every index created for it, in creation order. A list
+    #: because the live API is not idempotent here: a second create call for
+    #: the same namespace appends a second, differently-named index rather
+    #: than updating or rejecting the first (see `_route_vector_index`).
+    vector_indexes: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     graph_entities: dict[str, dict[str, Any]] = field(default_factory=dict)
     graph_edges: set[tuple[str, str, str]] = field(default_factory=set)
     files: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -185,8 +189,10 @@ class FakeZeroDBTransport:
 
         if "graph" in segments:
             return self._route_graph(segments[-1], body)
-        if "embeddings" in segments and segments[-1] == "index":
-            return self._route_vector_index(method, body)
+        if segments[-2:] == ["vectors", "index"]:
+            return self._route_vector_index(body, params)
+        if segments[-2:] == ["vectors", "stats"]:
+            return self._route_vector_stats(params)
         if "embeddings" in segments:
             return self._route_embeddings(segments[-1], body)
         if "tables" in segments:
@@ -403,20 +409,57 @@ class FakeZeroDBTransport:
 
         return _ok({})
 
-    def _route_vector_index(self, method: str, body: dict[str, Any]) -> ZeroDBResponse:
-        if method == "POST":
-            namespace = body["namespace"]
-            index = {
-                "namespace": namespace,
-                "index_type": body.get("index_type", "hnsw"),
-                "distance_metric": body.get("distance_metric", "cosine"),
-                "dimensions": 1024,
-                "status": "created" if namespace not in self.vector_indexes else "updated",
-            }
-            self.vector_indexes[namespace] = index
-            return _ok(index)
+    def _route_vector_index(self, body: dict[str, Any], params: dict[str, Any]) -> ZeroDBResponse:
+        """POST /public/v1/vectors/index — confirmed live during story 1.3.
 
-        return _ok({"total": len(self.vector_indexes), "data": list(self.vector_indexes.values())})
+        Deliberately mirrors two real behaviours a naive fake would hide:
+          * 404 if the namespace has no vectors yet (the live endpoint
+            requires at least one vector to already be stored);
+          * NOT idempotent — calling this twice for the same namespace
+            creates two independently-named indexes, exactly as the live API
+            does. `vector_indexes` is therefore a list, not a dict keyed by
+            namespace, so a test can tell "created once" from "created
+            twice" apart, which is the whole point of pinning this behaviour
+            here rather than modelling a nicer API than the real one.
+        """
+        namespace = body["namespace"]
+        project_vectors = self.vectors.get(namespace, [])
+        if not project_vectors:
+            return _not_found(f"No vectors found in namespace '{namespace}'")
+
+        index_type = body.get("index_type", "hnsw")
+        index = {
+            "index_name": f"idx_{namespace}_{index_type}_{len(self.vector_indexes)}",
+            "index_type": index_type,
+            "namespace": namespace,
+            "created_at": "2026-10-15T00:00:00",
+            "status": "created",
+        }
+        self.vector_indexes.setdefault(namespace, []).append(index)
+        return ZeroDBResponse(status_code=201, json_body=index, text=json_module.dumps(index))
+
+    def _route_vector_stats(self, params: dict[str, Any]) -> ZeroDBResponse:
+        """GET /projects/{project_id}/database/vectors/stats — confirmed live.
+
+        Reports vector *counts* per namespace, not configured indexes: the
+        live API has no "list indexes" endpoint (the one that once existed,
+        `/public/zerodb/vectors/indexes`, answers 410 now), so this is the
+        closest thing to an existence check available, and it is what
+        `create_vector_index`'s "namespace must already have a vector"
+        precondition is checked against.
+        """
+        namespace_filter = params.get("namespace")
+        counts = {name: len(vectors) for name, vectors in self.vectors.items() if vectors}
+        if namespace_filter is not None:
+            counts = {k: v for k, v in counts.items() if k == namespace_filter}
+        return _ok(
+            {
+                "total_count": sum(counts.values()),
+                "namespaces": counts,
+                "avg_dimensions": 1024.0 if counts else None,
+                "total_storage_bytes": sum(counts.values()) * 8192 or None,
+            }
+        )
 
     # graph ----------------------------------------------------------------
 
