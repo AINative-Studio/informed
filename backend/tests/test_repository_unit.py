@@ -186,6 +186,139 @@ def test_a_verdict_id_numbers_versions_in_sequence(
     assert second.id == "prm:0001:v2"
 
 
+def test_version_numbering_survives_the_current_row_being_deleted(
+    client: ZeroDBClient,
+    fake: FakeZeroDBTransport,
+    people: Repository[Person],
+    verdicts: Repository[Verdict],
+) -> None:
+    """A deleted current row must not restart numbering onto a live id.
+
+    Numbering read only the `is_current` row, so with no row marked current it
+    restarted at v1 — while the real v1 was still stored. The result was two
+    rows carrying id `prm:0001:v1`, which breaks the single invariant this whole
+    layer exists to hold, and is invisible to `get_row` because that stops at
+    the first match.
+
+    Reachable without any crash: a correction that removes a bad verdict leaves
+    exactly this state.
+    """
+    people.upsert(person_row())
+    client.upsert_row("promises", "prm:0001", {"candidacy_id": "synthetic"})
+    verdicts.append_version(verdict_row(verdict="kept"))
+    verdicts.append_version(verdict_row(verdict="broken"))
+
+    current_internal = next(
+        internal
+        for internal, row in fake.rows["verdicts"].items()
+        if row["row_data"]["is_current"] is True
+    )
+    del fake.rows["verdicts"][current_internal]
+
+    third = verdicts.append_version(verdict_row(verdict="partial"))
+
+    ids = [row["row_data"]["id"] for row in fake.rows["verdicts"].values()]
+    assert third.id == "prm:0001:v3", f"numbering restarted: got {third.id}"
+    assert len(ids) == len(set(ids)), f"duplicate id minted: {sorted(ids)}"
+
+
+def test_version_numbering_survives_is_current_being_cleared_everywhere(
+    client: ZeroDBClient,
+    fake: FakeZeroDBTransport,
+    people: Repository[Person],
+    verdicts: Repository[Verdict],
+) -> None:
+    """The mirror image of a torn write: no row current, history intact."""
+    people.upsert(person_row())
+    client.upsert_row("promises", "prm:0001", {"candidacy_id": "synthetic"})
+    verdicts.append_version(verdict_row(verdict="kept"))
+    verdicts.append_version(verdict_row(verdict="broken"))
+    for row in fake.rows["verdicts"].values():
+        row["row_data"]["is_current"] = False
+
+    third = verdicts.append_version(verdict_row(verdict="partial"))
+
+    ids = [row["row_data"]["id"] for row in fake.rows["verdicts"].values()]
+    assert third.id == "prm:0001:v3"
+    assert len(ids) == len(set(ids)), f"duplicate id minted: {sorted(ids)}"
+
+
+def test_appending_repairs_a_table_that_already_has_two_current_rows(
+    client: ZeroDBClient,
+    fake: FakeZeroDBTransport,
+    people: Repository[Person],
+    verdicts: Repository[Verdict],
+) -> None:
+    """datamodel.md's "exactly one is_current" must be restored, not half-fixed.
+
+    `_current_row` logged the violation and returned the newest row, and
+    `append_version` then cleared that one row only — so starting from two
+    current rows left two current rows, with the stale one surviving
+    indefinitely and `current()` able to return it. The module docstring
+    claimed the next append "repairs rather than compounds the damage"; it did
+    neither.
+    """
+    people.upsert(person_row())
+    client.upsert_row("promises", "prm:0001", {"candidacy_id": "synthetic"})
+    verdicts.append_version(verdict_row(verdict="kept"))
+    verdicts.append_version(verdict_row(verdict="broken"))
+    # The torn-write state the module docstring contemplates.
+    for row in fake.rows["verdicts"].values():
+        row["row_data"]["is_current"] = True
+
+    third = verdicts.append_version(verdict_row(verdict="partial"))
+
+    current = [
+        row["row_data"]["id"]
+        for row in fake.rows["verdicts"].values()
+        if row["row_data"]["is_current"] is True
+    ]
+    assert current == [third.id], f"expected only {third.id} current, found {sorted(current)}"
+
+
+def test_a_candidate_position_id_keeps_the_person_prefix(
+    client: ZeroDBClient, people: Repository[Person]
+) -> None:
+    """datamodel.md: `{person_id}:{stance_id}:{method_ver}`, person prefix kept.
+
+    The prefix-stripping rule is per table, not global. `member_votes` is
+    documented as `{roll_call_id}:{bioguide}` — the bare bioguide — but
+    `candidate_positions` is documented as `{person_id}:...`, and `person_id`
+    is `person:B000944`. Stripping it everywhere produced
+    `B000944:en-US:...`, so any later consumer rebuilding the id from a row's
+    own `person_id` would look up an id that was never written.
+    """
+    people.upsert(person_row())
+    client.upsert_row("stances", "en-US:rx:v1:lower", {"topic_id": "en-US:rx:v1"})
+    positions: Repository[CandidatePosition] = Repository(client=client, model=CandidatePosition)
+
+    stored = positions.append_version(
+        {
+            "person_id": "person:B000944",
+            "stance_id": "en-US:rx:v1:lower",
+            "s_value": 0.5,
+            "confidence": 0.8,
+            "evidence_count": 3,
+            "basis": "votes",
+            "methodology_version": "2026.1",
+        }
+    )
+
+    assert stored.id == "person:B000944:en-US:rx:v1:lower:2026.1:v1"
+
+
+def test_a_member_vote_id_still_strips_the_person_prefix(
+    people: Repository[Person], roll_calls: Repository[RollCall], member_votes: Repository
+) -> None:
+    """The other half of the per-table rule: datamodel.md says `{bioguide}`."""
+    people.upsert(person_row())
+    roll_calls.upsert(roll_call_row())
+
+    stored = member_votes.upsert(member_vote_row())
+
+    assert stored.id == "us-house:119-2:452:B000944"
+
+
 # --- reference validation -------------------------------------------------
 
 
