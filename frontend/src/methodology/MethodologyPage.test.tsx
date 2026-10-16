@@ -171,6 +171,24 @@ describe('MethodologyPage', () => {
     expect(await screen.findByText(/superseded/i)).toBeInTheDocument();
   });
 
+  it('shows a published tier this component has never heard of', async () => {
+    stubFetch({
+      ...METHODOLOGY,
+      weights: { tiers: { ...METHODOLOGY.weights.tiers, absolute_dealbreaker: 9 } },
+    });
+    renderPage();
+    const table = await screen.findByRole('table', { name: /tier weight/i });
+    // The failure mode this guards: walking a hard-coded display order and
+    // rendering only the tiers the component knows silently HIDES a real
+    // published weight, on the one page whose whole claim is that it shows
+    // the complete set in force. Shown with its raw key rather than dropped.
+    expect(table).toHaveTextContent('absolute_dealbreaker');
+    expect(table).toHaveTextContent('9');
+    // And the known tiers keep their declared order ahead of it.
+    expect(table.querySelectorAll('tbody tr')).toHaveLength(4);
+    expect(table.querySelectorAll('tbody tr')[0]).toHaveTextContent(/primary/i);
+  });
+
   it('renders without a gap section once every group is published', async () => {
     stubFetch({
       ...METHODOLOGY,

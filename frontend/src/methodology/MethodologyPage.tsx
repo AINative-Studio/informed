@@ -96,11 +96,11 @@ function Methodology({ methodology }: { methodology: PublishedMethodology }) {
           </tr>
         </thead>
         <tbody>
-          {TIER_DISPLAY_ORDER.filter((tier) => tier.key in tiers).map((tier) => (
-            <tr key={tier.key}>
-              <th scope="row">{tier.label}</th>
-              <td>{tiers[tier.key]}</td>
-              <td>{TIER_EXPLANATIONS[tier.key] ?? ''}</td>
+          {orderedTiers(tiers).map(([key, weight]) => (
+            <tr key={key}>
+              <th scope="row">{tierLabel(key)}</th>
+              <td>{weight}</td>
+              <td>{TIER_EXPLANATIONS[key] ?? ''}</td>
             </tr>
           ))}
         </tbody>
@@ -152,6 +152,32 @@ function NotYetPublished({ groups }: { groups: string[] }) {
       </p>
     </>
   );
+}
+
+/**
+ * Every published tier, known ones in their declared order and anything else
+ * after them.
+ *
+ * The "anything else" half matters on this page specifically. A naive render
+ * walks `TIER_DISPLAY_ORDER` and shows the tiers it knows about — which
+ * silently HIDES a tier a future methodology adds, on the one page whose whole
+ * claim is that it shows the complete set of weights in force. Dropping a real
+ * published weight because this component has not been taught its name yet
+ * would be exactly the kind of quiet incompleteness this story exists to
+ * prevent, so an unknown key is rendered with its raw name rather than
+ * omitted.
+ */
+function orderedTiers(tiers: Record<string, number>): Array<[string, number]> {
+  const known = TIER_DISPLAY_ORDER.map((tier) => tier.key);
+  const extra = Object.keys(tiers).filter((key) => !known.includes(key));
+  return [...known, ...extra]
+    .filter((key) => key in tiers)
+    .map((key) => [key, tiers[key]] as [string, number]);
+}
+
+/** Display name for a tier key, falling back to the key itself. */
+function tierLabel(key: string): string {
+  return TIER_DISPLAY_ORDER.find((tier) => tier.key === key)?.label ?? key;
 }
 
 /** Plain-words explanation per tier key, for the table's third column. */
