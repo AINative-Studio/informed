@@ -1,8 +1,18 @@
-"""Unit tests for the ballot endpoint and its pieces (story 1.5).
+"""Unit tests for the ballot endpoint and its pieces (story 1.5, 2.3).
 
 The feature file proves the voter's journey; these pin the behaviour at each
 seam the journey walks through, so a regression names the broken piece rather
 than just "the ballot is wrong".
+
+The resolver these tests inject is `tests.support.resolvers.FixedDistrictResolver`,
+not a production class. Story 1.5 shipped `StubAddressResolver` in `app/` because
+the app really did resolve addresses with it; story 2.3 replaced it with
+`CensusAddressResolver`, so a fixed-district resolver is now only a *test* need
+and lives in `tests/support`. These tests inject it deliberately rather than
+letting `BallotService` default: the default is now the real geocoder, and the
+service's own behaviour — current-term matching, paging, privacy — is what is
+under test here, not geocoding. `test_districts_resolver_unit.py` and
+`features/address_to_district.feature` cover the geocoder itself.
 """
 
 from __future__ import annotations
@@ -13,15 +23,22 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from app.ballot.router import ballot_service
 from app.ballot.service import HOUSE_BODY_ID, SENATE_BODY_ID, BallotService
-from app.districts.resolver import AddressResolutionError, StubAddressResolver
+from app.districts.resolver import (
+    AddressResolutionError,
+    CensusAddressResolver,
+    DistrictNotFoundError,
+)
 from app.main import create_app, zerodb_client
 from app.repositories import Repository
 from app.repositories.models import District, Person
 from app.zerodb import ZeroDBClient
 from app.zerodb.testing import FakeZeroDBTransport
+from tests.support.reference_data import REFERENCE_TABLES, seed_reference_data
+from tests.support.resolvers import FixedDistrictResolver
 
-HOUSE_DISTRICT = StubAddressResolver.DISTRICT_ID
+HOUSE_DISTRICT = FixedDistrictResolver.DISTRICT_ID
 SENATE_DISTRICT = "ocd-division/country:us/state:ca"
 ADDRESS = "1 Synthetic Way, Example, CA 90000"
 
@@ -33,12 +50,25 @@ def client() -> ZeroDBClient:
     zdb = ZeroDBClient(
         transport=transport, project_id="proj-test", backoff_base=0.0, sleep=lambda _: None
     )
-    for table in ("districts", "people"):
+    for table in (*REFERENCE_TABLES, "districts", "people"):
         zdb.create_table(table, {"id": "string"})
     return zdb
 
 
+def seed_body(client: ZeroDBClient) -> None:
+    """Story 2.1's reference data: `us-federal`, `us-house`, `us-senate`.
+
+    Needed by every test that writes a `districts` row, because story 2.3
+    declared `districts.body_id` a reference to `bodies` — the call story 1.4's
+    `District` docstring explicitly deferred to this story. Shared with the
+    feature step files through `tests/support`, and built from `app.seed`'s own
+    constants, so no fixture can claim a chamber the seed does not write.
+    """
+    seed_reference_data(client)
+
+
 def seed_district(client: ZeroDBClient, district_id: str = HOUSE_DISTRICT) -> None:
+    seed_body(client)
     Repository(client=client, model=District).upsert(
         {
             "id": district_id,
@@ -93,52 +123,102 @@ def seed_full_delegation(client: ZeroDBClient) -> None:
     people.upsert(person("person:ZZ000003", "us-senate", SENATE_DISTRICT, name="Sen. Two"))
 
 
+def service_for(client: ZeroDBClient, **kwargs: Any) -> BallotService:
+    """A `BallotService` on the fake ZeroDB with a determinate resolver.
+
+    The resolver is injected rather than defaulted because the default is now
+    the real Census Geocoder (story 2.3), and these tests must make no network
+    call. Every test below goes through here, so there is one place that knows
+    which resolver the service suite uses.
+    """
+    return BallotService(client=client, resolver=FixedDistrictResolver(), **kwargs)
+
+
 @pytest.fixture
 def api(client: ZeroDBClient) -> Any:
+    """The real app, with its ZeroDB client and its resolver overridden.
+
+    Both overrides go through the app's own dependency seams, so the handler,
+    service, repository and client under test are the production ones. The
+    resolver override is what keeps the endpoint tests off the network now that
+    `ballot_service` defaults to `CensusAddressResolver`.
+    """
     app = create_app()
     app.dependency_overrides[zerodb_client] = lambda: client
+    app.dependency_overrides[ballot_service] = lambda: service_for(client)
     with TestClient(app) as test_client:
         yield test_client
 
 
-# --- the stub resolver ---------------------------------------------------
+# --- the resolver the service gets by default ----------------------------
+#
+# Story 1.5 had four tests here for `StubAddressResolver`, two of which this
+# story deleted rather than ported, because they asserted the *absence* of
+# geocoding:
+#
+#   * `test_stub_resolver_returns_a_well_formed_ocd_id` — that the stub's
+#     fixed answer was at least OCD-ID-shaped, so swapping a real geocoder in
+#     behind the protocol would change the implementation and not the contract.
+#     Now asserted against a captured Census response in
+#     `test_districts_resolver_unit.py::test_resolver_returns_a_well_formed_ocd_id`,
+#     where it tests the code that actually builds the id.
+#   * `test_stub_resolver_is_the_same_answer_for_every_address` — that the stub
+#     answered *identically* for every address, so nobody could mistake it for
+#     a geocoder. That was the right guarantee while the app shipped without
+#     one; it is now exactly the wrong one, and its replacement in
+#     `test_districts_resolver_unit.py` asserts the opposite —
+#     `test_resolver_gives_different_districts_for_different_addresses`.
+#
+# The other two (blank address refused, senate division derived from the state)
+# are real behaviour of any resolver, so they survive below against the test
+# double, and against the real resolver in `test_districts_resolver_unit.py`.
+#
+# What belongs here instead is the one thing those tests could not cover while
+# the stub was the default: that the service and the endpoint are now wired to
+# the *real* resolver.
 
 
-def test_stub_resolver_returns_a_well_formed_ocd_id() -> None:
-    """An OCD-ID, because that is `districts`' id pattern (datamodel.md).
+def test_the_service_defaults_to_the_real_census_resolver() -> None:
+    """The one line story 2.3 was supposed to change (prd.md's data source).
 
-    Story 2.3 swaps the Census Geocoder in behind this interface. If the stub
-    returned anything but a real OCD-ID shape, that swap would change the
-    contract rather than just the implementation.
+    Pinned because the whole story is observable from the outside as "the
+    default stopped being a stub". A `BallotService()` built with no resolver —
+    which is what `ballot_service` in the router does — must geocode for real,
+    and nothing in `app/` should be able to hand a voter a fixed district.
     """
-    resolved = StubAddressResolver().resolve(ADDRESS)
-    assert resolved.district_id.startswith("ocd-division/country:us/state:")
-    assert resolved.state == "CA"
+    service = BallotService(client=None)  # type: ignore[arg-type]
+    assert isinstance(service._resolver, CensusAddressResolver)
 
 
-def test_stub_resolver_is_the_same_answer_for_every_address() -> None:
-    """Named honestly: it does not geocode, and the test says so.
+def test_no_fixed_district_resolver_ships_in_the_app_package() -> None:
+    """Story 1.5's stub is gone from production code, not merely unused.
 
-    A stub that varied its answer would look like a geocoder and be trusted as
-    one. This asserts the opposite, so nobody mistakes it for story 2.3's work.
+    While it lived in `app/districts/`, any caller could construct it and serve
+    confident, wrong districts. The test double now lives in `tests/support`,
+    so that is no longer reachable from shipped code.
     """
-    first = StubAddressResolver().resolve("1 A St, Example, CA")
-    second = StubAddressResolver().resolve("99 Z Blvd, Other, NY")
-    assert first == second
+    import app.districts as districts
+    import app.districts.resolver as resolver_module
+
+    assert not hasattr(resolver_module, "StubAddressResolver")
+    assert not hasattr(districts, "StubAddressResolver")
 
 
-def test_stub_resolver_rejects_a_blank_address() -> None:
+def test_the_resolver_refuses_a_blank_address() -> None:
+    """Kept from story 1.5: a blank address is a 422, never a confident answer."""
     with pytest.raises(AddressResolutionError):
-        StubAddressResolver().resolve("   ")
+        FixedDistrictResolver().resolve("   ")
 
 
-def test_stub_resolver_derives_the_senate_district_from_the_state() -> None:
+def test_the_resolver_derives_the_senate_district_from_the_state() -> None:
     """Senators represent the state, not a House district (datamodel.md).
 
-    The senate OCD-ID is the House one with the `/cd:*` segment dropped, which
-    is how the service finds two senators for one address.
+    Kept from story 1.5. The senate OCD-ID is the House one with the `/cd:*`
+    segment dropped, which is how the service finds two senators for one
+    address; the real resolver is held to the same rule in
+    `test_districts_resolver_unit.py`.
     """
-    resolved = StubAddressResolver().resolve(ADDRESS)
+    resolved = FixedDistrictResolver().resolve(ADDRESS)
     assert resolved.senate_district_id == "ocd-division/country:us/state:ca"
     assert "/cd:" not in resolved.senate_district_id
 
@@ -148,13 +228,92 @@ def test_stub_resolver_derives_the_senate_district_from_the_state() -> None:
 
 def test_service_returns_one_house_member_and_two_senators(client: ZeroDBClient) -> None:
     seed_full_delegation(client)
-    ballot = BallotService(client=client).ballot_for(ADDRESS)
+    ballot = service_for(client).ballot_for(ADDRESS)
 
     house = [o for o in ballot.officeholders if o.body_id == "us-house"]
     senate = [o for o in ballot.officeholders if o.body_id == "us-senate"]
     assert len(house) == 1
     assert len(senate) == 2
     assert ballot.district.id == HOUSE_DISTRICT
+
+
+def test_service_returns_the_representative_of_an_at_large_state(
+    client: ZeroDBClient,
+) -> None:
+    """An at-large state's one representative must not be lost to its senators.
+
+    The case story 1.5 could not reach and story 2.3 creates. In Wyoming,
+    Vermont, Delaware, Alaska and the two Dakotas the House seat is at-large, so
+    the geocoder codes it `00` and `ocd_id_for` returns the **state-only**
+    division — which means `district_id` and `senate_district_id` are the same
+    string. Any lookup keyed on the district id alone silently keeps whichever
+    chamber it saw last and drops the other, and with the senators written
+    second it is the representative who disappears: a Wyoming voter is shown two
+    senators and told they have no representative.
+
+    Not a hypothetical. Confirmed against the live project, where every voter in
+    those six states plus DC and the five territories — roughly five million
+    people — got an empty House seat.
+    """
+    seed_body(client)
+    at_large = "ocd-division/country:us/state:wy"
+    Repository(client=client, model=District).upsert(
+        {
+            "id": at_large,
+            "body_id": "us-house",
+            "name": "Congressional District (at Large)",
+            "state": "WY",
+            "valid_from": "2023-01-03",
+        }
+    )
+    people: Repository[Person] = Repository(client=client, model=Person)
+    people.upsert(person("person:ZZATLARGE", "us-house", at_large, name="Rep. At Large"))
+    people.upsert(person("person:ZZWYSEN1", "us-senate", at_large, name="Sen. Wyo One"))
+    people.upsert(person("person:ZZWYSEN2", "us-senate", at_large, name="Sen. Wyo Two"))
+
+    resolver = FixedDistrictResolver(at_large, name="Congressional District (at Large)")
+    ballot = BallotService(client=client, resolver=resolver).ballot_for(ADDRESS)
+
+    assert [o.name for o in ballot.officeholders if o.body_id == HOUSE_BODY_ID] == ["Rep. At Large"]
+    assert [o.name for o in ballot.officeholders if o.body_id == SENATE_BODY_ID] == [
+        "Sen. Wyo One",
+        "Sen. Wyo Two",
+    ]
+
+
+def test_service_returns_the_delegate_of_a_district_with_no_senators(
+    client: ZeroDBClient,
+) -> None:
+    """DC's delegate is the same collision with no senators to hide it.
+
+    DC, Puerto Rico and the four other territories have a non-voting delegate or
+    resident commissioner (geocoder code `98`) and no senators at all, so the
+    state-only division carries a House term and nothing else. The delegate is a
+    real sitting member of Congress that story 2.2 loaded, and a DC voter asking
+    who represents them must be told — an empty answer would read as "Informed
+    has no data for you".
+    """
+    seed_body(client)
+    dc = "ocd-division/country:us/state:dc"
+    Repository(client=client, model=District).upsert(
+        {
+            "id": dc,
+            "body_id": "us-house",
+            "name": "Delegate District (at Large)",
+            "state": "DC",
+            "valid_from": "2023-01-03",
+        }
+    )
+    Repository(client=client, model=Person).upsert(
+        person("person:ZZDELEGATE", "us-house", dc, name="Del. Synthetic")
+    )
+
+    resolver = FixedDistrictResolver(dc, name="Delegate District (at Large)")
+    ballot = BallotService(client=client, resolver=resolver).ballot_for(ADDRESS)
+
+    assert [(o.name, o.body_id) for o in ballot.officeholders] == [
+        ("Del. Synthetic", HOUSE_BODY_ID)
+    ]
 
 
 def test_service_ignores_a_person_from_another_district(client: ZeroDBClient) -> None:
@@ -173,7 +332,7 @@ def test_service_ignores_a_person_from_another_district(client: ZeroDBClient) ->
             name="Rep. Elsewhere",
         )
     )
-    ballot = BallotService(client=client).ballot_for(ADDRESS)
+    ballot = service_for(client).ballot_for(ADDRESS)
     assert [o.name for o in ballot.officeholders if o.body_id == "us-house"] == ["Rep. Synthetic"]
 
 
@@ -187,7 +346,7 @@ def test_service_ignores_a_senator_from_another_state(client: ZeroDBClient) -> N
             name="Sen. Elsewhere",
         )
     )
-    ballot = BallotService(client=client).ballot_for(ADDRESS)
+    ballot = service_for(client).ballot_for(ADDRESS)
     names = {o.name for o in ballot.officeholders if o.body_id == "us-senate"}
     assert names == {"Sen. One", "Sen. Two"}
 
@@ -200,25 +359,80 @@ def test_service_returns_an_empty_delegation_rather_than_failing(client: ZeroDBC
     answer; a 500 would make the skeleton look broken when it is merely empty.
     """
     seed_district(client)
-    ballot = BallotService(client=client).ballot_for(ADDRESS)
+    ballot = service_for(client).ballot_for(ADDRESS)
     assert ballot.officeholders == []
     assert ballot.district.id == HOUSE_DISTRICT
 
 
-def test_service_raises_when_the_resolved_district_is_not_in_zerodb(client: ZeroDBClient) -> None:
-    """An unknown district is a data gap, not a voter error.
+def test_service_creates_the_district_row_on_first_resolution(client: ZeroDBClient) -> None:
+    """A district nobody has looked up before is created, not 404'd.
 
-    Surfaced as its own exception so the handler can answer 404 rather than
-    inventing a district row the voter would then see named on screen.
+    Story 1.5 raised `DistrictNotFoundError` here, because its stub resolved to
+    a district only a fixture could have seeded. Story 2.3 resolves *real*
+    districts, and the `districts` table was empty in the live project — so
+    keeping that behaviour would 404 every real voter in the country. The row is
+    written from the geocoder's own answer instead; see `app.districts.store`
+    for why that beats pre-seeding a roster.
     """
-    with pytest.raises(AddressResolutionError):
-        BallotService(client=client).ballot_for(ADDRESS)
+    seed_body(client)
+    ballot = service_for(client).ballot_for(ADDRESS)
+
+    assert ballot.district.id == HOUSE_DISTRICT
+    assert ballot.district.name == FixedDistrictResolver.DEFAULT_NAME
+    stored = Repository(client=client, model=District).get(HOUSE_DISTRICT)
+    assert stored is not None
+    assert stored.body_id == "us-house"
+
+
+def test_service_creating_a_district_twice_leaves_one_row(client: ZeroDBClient) -> None:
+    """Two voters in one cold district must not produce two rows.
+
+    datamodel.md rule 1: a deterministic natural-key id makes the write an
+    idempotent upsert. Asserted because the lazy-creation design makes a
+    concurrent first lookup the normal case, not an edge one.
+    """
+    seed_body(client)
+    service_for(client).ballot_for(ADDRESS)
+    service_for(client).ballot_for(ADDRESS)
+
+    districts = Repository(client=client, model=District).query(limit=100)
+    assert [d.id for d in districts] == [HOUSE_DISTRICT]
+
+
+def test_service_raises_not_found_when_the_district_row_cannot_be_created(
+    client: ZeroDBClient,
+) -> None:
+    """The one remaining 404: a resolved district Informed cannot record.
+
+    `districts.body_id` references `bodies` (declared by this story, as story
+    1.4's `District` docstring deferred to it), so a chamber story 2.1 never
+    seeded makes the row unwritable. That is Informed's data gap and not
+    anything the voter can retype, which is exactly the distinction
+    `DistrictNotFoundError` exists to carry — so the handler still has a real
+    404 to answer rather than a branch that can no longer be reached.
+    """
+    with pytest.raises(DistrictNotFoundError) as excinfo:
+        service_for(client).ballot_for(ADDRESS)
+
+    assert isinstance(excinfo.value, AddressResolutionError)
+    assert "Private" not in str(excinfo.value)
+
+
+def test_the_not_found_error_never_names_the_address(client: ZeroDBClient) -> None:
+    """prd.md, privacy first: the failure path leaks nothing either.
+
+    The 404's message is both returned to the voter and logged, so it is held to
+    the same rule as every other message in this flow.
+    """
+    with pytest.raises(DistrictNotFoundError) as excinfo:
+        service_for(client).ballot_for("500 Private Lane, Example, CA")
+    assert "Private Lane" not in str(excinfo.value)
 
 
 def test_service_never_puts_the_address_in_its_result(client: ZeroDBClient) -> None:
     """prd.md, privacy first: the address is not stored and not echoed."""
     seed_full_delegation(client)
-    ballot = BallotService(client=client).ballot_for("500 Private Lane, Example, CA")
+    ballot = service_for(client).ballot_for("500 Private Lane, Example, CA")
     assert "Private Lane" not in str(ballot.model_dump(mode="json"))
 
 
@@ -245,7 +459,7 @@ def test_service_excludes_a_member_whose_term_has_ended(client: ZeroDBClient) ->
         )
     )
 
-    ballot = BallotService(client=client).ballot_for(ADDRESS)
+    ballot = service_for(client).ballot_for(ADDRESS)
     house = [o for o in ballot.officeholders if o.body_id == HOUSE_BODY_ID]
     assert [o.name for o in house] == ["Rep. Synthetic"]
 
@@ -271,7 +485,7 @@ def test_service_excludes_a_member_whose_term_has_not_started(client: ZeroDBClie
         )
     )
 
-    ballot = BallotService(client=client).ballot_for(ADDRESS)
+    ballot = service_for(client).ballot_for(ADDRESS)
     house = [o for o in ballot.officeholders if o.body_id == HOUSE_BODY_ID]
     assert [o.name for o in house] == ["Rep. Synthetic"]
 
@@ -289,7 +503,7 @@ def test_service_keeps_a_member_whose_term_has_no_end_date(client: ZeroDBClient)
         person("person:ZZOPEN", "us-house", HOUSE_DISTRICT, name="Rep. Open Term", end=None)
     )
 
-    ballot = BallotService(client=client).ballot_for(ADDRESS)
+    ballot = service_for(client).ballot_for(ADDRESS)
     assert [o.name for o in ballot.officeholders] == ["Rep. Open Term"]
 
 
@@ -312,7 +526,7 @@ def test_service_keeps_a_member_whose_term_has_no_start_date(client: ZeroDBClien
         }
     )
 
-    ballot = BallotService(client=client).ballot_for(ADDRESS)
+    ballot = service_for(client).ballot_for(ADDRESS)
     assert [o.name for o in ballot.officeholders] == ["Rep. No Start"]
 
 
@@ -350,7 +564,7 @@ def test_service_picks_the_current_term_of_a_member_with_term_history(
         }
     )
 
-    ballot = BallotService(client=client).ballot_for(ADDRESS)
+    ballot = service_for(client).ballot_for(ADDRESS)
     assert len(ballot.officeholders) == 1
     assert ballot.officeholders[0].name == "Rep. Long Serving"
 
@@ -389,7 +603,7 @@ def test_service_lists_a_member_who_moved_from_the_house_to_the_senate_once(
         }
     )
 
-    ballot = BallotService(client=client).ballot_for(ADDRESS)
+    ballot = service_for(client).ballot_for(ADDRESS)
     assert [(o.name, o.body_id) for o in ballot.officeholders] == [
         ("Sen. Formerly House", SENATE_BODY_ID)
     ]
@@ -422,7 +636,7 @@ def test_service_ignores_an_unparseable_term_date_rather_than_dropping_the_membe
         }
     )
 
-    ballot = BallotService(client=client).ballot_for(ADDRESS)
+    ballot = service_for(client).ballot_for(ADDRESS)
     assert [o.name for o in ballot.officeholders] == ["Rep. Bad Date"]
 
 
@@ -452,7 +666,7 @@ def test_term_currency_at_each_boundary(
         person("person:ZZBOUND", "us-house", HOUSE_DISTRICT, start=start, end=end)
     )
 
-    ballot = BallotService(client=client, today=lambda: date(2026, 6, 15)).ballot_for(ADDRESS)
+    ballot = service_for(client, today=lambda: date(2026, 6, 15)).ballot_for(ADDRESS)
     assert bool(ballot.officeholders) is expected
 
 
@@ -483,7 +697,7 @@ def test_service_pages_through_people_rather_than_reading_one_page(
     people.upsert(person("person:ZZ000002", "us-senate", SENATE_DISTRICT, name="Sen. One"))
     people.upsert(person("person:ZZ000003", "us-senate", SENATE_DISTRICT, name="Sen. Two"))
 
-    ballot = BallotService(client=client).ballot_for(ADDRESS)
+    ballot = service_for(client).ballot_for(ADDRESS)
     assert [o.name for o in ballot.officeholders] == ["Rep. Synthetic", "Sen. One", "Sen. Two"]
 
 
@@ -511,7 +725,7 @@ def test_service_logs_an_error_rather_than_silently_truncating(
         )
 
     with caplog.at_level("ERROR"):
-        BallotService(client=client).ballot_for(ADDRESS)
+        service_for(client).ballot_for(ADDRESS)
 
     assert "stopped scanning" in caplog.text
     assert "candidate_cards" in caplog.text
@@ -531,7 +745,7 @@ def test_service_skips_a_term_with_no_district(client: ZeroDBClient) -> None:
             "terms": [{"body_id": "us-house", "party": "Independent"}],
         }
     )
-    assert BallotService(client=client).ballot_for(ADDRESS).officeholders == []
+    assert service_for(client).ballot_for(ADDRESS).officeholders == []
 
 
 # --- the endpoint --------------------------------------------------------
@@ -558,10 +772,45 @@ def test_endpoint_rejects_a_blank_address(api: TestClient) -> None:
     assert "address" in response.text.lower()
 
 
-def test_endpoint_answers_404_for_an_unknown_district(api: TestClient) -> None:
+def test_endpoint_answers_200_for_a_district_it_has_not_seen_before(
+    api: TestClient, client: ZeroDBClient
+) -> None:
+    """A real district nobody has looked up yet is a 200, not a 404.
+
+    This is the externally visible consequence of story 2.3's lazy creation.
+    Story 1.5 answered 404 here, which was right while the only districts were
+    fixtures; against the real geocoder and an empty `districts` table it would
+    have 404'd every voter in the country.
+    """
+    seed_body(client)
     response = api.get("/v1/ballot", params={"address": ADDRESS})
+
+    assert response.status_code == 200
+    assert response.json()["district"]["id"] == HOUSE_DISTRICT
+    assert response.json()["officeholders"] == []
+
+
+def test_endpoint_answers_404_when_the_district_row_cannot_be_created(
+    api: TestClient,
+) -> None:
+    """The 404 the router documents, still reachable.
+
+    With no `bodies` row for the resolved district's chamber, Informed cannot
+    record the district it just resolved. The voter gets a 404 rather than a 500
+    because it is a data gap on Informed's side and not a server fault, and
+    nothing they retype will change it.
+    """
+    response = api.get("/v1/ballot", params={"address": ADDRESS})
+
     assert response.status_code == 404
     assert "district" in response.json()["detail"].lower()
+
+
+def test_endpoint_does_not_echo_the_address_in_a_404(api: TestClient) -> None:
+    """The 404 body is voter-facing, so privacy first applies to it too."""
+    response = api.get("/v1/ballot", params={"address": "77 Secret Road, Example, CA"})
+    assert response.status_code == 404
+    assert "Secret Road" not in response.text
 
 
 def test_endpoint_does_not_echo_the_address(api: TestClient, client: ZeroDBClient) -> None:

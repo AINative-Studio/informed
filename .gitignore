@@ -82,3 +82,6 @@ Thumbs.db
 *.swp
 .vscode/*
 !.vscode/extensions.json
+
+# Story 14.1: local virtualenv used to run the backend suite
+backend/.venv/

@@ -1,12 +1,19 @@
-"""Building a ballot from an address (story 1.5).
+"""Building a ballot from an address (stories 1.5, 2.3).
 
 The walking skeleton's one piece of business logic, and the whole of what the
 `/v1/ballot` handler does beyond turning exceptions into status codes:
 
-    address -> StubAddressResolver -> district id
-            -> `districts` row (story 1.4 repository)
+    address -> CensusAddressResolver -> district id + the geocoder's own name
+            -> `districts` row, created on first resolution (story 2.3)
             -> `people` rows with a **current** term in that district
             -> BallotResponse
+
+Story 2.3 changed two things in that chain and nothing else. The resolver is
+real (story 1.5's stub is gone), and the `districts` read became a
+read-or-create: the table was empty in the live project, so against real
+geocoded ids every lookup would otherwise 404. See `app.districts.store` for
+why the row is created from the geocoder's answer rather than pre-seeded from a
+roster.
 
 "Current" is load-bearing, not a nicety: `people.terms[]` is a list because it
 holds term history (story 2.2 ingests every term a member has served), so
@@ -43,12 +50,12 @@ from datetime import date
 from app.ballot.models import BallotResponse, DistrictSummary, Officeholder
 from app.districts.resolver import (
     AddressResolver,
-    DistrictNotFoundError,
+    CensusAddressResolver,
     ResolvedAddress,
-    StubAddressResolver,
 )
+from app.districts.store import DistrictStore
 from app.repositories import Repository
-from app.repositories.models import District, Person, Term
+from app.repositories.models import Person, Term
 from app.zerodb import ZeroDBClient
 
 logger = logging.getLogger(__name__)
@@ -75,8 +82,10 @@ _BODY_ORDER = {HOUSE_BODY_ID: 0, SENATE_BODY_ID: 1}
 class BallotService:
     """Resolves an address to its district and the members who represent it.
 
-    The resolver is injected so story 2.3 swaps the Census Geocoder in without
-    touching this class, and so a test can point the stub at a second district.
+    The resolver is injected so a test drives a captured Census response rather
+    than the network, and so prd.md's `JurisdictionAdapter` can supply a
+    different one per country later. It defaults to `CensusAddressResolver`
+    (story 2.3), which replaced story 1.5's stub behind the same protocol.
     """
 
     def __init__(
@@ -86,8 +95,8 @@ class BallotService:
         resolver: AddressResolver | None = None,
         today: Callable[[], date] = date.today,
     ) -> None:
-        self._resolver = resolver or StubAddressResolver()
-        self._districts: Repository[District] = Repository(client=client, model=District)
+        self._resolver = resolver or CensusAddressResolver()
+        self._districts = DistrictStore(client=client)
         self._people: Repository[Person] = Repository(client=client, model=Person)
         #: Injected so a test can pin "now" without freezing the process clock,
         #: and so a future "what did my delegation look like on date X" read has
@@ -102,22 +111,22 @@ class BallotService:
         privacy first; story 2.3's acceptance criteria).
 
         Raises:
-            AddressResolutionError: the address is blank or unusable.
-            DistrictNotFoundError: it resolved to a district that is not in
-                ZeroDB. A subclass of the above, so a caller that does not care
-                about the distinction catches one exception and gets both.
+            AddressResolutionError: the address is blank or unusable, the
+                geocoder could not find it, it matched more than one district,
+                or the geocoder was unreachable. Each subclass carries a
+                message the voter can act on.
+            DistrictNotFoundError: it resolved to a district Informed could
+                neither read nor create a row for.
 
-        Neither message ever contains the address: both are returned to the
-        voter and logged (prd.md, privacy first).
+        No message ever contains the address: all are returned to the voter and
+        logged (prd.md, privacy first).
         """
-        resolved = self._resolver.resolve(address)
-        district = self._districts.get(resolved.district_id)
-        if district is None:
-            # A data gap, not a voter error: the geocoder (or stub) named a
-            # district nobody has ingested. Naming the id and not the address
-            # keeps the log line usable and the voter's address out of it.
-            logger.warning("no districts row for %s", resolved.district_id)
-            raise DistrictNotFoundError("We don't have district data for that address yet.")
+        resolution = self._resolver.resolve_district(address)
+        resolved = resolution.districts
+        # Created on first resolution rather than pre-seeded — see
+        # `app.districts.store` for why, and why the geocoder's own label is
+        # the right name for the row.
+        district = self._districts.ensure(resolved, name=resolution.name)
 
         return BallotResponse(
             district=DistrictSummary(
@@ -136,9 +145,19 @@ class BallotService:
         story 2.2 runs) has no delegation, and a 500 would make the skeleton
         look broken when it is merely empty.
         """
+        # A **set of (division, chamber) pairs**, not a dict keyed by division.
+        # For an at-large state or a delegate's territory the geocoder has no
+        # district number, so `district_id` and `senate_district_id` are the
+        # same string — a dict keyed on the division would hold one entry
+        # instead of two, keep whichever chamber was written last, and silently
+        # drop the other. With the senators written second it is the
+        # *representative* who vanishes: a Wyoming voter is shown two senators
+        # and told they have no representative, and a DC voter is shown nothing
+        # at all. Measured against the live project, that is every voter in WY,
+        # VT, DE, AK, ND, SD, DC and the five territories.
         wanted = {
-            resolved.district_id: HOUSE_BODY_ID,
-            resolved.senate_district_id: SENATE_BODY_ID,
+            (resolved.district_id, HOUSE_BODY_ID),
+            (resolved.senate_district_id, SENATE_BODY_ID),
         }
         # Read the clock once per request, so a delegation cannot be assembled
         # from two different "today"s if the scan straddles midnight.
@@ -176,32 +195,38 @@ class BallotService:
 
 
 def _officeholders_from(
-    person: Person, wanted: dict[str, str], *, today: date
+    person: Person, wanted: set[tuple[str, str]], *, today: date
 ) -> list[Officeholder]:
     """The entries this person contributes to a delegation, usually zero or one.
 
-    A term matches on three independent facts, all of which must hold:
+    A term matches on two facts, both of which must hold:
 
-      1. its `district_id` is one of the wanted divisions;
-      2. its `body_id` is the chamber that division belongs to — checked
-         separately because a senator's term carries the state division and a
-         representative's carries the `/cd:` one, and a row where the two
-         disagree is bad data that must not be presented as membership of a
-         chamber this person does not sit in;
-      3. **it is current** — see `_is_current`.
+      1. its `(district_id, body_id)` is one of the wanted pairs. Matched as a
+         pair, not as a division with the chamber checked after, because for an
+         at-large seat the House and Senate divisions are the *same string* —
+         see `_delegation_for` for what keying on the division alone costs. The
+         chamber is still part of the match rather than merely derived from it,
+         so a row whose division and chamber disagree is not presented as
+         membership of a chamber this person does not sit in;
+      2. **it is current** — see `_is_current`.
 
     `people.terms[]` is a list because it holds term *history*: story 2.2
     ingests every term a member has served, and a long-serving representative
-    carries one per Congress for the same seat. Without (3) a district whose
+    carries one per Congress for the same seat. Without (2) a district whose
     past representative is in the table returns two House members, which breaks
     this story's own acceptance criterion and, worse, tells a voter that someone
     who left office years ago represents them.
+
+    `seen` is keyed on the chamber, so one person contributes at most one seat
+    per chamber however many terms they have served in it — and a member who
+    moved from the House to the Senate is listed once, in the chamber whose term
+    is current.
     """
     seen: set[str] = set()
     found: list[Officeholder] = []
     for term in person.terms:
-        body_id = wanted.get(term.district_id or "")
-        if body_id is None or term.body_id != body_id or body_id in seen:
+        body_id = term.body_id
+        if (term.district_id or "", body_id) not in wanted or body_id in seen:
             continue
         if not _is_current(term, today=today):
             continue

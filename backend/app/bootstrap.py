@@ -327,8 +327,36 @@ TABLE_SCHEMAS: dict[str, dict[str, str]] = {
         "id": "string",
         "version": "number",
         "locale": "string",
+        # Story 14.1: both documented in datamodel.md's "Voter profile
+        # document" example row and missing from this schema until now.
+        # `jurisdiction_ids` and `key_ref` are outer-row fields on purpose —
+        # they are needed to pick a taxonomy and to know which key scheme
+        # sealed `payload`, both BEFORE anything is decrypted.
+        "jurisdiction_ids": "array",
         "updated_at": "string",
+        "key_ref": "string",
         "payload": "string",
+    },
+    # --- Infrastructure tables, not among datamodel.md's 22 -----------------
+    #
+    # Story 14.1: the wrapped per-user data keys behind `voter_profiles`.
+    # A separate table rather than a column on the profile row for two
+    # reasons. First, datamodel.md fixes `voter_profiles` at exactly seven
+    # fields and a key column would contradict it. Second and decisively,
+    # "delete shreds the key" has to be a write the profile row's own
+    # lifecycle cannot undo: the key must be destroyable on its own, and a
+    # restored `voter_profiles` backup must not restore the key with it.
+    #
+    # Nothing here is a secret in the clear: the row id is the same HMAC the
+    # profile row uses (so the table names no accounts) and `wrapped_key` is
+    # sealed under a KEK derived from the root key, which lives outside the
+    # database. See app/profiles/crypto.py.
+    "voter_profile_keys": {
+        "id": "string",
+        "wrapped_key": "string",
+        "salt": "string",
+        "key_ref": "string",
+        "created_at": "string",
     },
     # --- Bootstrap's own meta-table -----------------------------------------
     "schema_versions": {
@@ -341,16 +369,23 @@ TABLE_SCHEMAS: dict[str, dict[str, str]] = {
     },
 }
 
-#: datamodel.md counts 22 tables; `schema_versions` is this story's own
-#: bookkeeping table and is the 23rd, called out separately so a reader of
-#: this module (or a test) can see at a glance that the two counts are
-#: deliberately different, not a miscount.
+#: datamodel.md counts 22 tables. The rest are infrastructure that no section
+#: of datamodel.md describes as a data table, counted separately so a reader
+#: (or a test) can see at a glance that the two numbers differ deliberately
+#: rather than by miscount.
 DATAMODEL_TABLE_COUNT = 22
 
-assert len(TABLE_SCHEMAS) == DATAMODEL_TABLE_COUNT + 1, (
-    f"expected {DATAMODEL_TABLE_COUNT} datamodel.md tables plus schema_versions, "
-    f"got {len(TABLE_SCHEMAS)}"
+#: `schema_versions` (story 1.3's own bookkeeping) and `voter_profile_keys`
+#: (story 14.1's wrapped data keys). Neither holds product data; both exist so
+#: a documented rule — idempotent bootstrap, and "key shredded on delete" —
+#: can actually be implemented.
+INFRASTRUCTURE_TABLES = ("schema_versions", "voter_profile_keys")
+
+assert len(TABLE_SCHEMAS) == DATAMODEL_TABLE_COUNT + len(INFRASTRUCTURE_TABLES), (
+    f"expected {DATAMODEL_TABLE_COUNT} datamodel.md tables plus "
+    f"{len(INFRASTRUCTURE_TABLES)} infrastructure tables, got {len(TABLE_SCHEMAS)}"
 )
+assert all(name in TABLE_SCHEMAS for name in INFRASTRUCTURE_TABLES)
 
 
 # ---------------------------------------------------------------------------
