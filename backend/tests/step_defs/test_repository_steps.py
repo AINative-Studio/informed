@@ -22,7 +22,14 @@ from app.repositories import (
     Repository,
     RowValidationError,
 )
-from app.repositories.models import District, MemberVote, Person, RollCall, Verdict
+from app.repositories.models import (
+    District,
+    Jurisdiction,
+    MemberVote,
+    Person,
+    RollCall,
+    Verdict,
+)
 from app.zerodb import ZeroDBClient
 from app.zerodb.testing import FakeZeroDBTransport
 
@@ -35,6 +42,8 @@ scenarios("../features/repository.feature")
 #: (story 1.3); creating five here keeps the fake's state readable.
 TABLES = (
     "people",
+    "jurisdictions",
+    "bodies",
     "districts",
     "roll_calls",
     "member_votes",
@@ -89,7 +98,7 @@ def bootstrapped_fake(repo_context: RepoContext) -> None:
 
 @given("a repository for each of people, districts, roll_calls, member_votes and verdicts")
 def repositories_for_each_table(repo_context: RepoContext) -> None:
-    for model in (Person, District, RollCall, MemberVote, Verdict):
+    for model in (Person, Jurisdiction, District, RollCall, MemberVote, Verdict):
         repo = Repository(client=repo_context.client, model=model)
         repo_context.repos[repo.table_name] = repo
 
@@ -155,6 +164,21 @@ def seed_roll_call(repo_context: RepoContext, roll_call_id: str) -> None:
     repo_context.repo("roll_calls").upsert(_roll_call(roll_call_id))
 
 
+@given(parsers.parse('the chamber "{body_id}" exists'))
+def seed_chamber(repo_context: RepoContext, body_id: str) -> None:
+    """A `bodies` row for a `districts` reference to resolve against.
+
+    Written through the client rather than a `Body` repository, because `Body`
+    itself references `jurisdictions` and this story's scenarios are about the
+    district's check, not the chamber's. The row exists only to be found.
+    """
+    repo_context.client.upsert_row(
+        "bodies",
+        body_id,
+        {"jurisdiction_id": "us-federal", "name": body_id, "chamber": "lower", "seats": 435},
+    )
+
+
 @given(parsers.parse('a promise "{promise_id}" exists'))
 def seed_promise(repo_context: RepoContext, promise_id: str) -> None:
     # `promises` has no model in this story, so the row is written through the
@@ -187,6 +211,29 @@ def save_district(repo_context: RepoContext, district_id: str) -> None:
             "name": "California 19th",
             "state": "CA",
             "valid_from": "2023-01-03",
+        },
+    )
+
+
+@when(parsers.parse('I save a jurisdiction "{jurisdiction_id}"'))
+def save_jurisdiction(repo_context: RepoContext, jurisdiction_id: str) -> None:
+    """The reference-free write: `Jurisdiction` declares no references at all.
+
+    Took over this role from `districts` in story 2.3, which gave that table a
+    `body_id` reference. A table that declares nothing must make no reference
+    lookup, which is what the Then asserts.
+    """
+    repo_context.mark()
+    _attempt(
+        repo_context,
+        "jurisdictions",
+        {
+            "id": jurisdiction_id,
+            "name": "United States",
+            "country_code": "US",
+            "level": "federal",
+            "adapter_name": jurisdiction_id,
+            "active": True,
         },
     )
 
@@ -327,6 +374,12 @@ def member_vote_stored(repo_context: RepoContext, vote_id: str) -> None:
 def district_stored(repo_context: RepoContext, district_id: str) -> None:
     assert repo_context.error is None, f"unexpected error: {repo_context.error!r}"
     assert repo_context.repo("districts").get(district_id) is not None
+
+
+@then(parsers.parse('the jurisdiction "{jurisdiction_id}" is stored'))
+def jurisdiction_stored(repo_context: RepoContext, jurisdiction_id: str) -> None:
+    assert repo_context.error is None, f"unexpected error: {repo_context.error!r}"
+    assert repo_context.repo("jurisdictions").get(jurisdiction_id) is not None
 
 
 @then(parsers.parse('exactly {count:d} row exists in "{table}"'))
