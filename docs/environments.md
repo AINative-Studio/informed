@@ -358,8 +358,13 @@ router — see `backend/app/panel_review/router.py`'s module docstring.
 
 `POST /v1/corrections` is public and unauthenticated by design — prd.md
 requires a correction form on every claim, and one behind a login is one nobody
-uses. It creates two standing operational obligations, neither of which has a
-scheduler behind it yet. **Both are run by hand today.**
+uses. It creates two standing operational obligations:
+
+  1. triage within 72 hours — **still run by hand**, deliberately (see below);
+  2. erase contact emails 90 days after resolution — **now scheduled**, as of
+     Epic 16's scheduled-job runner (`backend/app/scheduling/`). See "The
+     scheduled-job runner" below for what changed and what still needs a
+     human to finish.
 
 **1. Triage within 72 hours.** prd.md commits to it, every correction stores its
 own `sla_due_at`, and the queue of missed commitments is one command:
@@ -395,18 +400,33 @@ python backend/scripts/sweep_correction_emails.py             # then erase
 ```
 
 It is idempotent, holds no cursor or watermark, and is a pure function of the
-stored rows and the clock — so it is safe to run at any cadence, and safe to
-schedule later with no code change. Daily is the natural one: the window is 90
-days, so a day's granularity is well inside the promise.
+stored rows and the clock — so it is safe to run at any cadence. As of Epic
+16, it IS scheduled: `app.scheduling.jobs.default_jobs` registers
+`sweep_correction_emails` at a 1-day interval, and
+`scripts/run_scheduled_jobs.py` — triggered daily by
+`.github/workflows/scheduled-jobs.yml` — runs it when due. Daily is the
+natural cadence: the window is 90 days, so a day's granularity is well inside
+the promise. The script above still works by hand for a one-off dry run or an
+out-of-band check; it is simply no longer the only way this happens.
 
-**The honest gap, stated plainly: nothing schedules either job.** There is no
-scheduler, worker, cron or queue in this repository (the same gap
-`backend/app/ingest/candidacies.py` documents for weekly candidacy refreshes).
-Until one exists, an address that should have gone on day 90 sits there until
-someone runs the sweep, and a report submitted on Friday is triaged when
-someone looks. A cron entry, a Railway cron service or a GitHub Actions
-`schedule:` trigger can call both scripts as-is — that one scheduled runner,
-shared by every periodic task in this codebase, is the tracked follow-up.
+**Triage stays manual, deliberately — not a gap.** Unlike the sweep, triage
+needs a human judgment call per report (what it actually is, whether to act)
+that a scheduled job cannot make, and `PATCH /v1/corrections/{id}` is
+intentionally never exposed over HTTP without auth (see above) — so there is
+no safe way to automate it further than `triage_correction.py --past-sla`
+already does: surfacing the queue for a human to act on.
+
+**The gap this closes, stated plainly: a scheduler now exists.** Before Epic
+16, there was no scheduler, worker, cron or queue in this repository (the same
+gap `backend/app/ingest/candidacies.py` documents for weekly candidacy
+refreshes, and `backend/app/ingest/house_rollcalls.py` for story 5.6's future
+hourly sync) — an address that should have gone on day 90 sat there until
+someone ran the sweep by hand. See "The scheduled-job runner" below for the
+mechanism, and its one remaining real gap: the GitHub Actions workflow needs
+real `ZERODB_*` secrets configured in a `prod` GitHub Environment before it
+actually fires on its own, because the three ZeroDB projects and GitHub
+Environments this depends on are still **Pending** per this document's own
+acceptance-criteria table above.
 
 Neither script ever prints an email address. `--show` is the single deliberate
 exception, per-id and opt-in, for a human reading one report on their own
@@ -421,6 +441,49 @@ surface with no credentials. Unlike the seed verifiers it **cleans up after
 itself**: every row it writes is marked `SYNTHETIC TEST CORRECTION` and is
 deleted in a `finally`, and the script fails if any marker row survives. Real
 corrections are permanent; test ones would sit in the SLA queue forever.
+
+### The scheduled-job runner (Epic 16)
+
+Three stories independently flagged the same gap in almost the same words:
+story 12.4's 90-day sweep, story 2.6's weekly candidacy refresh
+(`backend/app/ingest/candidacies.py`), and story 5.1's roll-call ingest, ready
+for story 5.6's hourly sync. Epic 16 closes it with one scheduler-agnostic
+mechanism, not three bespoke ones:
+
+```sh
+set -a; . local.env; set +a
+python backend/scripts/run_scheduled_jobs.py
+```
+
+What it does: `app.scheduling.jobs.default_jobs()` lists every registered job
+with its own cadence (`sweep_correction_emails` daily, `load_candidacies`
+weekly, `load_house_rollcalls` hourly — registered now, ahead of story 5.6,
+at the cadence that story specifies). `app.scheduling.registry.ScheduledJobRunner`
+checks each job's last-successful-run timestamp, stored in a new
+`scheduled_jobs` ZeroDB table (`app.bootstrap` creates it like every other
+infrastructure table), and runs only the ones that are due. One job's failure
+is recorded and does not stop the others. A job blocked on a missing
+credential (`load_candidacies` needs `FEC_API_KEY`, `load_house_rollcalls`
+needs `CONGRESS_GOV_API_KEY` — neither exists in this environment) is
+reported `BLOCKED`, distinct from a genuine `FAILED`, so a run log reads
+correctly either way.
+
+**This script is what any real scheduler calls — it is not itself a
+scheduler.** `.github/workflows/scheduled-jobs.yml` wires a daily GitHub
+Actions `schedule:` trigger to it, which is enough cadence to serve every
+registered job (the runner, not the trigger, decides what is actually due).
+That workflow targets a `prod` GitHub Environment carrying `ZERODB_WORKSPACE_ID`
+/ `ZERODB_PROJECT_ID` / `ZERODB_API_KEY` (plus `FEC_API_KEY` /
+`CONGRESS_GOV_API_KEY` once those exist), exactly the pattern this document
+already specifies above — **and that Environment has not been configured**,
+for the same reason the three ZeroDB projects above are still Pending: an
+agent session cannot create a GitHub Environment or set its secrets through
+the GitHub UI. Until a human with repo admin access does that, the workflow
+file is correct and will run the moment the secrets exist, but today a
+scheduled tick fails fast on a missing credential rather than silently doing
+nothing or faking a green run. `workflow_dispatch` is enabled on it so a human
+can trigger a manual run once the secrets are in place, without waiting for
+the next scheduled tick.
 
 ### If ZeroDB calls 402 with `storage_limit_exceeded`
 

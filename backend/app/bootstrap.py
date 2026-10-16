@@ -74,7 +74,7 @@ logger = logging.getLogger(__name__)
 #: Current schema version this module bootstraps. Bump when a table, field,
 #: namespace or ontology predicate changes shape; the bootstrap script does
 #: not infer this from the tables it creates.
-SCHEMA_VERSION = "1.4.0"
+SCHEMA_VERSION = "1.5.0"
 
 #: The row id `schema_versions` is written and read under. One row, always
 #: this id: the table is a meta-table about the schema itself, not a history
@@ -411,6 +411,19 @@ TABLE_SCHEMAS: dict[str, dict[str, str]] = {
         "ontology_registered": "boolean",
         "bootstrapped_at": "string",
     },
+    # --- Epic 16: the scheduled-job runner's own bookkeeping ---------------
+    # One row per registered job (`app.scheduling.jobs.default_jobs`), keyed
+    # by job name, holding only the last time it ran successfully. This is
+    # the sole state `app.scheduling.registry.ScheduledJobRunner` reads to
+    # decide what is due — see that module's docstring for why state lives in
+    # ZeroDB rather than in-process: any invoker, anywhere, sees the same
+    # answer. Like `schema_versions`, `voter_profile_keys` and
+    # `panel_reviews`, this is infrastructure rather than one of
+    # datamodel.md's 22 product tables.
+    "scheduled_jobs": {
+        "id": "string",
+        "last_run_at": "string",
+    },
 }
 
 #: datamodel.md counts 22 tables. The rest are infrastructure that no section
@@ -420,12 +433,14 @@ TABLE_SCHEMAS: dict[str, dict[str, str]] = {
 DATAMODEL_TABLE_COUNT = 22
 
 #: `schema_versions` (story 1.3's own bookkeeping), `voter_profile_keys`
-#: (story 14.1's wrapped data keys) and `panel_reviews` (story 3.3's wording
-#: review ledger). None holds product data in datamodel.md's sense; all three
-#: exist so a documented rule — idempotent bootstrap, "key shredded on
-#: delete", "reviewed by a cross-partisan advisory panel before each release" —
-#: can actually be implemented rather than asserted in a release note.
-INFRASTRUCTURE_TABLES = ("schema_versions", "voter_profile_keys", "panel_reviews")
+#: (story 14.1's wrapped data keys), `panel_reviews` (story 3.3's wording
+#: review ledger) and `scheduled_jobs` (Epic 16's scheduled-job runner's
+#: last-run bookkeeping). None holds product data in datamodel.md's sense;
+#: all four exist so a documented rule — idempotent bootstrap, "key shredded
+#: on delete", "reviewed by a cross-partisan advisory panel before each
+#: release", "this job runs on schedule" — can actually be implemented rather
+#: than asserted in a release note.
+INFRASTRUCTURE_TABLES = ("schema_versions", "voter_profile_keys", "panel_reviews", "scheduled_jobs")
 
 assert len(TABLE_SCHEMAS) == DATAMODEL_TABLE_COUNT + len(INFRASTRUCTURE_TABLES), (
     f"expected {DATAMODEL_TABLE_COUNT} datamodel.md tables plus "
