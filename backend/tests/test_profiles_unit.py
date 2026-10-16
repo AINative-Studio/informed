@@ -13,12 +13,14 @@ import logging
 from typing import Any
 
 import pytest
+from cryptography.exceptions import InvalidTag
 from pydantic import ValidationError
 
 from app.bootstrap import TABLE_SCHEMAS
 from app.profiles import PROFILE_TABLES
 from app.profiles.crypto import ProfileKeyring, ProfileRootKey
 from app.profiles.models import (
+    MAX_HISTORY_ENTRIES,
     MAX_PRIMARY_INTERESTS,
     MAX_SECONDARY_INTERESTS,
     MIN_PRIMARY_INTERESTS,
@@ -68,8 +70,12 @@ def client() -> ZeroDBClient:
 
 
 @pytest.fixture
-def service(client: ZeroDBClient) -> VoterProfileService:
-    keyring = ProfileKeyring(client=client, root_key=ProfileRootKey(ROOT))
+def keyring(client: ZeroDBClient) -> ProfileKeyring:
+    return ProfileKeyring(client=client, root_key=ProfileRootKey(ROOT))
+
+
+@pytest.fixture
+def service(client: ZeroDBClient, keyring: ProfileKeyring) -> VoterProfileService:
     return VoterProfileService(client=client, keyring=keyring)
 
 
@@ -539,3 +545,138 @@ def test_a_failed_save_logs_no_plaintext(
 def test_the_service_repr_carries_no_secrets(service: VoterProfileService) -> None:
     assert ROOT.hex() not in repr(service)
     assert base64.b64encode(ROOT).decode() not in repr(service)
+
+
+# =========================================================================
+# Edge cases: a stored row this process cannot open
+# =========================================================================
+
+
+def test_version_is_readable_without_the_data_key(
+    service: VoterProfileService, client: ZeroDBClient
+) -> None:
+    """`version` lives on the outer row precisely so a client can check for
+    staleness without paying for a decryption.
+    """
+    assert service.version_of(USER) == 0
+    service.save(USER, profile())
+    assert service.version_of(USER) == 1
+    service.save(USER, profile())
+    assert service.version_of(USER) == 2
+
+
+def test_version_of_in_anonymous_mode_is_zero(service: VoterProfileService) -> None:
+    assert service.version_of(None) == 0
+
+
+def test_a_save_still_succeeds_when_the_previous_payload_cannot_be_opened(
+    service: VoterProfileService, client: ZeroDBClient, keyring: ProfileKeyring
+) -> None:
+    """A voter must always be able to save, even over a row this process cannot
+    read — a key shredded by a half-completed delete, or a `key_ref` from a
+    scheme this build does not implement.
+
+    The version still advances (it is on the readable outer row) and the
+    history starts from the one entry that row can supply, rather than the
+    save failing and leaving the voter stuck with a profile they cannot replace.
+    """
+    service.save(USER, profile())
+    # Shred the key but leave the row: the exact torn state `delete` is ordered
+    # to avoid, reachable by a crash between its two writes.
+    keyring.shred(USER)
+
+    replacement = service.save(USER, profile(interests=[interest(7)]))
+    assert replacement.version == 2
+
+    loaded = service.load(USER)
+    assert loaded is not None
+    assert loaded.interests[0].topic_id == "test:test-topic-7:v1"
+    assert [entry.version for entry in loaded.history] == [1]
+
+
+def test_a_save_over_an_unopenable_row_logs_no_plaintext(
+    service: VoterProfileService,
+    keyring: ProfileKeyring,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The swallowed decryption failure in `_next_history` must stay silent.
+
+    It is raised from code holding partially-decrypted bytes, so logging the
+    exception is the one place a stack trace could carry plaintext.
+    """
+    service.save(USER, profile(interests=[interest(note="synthetic test note")]))
+    keyring.shred(USER)
+    with caplog.at_level(logging.DEBUG):
+        service.save(USER, profile())
+    text = "\n".join(f"{record.name} {record.getMessage()}" for record in caplog.records)
+    for forbidden in ("test-topic-0", "synthetic test note", USER):
+        assert forbidden not in text
+
+
+def test_a_tampered_payload_raises_rather_than_returning_an_empty_profile(
+    service: VoterProfileService, client: ZeroDBClient, keyring: ProfileKeyring
+) -> None:
+    """GCM authenticates the payload, and the failure must surface.
+
+    Returning an empty profile would silently re-score a voter against
+    interests they never set — worse than an error, because nothing would
+    look wrong.
+    """
+    service.save(USER, profile())
+    row_id = keyring.row_id(USER)
+    stored = client.get_row(VoterProfileRow.table_name, row_id)
+    assert stored is not None
+    raw = bytearray(base64.b64decode(str(stored.row_data["payload"])))
+    raw[-1] ^= 0x01
+    client.update_row(
+        VoterProfileRow.table_name,
+        row_id,
+        {"payload": base64.b64encode(bytes(raw)).decode()},
+    )
+    with pytest.raises(InvalidTag):
+        service.load(USER)
+
+
+def test_a_row_whose_key_was_shredded_raises_rather_than_reading_as_empty(
+    service: VoterProfileService, keyring: ProfileKeyring
+) -> None:
+    """`load` returns None for "no row", but an unopenable row is a broken
+    state worth surfacing — not an empty profile handed to a voter.
+    """
+    service.save(USER, profile())
+    keyring.shred(USER)
+    with pytest.raises(LookupError):
+        service.load(USER)
+
+
+def test_history_helpers_select_by_tier_and_dealbreaker() -> None:
+    """Used by the scoring stories (4.1-4.5) rather than by storage, so they
+    are proven here instead of being discovered broken later.
+    """
+    parsed = InterestProfile.model_validate(
+        profile(
+            interests=[
+                interest(0, dealbreaker=True),
+                interest(1, tier="secondary"),
+                interest(2, tier="nice_to_have"),
+            ]
+        )
+    )
+    assert [item.topic_id for item in parsed.by_tier("primary")] == ["test:test-topic-0:v1"]
+    assert len(parsed.by_tier("secondary")) == 1
+    assert len(parsed.by_tier("nice_to_have")) == 1
+    assert [item.topic_id for item in parsed.dealbreakers] == ["test:test-topic-0:v1"]
+
+
+def test_an_over_long_history_is_trimmed_rather_than_rejected() -> None:
+    """A voter who has re-tiered 200 times has done nothing wrong; failing
+    their save to protect a payload size would be the wrong trade.
+    """
+    history = [
+        {"version": index + 1, "changed_at": "2026-10-10T02:11:00Z"}
+        for index in range(MAX_HISTORY_ENTRIES + 20)
+    ]
+    parsed = InterestProfile.model_validate(profile(history=history))
+    assert len(parsed.history) == MAX_HISTORY_ENTRIES
+    # The OLDEST are dropped, which is also the privacy-preferring direction.
+    assert parsed.history[-1].version == MAX_HISTORY_ENTRIES + 20

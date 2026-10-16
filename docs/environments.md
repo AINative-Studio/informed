@@ -128,12 +128,77 @@ via an OIDC-federated fetch step instead of storing the value directly in
 GitHub. That migration does not change the env var contract in
 `.env.example`, only where the value is fetched from before the job runs.
 
+### 3. Voter-profile encryption: `ZERODB_PROFILE_ROOT_KEY` (story 14.1)
+
+Voter interests are special-category political-opinion data under GDPR
+(`prd.md` → Privacy). They are never stored in clear text: story 14.1's
+`backend/app/profiles/` encrypts each profile's payload with AES-256-GCM
+under a **per-user data key**, and wraps that data key under a key derived
+from `$ZERODB_PROFILE_ROOT_KEY`. Row ids are `vp:{hmac(user_id)}`, keyed from
+the same root, so a database dump cannot be joined back to accounts.
+
+**This variable is a documented stand-in for a real KMS, and the open
+question above is still open.** Story 14.1's acceptance criterion reads
+"AES-256-GCM per-user data keys **via KMS**", and `datamodel.md`'s open
+questions still list "Key management for `voter_profiles`: AINative KMS, or a
+cloud KMS?". Neither existed when 14.1 was built, and provisioning a cloud
+KMS key is infrastructure work rather than application code — the same
+boundary this story drew around ZeroDB project provisioning. So 14.1 shipped
+a correct envelope scheme whose root key is an ordinary environment secret:
+
+| Property | Today (env var) | With a real KMS |
+| --- | --- | --- |
+| Per-user AES-256-GCM data keys | yes | yes |
+| Data key random, not derived (so delete can shred it) | yes | yes |
+| HMAC row ids | yes | yes |
+| Root key never in application memory | **no** | yes |
+| Hardware-backed custody, audited key use | **no** | yes |
+| Automatic rotation | **no** | yes |
+
+The acknowledged consequence: an attacker who can read this process's
+environment **and** the `voter_profile_keys` table can decrypt profiles.
+That is a weaker boundary than "via KMS" implies, and it is the one part of
+story 14.1 that infrastructure rather than code has to finish.
+
+**Migrating to a real KMS** does not change the stored row shape, the API, or
+any caller. Every row records its own `key_ref` (`local-envelope:…` today,
+`kms:informed/users/v1` after) precisely so a table mid-migration stays
+readable row by row. What changes is the inside of `ProfileRootKey` and
+`ProfileKeyring.wrap_key_for` — see `backend/app/profiles/crypto.py`'s module
+docstring for the exact list.
+
+Operational rules for this value:
+
+- **One root key per environment**, never shared. A dev key must not be able
+  to decrypt a prod profile, for the same reason API keys are not shared.
+- **Generate it, never choose it**:
+  ```bash
+  python -c "import os,base64;print(base64.b64encode(os.urandom(32)).decode())"
+  ```
+  It must decode to exactly 32 bytes; base64 and hex are both accepted.
+- **There is no default.** The profile store raises `RootKeyMissingError` and
+  refuses to serve rather than falling back, because a shared or constant key
+  is not encryption.
+- **Rotating it makes every stored profile unreadable** — the wraps were
+  sealed under the old root key. A rotation needs a re-wrap migration (read
+  each wrap with the old key, re-wrap with the new one) which no story has
+  built yet. Treat it as append-once until a real KMS, whose own rotation
+  handles this, replaces it.
+- It is a GitHub Actions secret per GitHub Environment like the ZeroDB
+  values, and belongs in the same "Never" list below.
+
 ### Never
 
-- Never put a real `ZERODB_API_KEY`, workspace id, or project id in: a
-  committed file, a commit message, a GitHub Actions workflow YAML literal,
-  a Dockerfile `ENV` instruction, application logs, test fixtures, or a PR
-  description.
+- Never put a real `ZERODB_API_KEY`, `ZERODB_PROFILE_ROOT_KEY`, workspace id,
+  or project id in: a committed file, a commit message, a GitHub Actions
+  workflow YAML literal, a Dockerfile `ENV` instruction, application logs,
+  test fixtures, or a PR description.
+- Never log a decrypted voter profile, an interest, a stance, a voter's
+  free-text note, or any profile key material — at any log level, including
+  debug, and including inside an exception message that a 4xx response would
+  carry. Story 14.1 asserts this with tests that capture logs across a full
+  save/read/delete cycle; a new `logger` call in `backend/app/profiles/` that
+  touches plaintext fails CI.
 - Never share a single API key across more than one environment.
 - Never let a `dev`-scoped key have permissions on `informed-staging` or
   `informed-prod` — request environment-scoped keys at creation time (see

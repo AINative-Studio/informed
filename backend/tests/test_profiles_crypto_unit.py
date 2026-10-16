@@ -256,6 +256,69 @@ def test_key_ref_names_the_scheme(keyring: ProfileKeyring) -> None:
     assert "local" in KEY_REF
 
 
+# --- edge cases the live path can actually reach --------------------------
+
+
+def test_a_root_key_of_the_wrong_length_in_env_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 16-byte value is a plausible paste error and must not become a key.
+
+    It decodes cleanly and only the length check catches it — and were that
+    check a silent pad instead, everything would be encrypted under 128 bits
+    while the code claimed 256.
+    """
+    monkeypatch.setenv("ZERODB_PROFILE_ROOT_KEY", base64.b64encode(os.urandom(16)).decode())
+    with pytest.raises(RootKeyMissingError, match="32-byte"):
+        ProfileRootKey.from_env()
+
+
+def test_a_root_key_that_is_neither_base64_nor_hex_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ZERODB_PROFILE_ROOT_KEY", "not-a-key-at-all!!!")
+    with pytest.raises(RootKeyMissingError):
+        ProfileRootKey.from_env()
+
+
+def test_the_refusal_message_does_not_echo_the_bad_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A mistyped prod key is still a prod key, and this message reaches logs."""
+    monkeypatch.setenv("ZERODB_PROFILE_ROOT_KEY", "deadbeef" * 3)
+    with pytest.raises(RootKeyMissingError) as caught:
+        ProfileRootKey.from_env()
+    assert "deadbeef" not in str(caught.value)
+
+
+def test_a_data_key_of_the_wrong_length_is_refused() -> None:
+    with pytest.raises(ValueError, match="32 bytes"):
+        ProfileCipher(os.urandom(16))
+
+
+def test_the_keyring_repr_carries_no_secrets(keyring: ProfileKeyring) -> None:
+    assert ROOT.hex() not in repr(keyring)
+    assert base64.b64encode(ROOT).decode() not in repr(keyring)
+
+
+def test_wrap_key_for_reuses_the_stored_salt(keyring: ProfileKeyring) -> None:
+    """Once a wrap exists its stored salt derives the KEK — otherwise a key
+    could be wrapped under one KEK and unwrapped with another.
+    """
+    keyring.ensure_data_key(USER)
+    wrap = keyring.stored_wrap(USER)
+    assert wrap is not None
+    salt = base64.b64decode(wrap.salt)
+    assert keyring.wrap_key_for(USER) == keyring.wrap_key_for(USER, salt=salt)
+
+
+def test_wrap_key_for_works_before_a_first_save(keyring: ProfileKeyring) -> None:
+    """Callable with no stored wrap, from a deterministic placeholder salt, so
+    it never wraps under a random salt it did not store.
+    """
+    assert len(keyring.wrap_key_for("synthetic-user-never-saved")) == DATA_KEY_BYTES
+
+
 # --- no plaintext, no key material, in logs -------------------------------
 
 
