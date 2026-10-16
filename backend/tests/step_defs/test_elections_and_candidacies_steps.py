@@ -30,7 +30,7 @@ from app.ingest.candidacies import (
 )
 from app.repositories import Repository
 from app.repositories.models import Candidacy, Election, Person
-from app.seed_elections import ElectionSeeder, UPCOMING_ELECTIONS
+from app.seed_elections import UPCOMING_ELECTIONS, ElectionSeeder
 from app.zerodb import ZeroDBClient
 from app.zerodb.testing import FakeZeroDBTransport
 
@@ -211,9 +211,7 @@ def load_with_pacer(zerodb: ZeroDBClient, result: dict[str, Any]) -> None:
 # --- pre-existing sitting member ------------------------------------------
 
 
-@given(
-    parsers.parse('the sitting member "{person_id}" is already loaded with FEC id "{fec_id}"')
-)
+@given(parsers.parse('the sitting member "{person_id}" is already loaded with FEC id "{fec_id}"'))
 def sitting_member_loaded(zerodb: ZeroDBClient, person_id: str, fec_id: str) -> None:
     """A `people` row in exactly the shape story 2.2's loader writes.
 
@@ -261,15 +259,23 @@ def report_count(result: dict[str, Any]) -> None:
     assert report.row_count == len(rows)
 
 
-@then(parsers.parse('every loaded candidacy has an id of the form "{_pattern}"'))
-def candidacy_id_shape(zerodb: ZeroDBClient, result: dict[str, Any], _pattern: str) -> None:
+@then(parsers.parse('every loaded candidacy has an id of the form "{pattern}"'))
+def candidacy_id_shape(zerodb: ZeroDBClient, result: dict[str, Any], pattern: str) -> None:
+    """The stored id must be exactly the three references joined by ':'.
+
+    `pattern` is the Gherkin's own literal
+    `{election_id}:{district_id}:{person_id}`; it is asserted against by
+    rebuilding the id from the row's own fields rather than by regex, so the
+    check fails if the repository ever composes it differently.
+    """
+    assert pattern == "{election_id}:{district_id}:{person_id}", (
+        f"this step only knows datamodel.md's documented pattern, got {pattern!r}"
+    )
     report: LoadReport = result["report"]
     for candidacy_id in report.candidacies_written:
         candidacy = _candidacies(zerodb).get(candidacy_id)
         assert candidacy is not None, f"no candidacies row {candidacy_id!r}"
-        expected = (
-            f"{candidacy.election_id}:{candidacy.district_id}:{candidacy.person_id}"
-        )
+        expected = f"{candidacy.election_id}:{candidacy.district_id}:{candidacy.person_id}"
         assert candidacy_id == expected, (
             f"candidacy id {candidacy_id!r} is not "
             f"{{election_id}}:{{district_id}}:{{person_id}} ({expected!r})"
@@ -289,28 +295,38 @@ def candidacies_reference_election(
 
 
 @then(parsers.parse('the candidacy for FEC candidate "{fec_id}" is in district "{district_id}"'))
-def candidacy_district(fake: FakeZeroDBTransport, zerodb: ZeroDBClient, fec_id: str, district_id: str) -> None:
+def candidacy_district(
+    fake: FakeZeroDBTransport, zerodb: ZeroDBClient, fec_id: str, district_id: str
+) -> None:
     candidacy = _candidacy_for_fec(fake, zerodb, fec_id)
     assert candidacy.district_id == district_id
 
 
 @then(parsers.parse('the candidacy for FEC candidate "{fec_id}" has party "{party}"'))
-def candidacy_party(fake: FakeZeroDBTransport, zerodb: ZeroDBClient, fec_id: str, party: str) -> None:
+def candidacy_party(
+    fake: FakeZeroDBTransport, zerodb: ZeroDBClient, fec_id: str, party: str
+) -> None:
     assert _candidacy_for_fec(fake, zerodb, fec_id).party == party
 
 
 @then(parsers.parse('the candidacy for FEC candidate "{fec_id}" has person name "{name}"'))
-def candidacy_person_name(fake: FakeZeroDBTransport, zerodb: ZeroDBClient, fec_id: str, name: str) -> None:
+def candidacy_person_name(
+    fake: FakeZeroDBTransport, zerodb: ZeroDBClient, fec_id: str, name: str
+) -> None:
     assert _candidacy_for_fec(fake, zerodb, fec_id).person_name == name
 
 
 @then(parsers.parse('the candidacy for FEC candidate "{fec_id}" has person id "{person_id}"'))
-def candidacy_person_id(fake: FakeZeroDBTransport, zerodb: ZeroDBClient, fec_id: str, person_id: str) -> None:
+def candidacy_person_id(
+    fake: FakeZeroDBTransport, zerodb: ZeroDBClient, fec_id: str, person_id: str
+) -> None:
     assert _candidacy_for_fec(fake, zerodb, fec_id).person_id == person_id
 
 
 @then(parsers.parse('the candidacy for FEC candidate "{fec_id}" has status "{status}"'))
-def candidacy_status(fake: FakeZeroDBTransport, zerodb: ZeroDBClient, fec_id: str, status: str) -> None:
+def candidacy_status(
+    fake: FakeZeroDBTransport, zerodb: ZeroDBClient, fec_id: str, status: str
+) -> None:
     assert _candidacy_for_fec(fake, zerodb, fec_id).status == status
 
 

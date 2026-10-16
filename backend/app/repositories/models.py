@@ -492,6 +492,105 @@ class Person(RowModel):
     terms: list[Term] = Field(default_factory=list)
 
 
+#: datamodel.md types `elections.kind` as a bare string and gives no vocabulary
+#: for it, but an uncontrolled value here is a voter-facing bug waiting to
+#: happen: a "genral" row is a ballot nobody can find. These four are the
+#: federal election kinds Informed can actually place a candidacy in — the
+#: regular November general, a party primary, a runoff where state law provides
+#: one, and a special election to fill a vacancy. Narrowed to a `Literal` for
+#: the same reason `vote_type` and `verdict` are.
+ElectionKind = Literal["general", "primary", "runoff", "special"]
+
+
+class Election(RowModel):
+    """One election Informed tracks, keyed `us-2026-11-03-general`.
+
+    datamodel.md: id pattern `us-2026-11-03-general`; fields jurisdiction_id,
+    name, election_date, kind.
+
+    The id is supplied rather than derived, like `Jurisdiction`'s and
+    `Body`'s. It *looks* composable from `election_date` + `kind`, and
+    deliberately is not: the leading segment is `us`, not the
+    `jurisdiction_id` (`us-federal`), so composing it from this row's own
+    fields would produce `us-federal-2026-11-03-general` — not the id
+    datamodel.md documents. Rather than teach `build_id` a per-table
+    transformation of a reference's value, the seed states the documented id
+    directly (`app.seed_elections`), which is also the only form a reader can
+    check against datamodel.md by eye.
+    """
+
+    table_name: ClassVar[str] = "elections"
+    references: ClassVar[dict[str, str]] = {"jurisdiction_id": "jurisdictions"}
+
+    jurisdiction_id: str
+    name: str
+    election_date: str
+    kind: ElectionKind
+
+
+#: datamodel.md types `candidacies.status` as a bare string with no vocabulary,
+#: so story 2.6 defines one, mapped from the source's own `candidate_status`
+#: (see `app.ingest.candidacies.candidacy_status_for`):
+#:
+#:   filed      — a present candidate for this election (FEC 'C'/'F')
+#:   statement  — has filed a statement of candidacy but is not yet a
+#:                statutory candidate (FEC 'N', "not yet a candidate")
+#:   withdrawn  — a prior candidate: withdrawn, lost a primary, or otherwise
+#:                no longer running in this cycle (FEC 'P')
+#:
+#: Three values rather than a free string because this field decides whether a
+#: name appears on a voter's ballot view. A typo'd status would either hide a
+#: real candidate or show a withdrawn one, and neither failure announces
+#: itself. Deliberately NOT a copy of FEC's letters: those are one source's
+#: internal vocabulary, and story 2.5's spike already commits Informed to
+#: reconciling state-office data into this same table, which has no concept of
+#: an 'N'.
+CandidacyStatus = Literal["filed", "statement", "withdrawn"]
+
+
+class Candidacy(RowModel):
+    """One person's run for one seat in one election.
+
+    datamodel.md: id pattern `{election_id}:{district_id}:{person_id}`; fields
+    election_id, district_id, person_id, person_name, party, is_incumbent,
+    status; queried by (election, district) for the ballot view.
+
+    The id IS derived — this is the first modelled table whose natural key is
+    three references — and `strip_id_prefix` is deliberately empty, because
+    datamodel.md's documented pattern is `{person_id}`, prefix intact (the same
+    call `CandidatePosition` makes, and the opposite of `MemberVote`'s
+    `{bioguide}`). So a stored id reads
+    `us-2026-11-03-general:ocd-division/country:us/state:pa/cd:2:person:fec-H6PA02205`.
+
+    All three references are required and checked before every write, which is
+    what makes this table's integrity rule real rather than aspirational:
+    datamodel.md's own integrity list says "every `candidacies.person_id`
+    resolves to a `people` row". That is why `app.ingest.candidacies` has to
+    create a `people` row for a challenger *before* writing their candidacy,
+    rather than writing a candidacy that points at nobody.
+
+    `person_name` duplicates the person's `canonical_name` on purpose
+    (datamodel.md rule 3's denormalisation): the ballot view reads one table
+    per district, and there are no joins to go and fetch 6-15 names with.
+    """
+
+    table_name: ClassVar[str] = "candidacies"
+    natural_key: ClassVar[tuple[str, ...]] = ("election_id", "district_id", "person_id")
+    references: ClassVar[dict[str, str]] = {
+        "election_id": "elections",
+        "district_id": "districts",
+        "person_id": "people",
+    }
+
+    election_id: str
+    district_id: str
+    person_id: str
+    person_name: str
+    party: str | None = None
+    is_incumbent: bool = False
+    status: CandidacyStatus
+
+
 # --- Legislative record ---------------------------------------------------
 
 
