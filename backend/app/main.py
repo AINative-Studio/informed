@@ -9,11 +9,12 @@ Routes so far:
     POST /v1/profiles                 — save a tiered interest profile (4.1, building on 14.1)
     /v1/panel/*                       — the advisory panel's wording review workflow (3.3)
     /v1/methodology[/*]               — the published methodology and its changelog (12.2)
+    POST /v1/corrections              — report an error on any claim, no account (12.4)
+    GET  /v1/corrections/{token}      — the reporter checks their own status (12.4)
 
 The remaining endpoints in prd.md's Core API table (`/v1/candidates/{id}/
-alignment`, `/v1/candidates/{id}/promise-record`, `/v1/agent/ask`,
-`/v1/corrections`) each mount their own router here behind their own failing
-tests first.
+alignment`, `/v1/candidates/{id}/promise-record`, `/v1/agent/ask`) each mount
+their own router here behind their own failing tests first.
 
 `zerodb_client` is re-exported from `app.ballot.router` so tests and future
 routers have one import path for the dependency they override:
@@ -34,6 +35,7 @@ from pydantic import BaseModel
 from app import __version__
 from app.ballot import router as ballot_router
 from app.ballot.router import zerodb_client
+from app.corrections import router as corrections_router
 from app.methodology import router as methodology_router
 from app.panel_review import router as panel_review_router
 from app.profiles import router as profiles_router
@@ -97,6 +99,7 @@ def create_app() -> FastAPI:
     app.include_router(profiles_router)
     app.include_router(panel_review_router)
     app.include_router(methodology_router)
+    app.include_router(corrections_router)
 
     return app
 
