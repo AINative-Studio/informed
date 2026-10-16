@@ -39,8 +39,13 @@ Feature: A voter's address returns their federal representatives
     Then it lists exactly 1 House member
     And the former representative is not among them
 
+  # Wyoming's single at-large seat, written as the state-only division with no
+  # `/cd:` segment. Story 2.3 corrected this from `/cd:at-large`, a spelling
+  # that appeared only here and matches no row in the live data: both the
+  # Census Geocoder (which codes an at-large seat `00`) and story 2.2's
+  # legislator loader produce the state-only form.
   Scenario: A district with no officeholders yet returns an empty race, not an error
-    Given the district "ocd-division/country:us/state:wy/cd:at-large" exists in ZeroDB
+    Given the district "ocd-division/country:us/state:wy" exists in ZeroDB
     When the voter submits an address in that district
     Then the ballot response names the voter's House district
     And it lists exactly 0 House members

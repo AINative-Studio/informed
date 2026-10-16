@@ -33,10 +33,25 @@ Feature: Repository layer with natural-key ids (story 1.4)
     Then the member vote "us-house:119-2:452:B000944" is stored
     And exactly 1 row exists in "member_votes"
 
+  # `jurisdictions` is the reference-free table this is asserted on. It was
+  # `districts` until story 2.3, which declared `districts.body_id` a reference
+  # to `bodies` — the call story 1.4 explicitly left to it, because 2.3 is the
+  # story that writes real district rows. So the example moved to a table that
+  # genuinely declares nothing, and the district now exercises the check.
   Scenario: Reference checks are skipped for a table that references nothing
+    When I save a jurisdiction "us-federal"
+    Then the jurisdiction "us-federal" is stored
+    And no reference lookup was made against "people"
+
+  Scenario: A district referencing a chamber that was never seeded is rejected
+    When I save a district "ocd-division/country:us/state:ca/cd:19"
+    Then the write is rejected as a missing reference
+    And the missing reference names the table "bodies" and the id "us-house"
+
+  Scenario: A district whose chamber exists is written
+    Given the chamber "us-house" exists
     When I save a district "ocd-division/country:us/state:ca/cd:19"
     Then the district "ocd-division/country:us/state:ca/cd:19" is stored
-    And no reference lookup was made against "people"
 
   # --- idempotent upsert: the second acceptance criterion -----------------
   #

@@ -5,9 +5,11 @@ the whole path under test — handler, repository, client, transport — is the
 production code. Only the wire is faked, which is why no live credentials are
 needed for the committed suite.
 
-The address resolver is stubbed in production too (story 2.3 owns the Census
-Geocoder), so these steps do not stub it: they exercise the same stub the app
-ships with, and assert on the district it returns.
+The address resolver is injected (story 2.3 replaced story 1.5's production
+stub with the real Census Geocoder client). These steps supply
+`FixedDistrictResolver` from tests/support, so the skeleton's own assertions are
+about the ZeroDB path they were written to prove and not about geocoding, and so
+CI makes no network call. Story 2.3's own feature file covers the geocoder.
 """
 
 from __future__ import annotations
@@ -20,20 +22,22 @@ from fastapi.testclient import TestClient
 from pytest_bdd import given, parsers, scenarios, then, when
 
 from app.ballot.models import BallotResponse
+from app.ballot.router import ballot_service
 from app.ballot.service import BallotService
-from app.districts.resolver import StubAddressResolver
 from app.main import create_app, zerodb_client
 from app.repositories import Repository
 from app.repositories.models import District, Person
 from app.zerodb import ZeroDBClient
 from app.zerodb.testing import FakeZeroDBTransport
+from tests.support.reference_data import REFERENCE_TABLES, seed_reference_data
+from tests.support.resolvers import FixedDistrictResolver
 
 scenarios("../features/walking_skeleton.feature")
 
-#: The district the stub resolver returns for any address (see the resolver's
-#: docstring). Matching it here rather than hard-coding a second copy means a
-#: change to the stub fails this feature instead of silently diverging.
-TEST_DISTRICT_ID = StubAddressResolver.DISTRICT_ID
+#: The district the test resolver returns for any address. Referenced rather
+#: than copied, so a change to the double fails this feature instead of
+#: silently diverging from it.
+TEST_DISTRICT_ID = FixedDistrictResolver.DISTRICT_ID
 
 #: An address no voter owns. prd.md: never put real voter data in a fixture.
 SYNTHETIC_ADDRESS = "1600 Pennsylvania Ave, Washington, DC"
@@ -52,8 +56,12 @@ def zdb(transport: FakeZeroDBTransport) -> ZeroDBClient:
     client = ZeroDBClient(
         transport=transport, project_id="proj-test", backoff_base=0.0, sleep=lambda _: None
     )
-    for table in ("districts", "people"):
+    for table in (*REFERENCE_TABLES, "districts", "people"):
         client.create_table(table, {"id": "string"})
+    # `districts.body_id` references `bodies` as of story 2.3, so the chambers
+    # story 2.1 seeds must exist before any district row in this feature can be
+    # written. Seeded once here rather than in each Given that needs a district.
+    seed_reference_data(client)
     return client
 
 
@@ -69,9 +77,19 @@ def people(zdb: ZeroDBClient) -> Repository[Person]:
 
 @pytest.fixture
 def api(zdb: ZeroDBClient) -> Any:
-    """The real app, wired to the fake ZeroDB through the app's own override."""
+    """The real app, wired to the fake ZeroDB and a fixed-district resolver.
+
+    Both overrides go through the app's own dependency seams, so the path under
+    test is still the production handler, service, repository and client. The
+    resolver is overridden because the app's default is now the real Census
+    Geocoder (story 2.3) and this feature's scenarios are about the ZeroDB path,
+    not about geocoding — and because CI must make no network call.
+    """
     app = create_app()
     app.dependency_overrides[zerodb_client] = lambda: zdb
+    app.dependency_overrides[ballot_service] = lambda: BallotService(
+        client=zdb, resolver=FixedDistrictResolver()
+    )
     with TestClient(app) as test_client:
         yield test_client
 
@@ -204,15 +222,18 @@ def submit_empty_address(api: TestClient, context: Any) -> None:
 
 @when("the voter submits an address in that district")
 def submit_address_in_district(api: TestClient, context: Any, zdb: ZeroDBClient) -> None:
-    """Resolve to the Wyoming district instead of the stub's default one.
+    """Resolve to the Wyoming district instead of the default one.
 
     The service takes its resolver by injection precisely so a caller can point
-    it at a different district without a second HTTP surface; story 2.3 replaces
-    the resolver with the real geocoder behind the same seam.
+    it at a different district without a second HTTP surface — the same seam
+    story 2.3's real geocoder plugs into.
     """
     service = BallotService(
         client=zdb,
-        resolver=StubAddressResolver(district_id="ocd-division/country:us/state:wy/cd:at-large"),
+        resolver=FixedDistrictResolver(
+            "ocd-division/country:us/state:wy",
+            name="Congressional District (at Large)",
+        ),
     )
     context.response = service.ballot_for(SYNTHETIC_ADDRESS)
 

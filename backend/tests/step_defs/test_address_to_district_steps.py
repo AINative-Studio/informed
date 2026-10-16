@@ -29,15 +29,17 @@ from app.districts.resolver import (
 )
 from app.main import create_app, zerodb_client
 from app.repositories import Repository
-from app.repositories.models import District, Person
+from app.repositories.models import District
 from app.zerodb import ZeroDBClient
 from app.zerodb.testing import FakeZeroDBTransport
+from tests.support.reference_data import REFERENCE_TABLES, seed_reference_data
 
 scenarios("../features/address_to_district.feature")
 
-FIXTURES = json.loads(
-    (Path(__file__).resolve().parent.parent / "fixtures" / "census_geocoder_responses.json").read_text()
+_FIXTURE_PATH = (
+    Path(__file__).resolve().parent.parent / "fixtures" / "census_geocoder_responses.json"
 )
+FIXTURES = json.loads(_FIXTURE_PATH.read_text())
 
 #: The address every scenario submits. A real, public, non-residential
 #: address (the Space Needle), never a person's home: prd.md forbids real voter
@@ -92,8 +94,12 @@ def zdb() -> ZeroDBClient:
     client = ZeroDBClient(
         transport=transport, project_id="proj-test", backoff_base=0.0, sleep=lambda _: None
     )
-    for table in ("districts", "people"):
+    for table in (*REFERENCE_TABLES, "districts", "people"):
         client.create_table(table, {"id": "string"})
+    # Story 2.3 declared `districts.body_id` a reference to `bodies`, so the
+    # chambers must exist before the resolver's lazily-created district row can
+    # be written — which is the whole point of the ballot-endpoint scenario.
+    seed_reference_data(client)
     return client
 
 
@@ -182,9 +188,8 @@ def resolve_ok(ctx: ResolveContext) -> None:
 
 @when("the voter's address is resolved and fails")
 def resolve_fails(ctx: ResolveContext, caplog: pytest.LogCaptureFixture) -> None:
-    with caplog.at_level(logging.DEBUG):
-        with pytest.raises(AddressResolutionError) as excinfo:
-            _resolver(ctx).resolve(ADDRESS)
+    with caplog.at_level(logging.DEBUG), pytest.raises(AddressResolutionError) as excinfo:
+        _resolver(ctx).resolve(ADDRESS)
     ctx.error = excinfo.value
 
 

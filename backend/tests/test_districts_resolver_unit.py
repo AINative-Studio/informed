@@ -148,9 +148,7 @@ def test_resolver_gives_different_districts_for_different_addresses() -> None:
     two addresses in two states produce two districts — which is story 2.3's
     actual acceptance criterion and the reason the stub existed to be replaced.
     """
-    get = RecordingGet(
-        payloads=[FIXTURES["seattle_wa_07"], FIXTURES["cheyenne_wy_at_large"]]
-    )
+    get = RecordingGet(payloads=[FIXTURES["seattle_wa_07"], FIXTURES["cheyenne_wy_at_large"]])
     first = resolver(get).resolve(ADDRESS)
     second = resolver(get).resolve("200 W 24th St, Cheyenne, WY 82002")
     assert first != second
@@ -258,7 +256,7 @@ def test_resolver_reports_no_match_helpfully() -> None:
     with pytest.raises(AddressResolutionError) as excinfo:
         resolver(RecordingGet(FIXTURES["no_match"])).resolve(ADDRESS)
     message = str(excinfo.value)
-    assert "could not find" in message.lower()
+    assert "couldn't find" in message.lower() or "could not find" in message.lower()
     # ui-prd.md: specific, never generic. It must say what to try.
     assert "street" in message.lower()
     assert "400 Broad" not in message
@@ -272,7 +270,9 @@ def test_resolver_refuses_an_ambiguous_address_rather_than_guessing() -> None:
     worse for this product than no answer (prd.md: evidence over opinion).
     """
     with pytest.raises(AmbiguousAddressError) as excinfo:
-        resolver(RecordingGet(FIXTURES["ambiguous_springfield"])).resolve("100 Main St, Springfield")
+        resolver(RecordingGet(FIXTURES["ambiguous_springfield"])).resolve(
+            "100 Main St, Springfield"
+        )
     assert isinstance(excinfo.value, AddressResolutionError)
     assert "more than one" in str(excinfo.value).lower()
 
@@ -380,6 +380,7 @@ def test_the_resolver_logs_nothing_containing_the_address(
     Covers the failure paths too, which is where a naive implementation leaks
     it — "could not geocode {address}" is the obvious and wrong log line.
     """
+    import contextlib
     import logging
 
     for key, status in [
@@ -389,11 +390,8 @@ def test_the_resolver_logs_nothing_containing_the_address(
         ("error_blank_address_400", 400),
     ]:
         caplog.clear()
-        with caplog.at_level(logging.DEBUG):
-            try:
-                resolver(RecordingGet(FIXTURES[key], status_code=status)).resolve(ADDRESS)
-            except AddressResolutionError:
-                pass
+        with caplog.at_level(logging.DEBUG), contextlib.suppress(AddressResolutionError):
+            resolver(RecordingGet(FIXTURES[key], status_code=status)).resolve(ADDRESS)
         for record in caplog.records:
             text = f"{record.getMessage()} {record.args}".lower()
             assert "broad" not in text
