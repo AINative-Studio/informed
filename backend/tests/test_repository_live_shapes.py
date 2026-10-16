@@ -172,17 +172,67 @@ def test_the_fallback_stops_once_it_has_found_the_row(
     fake.calls.clear()
 
     client.get_row("people", "person:SYNTH0")
-    reads_for_first = len(
-        [c for c in fake.calls if c.method == "GET" and c.path.endswith("/rows")]
-    )
+    reads_for_first = len([c for c in fake.calls if c.method == "GET" and c.path.endswith("/rows")])
     fake.calls.clear()
 
     client.get_row("people", "person:SYNTH9")
-    reads_for_last = len(
-        [c for c in fake.calls if c.method == "GET" and c.path.endswith("/rows")]
-    )
+    reads_for_last = len([c for c in fake.calls if c.method == "GET" and c.path.endswith("/rows")])
 
     assert reads_for_first <= reads_for_last
+
+
+def test_the_walk_gives_up_at_its_ceiling_rather_than_scanning_forever(
+    fake: FakeZeroDBTransport, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The ceiling is what keeps this workaround off `member_votes`' 600k rows.
+
+    Injected tiny here (2 pages of 2) so the exhaustion path is reachable
+    without seeding 25k rows. The behaviour on exhaustion is deliberate and
+    worth pinning: the walk reports the row ABSENT rather than raising, because
+    a reference check must not crash an ingest run, and it logs at warning so
+    the silent wrong answer is at least traceable. That trade-off is only
+    acceptable while the ceiling sits far above the tables actually referenced —
+    see datamodel.md's open question.
+    """
+    client = ZeroDBClient(
+        transport=fake,
+        project_id="proj-test",
+        backoff_base=0.0,
+        sleep=lambda _: None,
+        fallback_page_size=2,
+        max_fallback_pages=2,
+    )
+    client.create_table("people", {"id": "string"})
+    for index in range(8):
+        client.insert_row("people", {"id": f"person:SYNTH{index}", "canonical_name": "x"})
+
+    with caplog.at_level("WARNING"):
+        found = client.get_row("people", "person:SYNTH7")
+
+    assert found is None, "a row beyond the ceiling is reported absent, not raised"
+    assert any("gave up after" in record.message for record in caplog.records), (
+        "giving up must be logged, or a wrong answer is untraceable"
+    )
+
+
+def test_a_row_within_the_ceiling_is_still_found(fake: FakeZeroDBTransport) -> None:
+    """The ceiling must not truncate the walk early."""
+    client = ZeroDBClient(
+        transport=fake,
+        project_id="proj-test",
+        backoff_base=0.0,
+        sleep=lambda _: None,
+        fallback_page_size=2,
+        max_fallback_pages=2,
+    )
+    client.create_table("people", {"id": "string"})
+    for index in range(8):
+        client.insert_row("people", {"id": f"person:SYNTH{index}", "canonical_name": "x"})
+
+    found = client.get_row("people", "person:SYNTH3")
+
+    assert found is not None
+    assert found.row_data["id"] == "person:SYNTH3"
 
 
 # --- what the finding means for story 1.4's acceptance criteria -----------

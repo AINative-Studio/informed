@@ -11,9 +11,17 @@ criteria are checked against the real API as well as the fake.
 
 What it proves, in order, and what it would catch:
 
+  0. **Decoy rows, first.** Several unrelated rows are written into `people`
+     before the row under test, and the table's row count is asserted to be
+     greater than one. Without this the rest of the script is a false green:
+     the first live run of this story passed against a repository that *did*
+     duplicate rows, because `people` was empty, the one row written was the
+     only row, and the client's filter workaround only ever inspected one page.
+     Re-running with decoys reported `live row count ... is 2, expected 1` —
+     a real duplicate in the real table.
   1. **Re-ingest produces no duplicate.** Two `upsert` calls with the same
      natural-key id, then a live count. Catches the upsert's find step failing
-     to find — which is exactly what the server-side filter bug would cause,
+     to find — which is exactly what the server-side filter bug does cause,
      and what would quietly double every table on a second ingest run.
   2. **A row referencing a missing id is rejected.** A `member_votes` row whose
      `person_id` does not exist. Catches a reference check that only works
@@ -58,6 +66,12 @@ PERSON_ID = f"person:{MARKER}"
 ROLL_CALL_ID = f"us-house:119-2:{MARKER}"
 MISSING_PERSON_ID = f"person:{MARKER}-nobody"
 PROMISE_ID = f"prm:{MARKER}"
+
+#: Rows written into `people` BEFORE the row under test, so that row is not the
+#: table's first. See the `0.` block in `main`: without decoys this whole script
+#: passes against a repository whose find step only ever inspects row 0, which
+#: is exactly the false green story 1.4's first live run produced.
+DECOY_COUNT = 3
 
 logger = logging.getLogger("verify_repository_live")
 
@@ -105,6 +119,27 @@ def verdict_row(verdict: str) -> dict[str, Any]:
     }
 
 
+def live_row_count(client: ZeroDBClient, table: str) -> int:
+    """How many rows the table holds, read unfiltered.
+
+    Used to prove the idempotency check below is not vacuous. The client works
+    around ZeroDB's broken server-side filter by walking the table page by
+    page, so a check run against a table holding ONE row cannot distinguish a
+    correct walk from the old one-page version that only ever inspected row 0 —
+    which is exactly how this story's first live run came back green against a
+    repository that duplicated rows.
+
+    Row *position* was the first thing tried here and is not usable: a live
+    probe during this story showed ZeroDB's unfiltered row order is not
+    insertion order and not otherwise specified (a pre-existing row came back
+    between two rows inserted before and after it), so "is this row first" is
+    not a property a test can depend on. Row *count* is, and it is what
+    actually determines whether more than one page must be read.
+    """
+    page = client.query_rows(table, limit=500)
+    return len(page.rows)
+
+
 def count_live_rows(client: ZeroDBClient, table: str, row_id: str) -> int:
     """How many rows in `table` carry this natural-key id, read from live.
 
@@ -138,10 +173,31 @@ def main() -> int:  # noqa: C901 - a linear script of checks reads better as one
             logger.error("FAIL  %s %s", label, detail)
 
     try:
+        # --- 0. make every check below non-vacuous ------------------------
+        #
+        # This story's FIRST live run passed while the repository was broken,
+        # because `people` was empty: the one row written was row 0, and the
+        # client's client-side filter fallback only ever read row 0. Seeding
+        # decoys FIRST puts the row under test behind other rows, which is the
+        # only arrangement that actually exercises the find step. Without this
+        # block the run below is a false green.
+        for index in range(DECOY_COUNT):
+            decoy_id = f"{PERSON_ID}-decoy-{index}"
+            client.upsert_row("people", decoy_id, {"canonical_name": f"Decoy {index}"})
+            written.append(("people", decoy_id))
+        logger.info("seeded %d decoy rows ahead of the row under test", DECOY_COUNT)
+
         # --- 1. re-ingesting the same record produces no duplicate --------
         people.upsert(person_row("Synthetic Live Check"))
         written.append(("people", PERSON_ID))
         people.upsert(person_row("Synthetic Live Check (re-ingested)"))
+
+        row_count = live_row_count(client, "people")
+        check(
+            "the table holds several rows, so the find step is really exercised",
+            row_count > 1,
+            f"people holds {row_count} row(s); with one row this check is vacuous",
+        )
 
         count = count_live_rows(client, "people", PERSON_ID)
         check(
