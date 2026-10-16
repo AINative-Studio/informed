@@ -55,6 +55,15 @@ Feature: Typed ZeroDB client covers every primitive
     Then the search returns at least 1 hit
     And each hit carries the metadata it was stored with
 
+  Scenario: The client creates an HNSW index for a namespace
+    When I create an HNSW index for namespace "promises"
+    Then namespace "promises" has an index
+
+  Scenario: The client lists every namespace that has an index
+    Given an HNSW index exists for namespace "topics"
+    When I list vector indexes
+    Then the index list includes namespace "topics"
+
   # --- Knowledge graph (datamodel.md: evidence graph) ---
 
   Scenario: The client upserts the graph ontology

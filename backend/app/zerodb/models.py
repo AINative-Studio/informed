@@ -108,6 +108,21 @@ class SearchResults(_ZeroDBModel):
     model: str | None = None
 
 
+class VectorIndex(_ZeroDBModel):
+    """A search index created over one vector namespace.
+
+    Story 1.3's bootstrap creates one of these per namespace in datamodel.md,
+    at the live `bge-m3` model's 1024 dimensions, and checks `list_vector_indexes`
+    before creating one again so a second bootstrap run is a no-op.
+    """
+
+    namespace: str
+    index_type: str | None = None
+    distance_metric: str | None = None
+    dimensions: int | None = None
+    status: str | None = None
+
+
 # --- knowledge graph ------------------------------------------------------
 
 
@@ -280,4 +295,5 @@ __all__ = [
     "Table",
     "Traversal",
     "TraversalNode",
+    "VectorIndex",
 ]

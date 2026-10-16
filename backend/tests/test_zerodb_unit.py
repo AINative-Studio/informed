@@ -261,6 +261,51 @@ def test_semantic_search_passes_threshold_and_metadata_filter(
     assert call.json["filter_metadata"] == {"body_id": "us-house"}
 
 
+def test_create_vector_index_posts_namespace_and_index_params(
+    client: ZeroDBClient, fake: FakeZeroDBTransport
+) -> None:
+    """Story 1.3 calls this once per namespace at the live bge-m3 model's
+    1024 dimensions, with an HNSW index (datamodel.md)."""
+    index = client.create_vector_index(
+        namespace="promises",
+        index_type="hnsw",
+        distance_metric="cosine",
+        index_params={"dimensions": 1024},
+    )
+
+    call = fake.calls[-1]
+    assert call.path == "/projects/proj-test/embeddings/index"
+    assert call.json["namespace"] == "promises"
+    assert call.json["index_type"] == "hnsw"
+    assert call.json["index_params"] == {"dimensions": 1024}
+    assert index.namespace == "promises"
+    assert index.dimensions == 1024
+
+
+def test_create_vector_index_rejects_an_empty_namespace(client: ZeroDBClient) -> None:
+    with pytest.raises(ZeroDBValidationError):
+        client.create_vector_index(namespace="")
+
+
+def test_list_vector_indexes_returns_every_created_index(client: ZeroDBClient) -> None:
+    client.create_vector_index(namespace="promises")
+    client.create_vector_index(namespace="topics")
+
+    indexes = {index.namespace for index in client.list_vector_indexes()}
+    assert indexes == {"promises", "topics"}
+
+
+def test_create_vector_index_is_safe_to_call_twice(client: ZeroDBClient) -> None:
+    """Bootstrap's own idempotency comes from checking `list_vector_indexes`
+    first, but calling this twice on the same namespace must still settle
+    into one index, not two, matching the live API's upsert-by-namespace
+    behaviour the fake models here."""
+    client.create_vector_index(namespace="promises")
+    client.create_vector_index(namespace="promises")
+
+    assert len(client.list_vector_indexes()) == 1
+
+
 # --- graph ----------------------------------------------------------------
 
 

@@ -90,6 +90,7 @@ from app.zerodb.models import (
     StoredFile,
     Table,
     Traversal,
+    VectorIndex,
 )
 from app.zerodb.settings import ZeroDBSettings
 from app.zerodb.transport import (
@@ -505,6 +506,45 @@ class ZeroDBClient:
             "POST", f"/projects/{self._project_id}/embeddings/search", json=payload
         )
         return self._parse(SearchResults, response)
+
+    def create_vector_index(
+        self,
+        *,
+        namespace: str,
+        index_type: str = "hnsw",
+        distance_metric: str = "cosine",
+        index_params: dict[str, Any] | None = None,
+    ) -> VectorIndex:
+        """Create a search index for one vector namespace.
+
+        Wraps `zerodb_create_vector_index`. Story 1.3 calls this for the four
+        namespaces in datamodel.md (`promises`, `bill_summaries`, `topics`,
+        `stances`) at the live `bge-m3` model's 1024 dimensions.
+        """
+        self._require(namespace, "namespace")
+        payload: dict[str, Any] = {
+            "namespace": namespace,
+            "index_type": index_type,
+            "distance_metric": distance_metric,
+        }
+        if index_params is not None:
+            payload["index_params"] = index_params
+        response = self._request(
+            "POST", f"/projects/{self._project_id}/embeddings/index", json=payload
+        )
+        body = self._body(response)
+        merged = {**body, "namespace": body.get("namespace", namespace)}
+        return self._parse(VectorIndex, response, merged)
+
+    def list_vector_indexes(self) -> list[VectorIndex]:
+        """List every vector namespace that already has a search index.
+
+        Wraps the read side of `zerodb_create_vector_index` / `zerodb_vector_stats`.
+        Used by story 1.3's bootstrap to check-before-create, since ZeroDB has
+        no native "does this namespace already have an index" guard of its own.
+        """
+        response = self._request("GET", f"/projects/{self._project_id}/embeddings/index")
+        return [self._parse(VectorIndex, response, item) for item in self._envelope(response)]
 
     # =====================================================================
     # Knowledge graph — the evidence graph behind every grounded answer

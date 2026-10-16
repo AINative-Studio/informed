@@ -71,6 +71,7 @@ class FakeZeroDBTransport:
     tables: dict[str, dict[str, Any]] = field(default_factory=dict)
     rows: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
     vectors: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    vector_indexes: dict[str, dict[str, Any]] = field(default_factory=dict)
     graph_entities: dict[str, dict[str, Any]] = field(default_factory=dict)
     graph_edges: set[tuple[str, str, str]] = field(default_factory=set)
     files: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -184,6 +185,8 @@ class FakeZeroDBTransport:
 
         if "graph" in segments:
             return self._route_graph(segments[-1], body)
+        if "embeddings" in segments and segments[-1] == "index":
+            return self._route_vector_index(method, body)
         if "embeddings" in segments:
             return self._route_embeddings(segments[-1], body)
         if "tables" in segments:
@@ -399,6 +402,21 @@ class FakeZeroDBTransport:
             )
 
         return _ok({})
+
+    def _route_vector_index(self, method: str, body: dict[str, Any]) -> ZeroDBResponse:
+        if method == "POST":
+            namespace = body["namespace"]
+            index = {
+                "namespace": namespace,
+                "index_type": body.get("index_type", "hnsw"),
+                "distance_metric": body.get("distance_metric", "cosine"),
+                "dimensions": 1024,
+                "status": "created" if namespace not in self.vector_indexes else "updated",
+            }
+            self.vector_indexes[namespace] = index
+            return _ok(index)
+
+        return _ok({"total": len(self.vector_indexes), "data": list(self.vector_indexes.values())})
 
     # graph ----------------------------------------------------------------
 
