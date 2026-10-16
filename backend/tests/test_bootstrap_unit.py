@@ -12,6 +12,7 @@ import pytest
 
 from app.bootstrap import (
     DATAMODEL_TABLE_COUNT,
+    INFRASTRUCTURE_TABLES,
     ONTOLOGY_ENTITY_TYPES,
     ONTOLOGY_PREDICATES,
     SCHEMA_VERSION_ROW_ID,
@@ -40,16 +41,58 @@ def client(fake: FakeZeroDBTransport) -> ZeroDBClient:
 # --- table inventory --------------------------------------------------------
 
 
-def test_table_schemas_cover_every_datamodel_table_plus_schema_versions() -> None:
-    """22 datamodel.md tables + this module's own `schema_versions` meta-table.
+def test_table_schemas_cover_every_datamodel_table_plus_infrastructure() -> None:
+    """22 datamodel.md tables + the infrastructure tables.
 
-    datamodel.md is explicit that there are 22 NoSQL tables; `schema_versions`
-    is bootstrap's own bookkeeping, not one of the 22, and is called out
-    separately everywhere this module counts tables so the two numbers are
-    never confused.
+    datamodel.md is explicit that there are 22 NoSQL tables. The others hold no
+    product data and exist so a documented rule can be implemented at all:
+    `schema_versions` is story 1.3's idempotency record, and
+    `voter_profile_keys` is story 14.1's wrapped data keys — separate from
+    `voter_profiles` so that "the key is shredded on delete" is a write the
+    profile row's own lifecycle cannot undo. Counted separately everywhere so
+    the two numbers are never confused.
     """
-    assert len(TABLE_SCHEMAS) == DATAMODEL_TABLE_COUNT + 1
-    assert "schema_versions" in TABLE_SCHEMAS
+    assert len(TABLE_SCHEMAS) == DATAMODEL_TABLE_COUNT + len(INFRASTRUCTURE_TABLES)
+    for name in INFRASTRUCTURE_TABLES:
+        assert name in TABLE_SCHEMAS
+
+
+def test_the_voter_profile_row_schema_matches_datamodel_md() -> None:
+    """Story 14.1: datamodel.md's "Voter profile document" row, field for field.
+
+    `key_ref` and `jurisdiction_ids` were missing from this schema until 14.1
+    and are both load-bearing: `key_ref` says which key scheme sealed the
+    payload (so a table mid-migration to a real KMS stays readable), and
+    `jurisdiction_ids` picks the adapters — both needed BEFORE decryption, which
+    is exactly why datamodel.md puts them on the outer row.
+    """
+    assert set(TABLE_SCHEMAS["voter_profiles"]) == {
+        "id",
+        "version",
+        "locale",
+        "jurisdiction_ids",
+        "updated_at",
+        "key_ref",
+        "payload",
+    }
+
+
+def test_no_table_schema_has_a_field_for_an_interest() -> None:
+    """Nothing anywhere may hold a voter's interests in clear text.
+
+    A schema is not a validator (ZeroDB accepts any field), so this does not
+    *prevent* a plaintext write — it prevents the bootstrap from declaring a
+    place for one, which is what a later reader would take as permission.
+    """
+    for table_name, schema in TABLE_SCHEMAS.items():
+        for field in schema:
+            assert field not in {
+                "interests",
+                "stance_ids",
+                "evidence_mode",
+                "user_id",
+                "dealbreaker",
+            }, f"{table_name}.{field} would hold voter opinion data unencrypted"
 
 
 @pytest.mark.parametrize(
