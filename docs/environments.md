@@ -571,6 +571,78 @@ as part of closing out story 1.6; see the PR for the result.
 | Keys stored in the secret manager | **Documented** — GitHub Actions encrypted secrets, one GitHub Environment per deployment target (`dev`/`staging`/`prod`), plus gitignored local env files for local dev. Actual key minting depends on the projects above existing. |
 | No keys appear in the repo | **Done** — `.env.example` has placeholders only; `local.env`/`.env`/`*.local.env`/per-env override files are gitignored; a repo-wide scan for live-looking key patterns found nothing in tracked or staged files before this PR was opened. |
 
+## Rate limiting: `TRUST_PROXY_HEADERS`, and the single-process limit (story 14.5)
+
+Story 14.5 puts every public endpoint behind a per-IP sliding-window limiter
+(`backend/app/ratelimit/`). Two operational facts about it, neither of which is
+a bug and both of which change what a deployment has to look like.
+
+### `TRUST_PROXY_HEADERS` — off by default, and that default is deliberate
+
+The limiter keys on the client address. Where it reads that address from is a
+deployment question, not a code question:
+
+| Deployment shape | `TRUST_PROXY_HEADERS` | Address used |
+| --- | --- | --- |
+| Directly exposed (uvicorn on a public port) | unset / `false` | The TCP peer |
+| Behind exactly one proxy that **overwrites** `X-Forwarded-For` | `true` | Leftmost `X-Forwarded-For` entry |
+| Behind a proxy that **appends** to a client-supplied header | unset / `false` | The TCP peer |
+
+Setting it to `true` in the wrong place makes the limiter worse than useless:
+any client can send `X-Forwarded-For`, so an app that honours it while
+directly exposed hands every scraper an unlimited supply of identities while
+still reporting that rate limiting is on. Set it only once the proxy in front
+is known to replace the header, and check that it does.
+
+Accepted values are `1`, `true`, `yes` (case-insensitive). Anything else,
+including unset, is off.
+
+### The limiter counts inside ONE process
+
+**This is an in-process limiter.** There is no Redis, no Memcached and no
+shared cache anywhere in this project (data lives in ZeroDB, over HTTP), so the
+counters live in a dict in the serving process. Consequences, for whoever
+provisions the hosting target above:
+
+- **Run the backend as a single instance with a single worker** for the limits
+  in the table to mean what they say. `uvicorn --workers 4` makes every
+  allowance 4x, because each worker counts separately. Horizontal autoscaling
+  multiplies it by the instance count.
+- **Counters reset on restart**, so a deploy hands every client a fresh
+  allowance. Immaterial for a scraping defence measured in hours; it is one
+  reason this is abuse mitigation and not an authorization control.
+
+This was the right trade for the deployment that exists (none yet; a single
+instance when there is one) and it is not the right trade forever. The
+arithmetic is confined to `RateLimitMiddleware.check`, so the migration is to
+reimplement that one method against a shared store.
+
+**Follow-up, tracked, not satisfied by story 14.5:**
+
+- [ ] When the backend runs on more than one instance or worker, move the
+      counters to a shared store (Redis, or a ZeroDB-backed counter) behind
+      `RateLimitMiddleware.check`, and re-check the limits in
+      `app/ratelimit/policy.py` against real traffic.
+- [ ] **Per-account limits.** backlog.md 14.5 asks for them; they are deferred
+      because there is no authentication anywhere in this codebase, and an
+      account limit keyed on a caller-stated `user_id` is a limit anyone lifts
+      by changing a string. `account_key` is the hook, returns `None`, and is
+      called on every request; wiring it is a one-function change the day a
+      real auth story lands.
+- [ ] **An interactive bot challenge** (hCaptcha, Turnstile or similar). What
+      ships today is a correct `429` with `Retry-After`. A real challenge
+      needs a frontend flow, a provider dependency, a privacy review against
+      prd.md's "no third-party trackers", and an accessible fallback — a
+      story of its own, not a sub-task.
+
+### Tuning the limits
+
+They live in one table, `backend/app/ratelimit/policy.py`, each with the
+reasoning for its number next to it. The tests pin the *invariants* — every
+write stricter than a read, every route covered, a 429 that carries
+`Retry-After` — rather than the specific integers, so changing a number is a
+one-line diff and does not mean rewriting tests.
+
 ## Deployment targets: none provisioned yet (noted by story 1.5)
 
 Story 1.5's second acceptance criterion is "deployed to staging", and it could
