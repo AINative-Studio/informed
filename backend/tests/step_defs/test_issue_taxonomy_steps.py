@@ -24,12 +24,12 @@ from pytest_bdd import given, parsers, scenarios, then, when
 from app.repositories import MissingReferenceError, Repository
 from app.repositories.models import IssueTopic
 from app.seed_taxonomy import (
-    STANCE_PRESUPPOSING_WORDS,
-    TAXONOMY_VERSION,
     TAXONOMY_LOCALE,
+    TAXONOMY_VERSION,
     TaxonomySeeder,
-    taxonomy_rows,
+    contains_stance_presupposing_word,
     taxonomy_row_ids,
+    taxonomy_rows,
 )
 from app.zerodb import ZeroDBClient
 from app.zerodb.testing import FakeZeroDBTransport
@@ -187,7 +187,9 @@ def children_point_at_a_root(topics: Repository[IssueTopic]) -> None:
     stored = _stored(topics)
     roots = {row.id for row in stored if row.parent_id is None}
     dangling = [
-        (row.id, row.parent_id) for row in stored if row.parent_id is not None
+        (row.id, row.parent_id)
+        for row in stored
+        if row.parent_id is not None
         if row.parent_id not in roots
     ]
     assert not dangling, f"subtopics whose parent is not a stored top-level topic: {dangling}"
@@ -214,9 +216,7 @@ def tree_is_two_levels(topics: Repository[IssueTopic]) -> None:
     """
     stored = _stored(topics)
     children_ids = {row.id for row in stored if row.parent_id is not None}
-    grandchildren = [
-        (row.id, row.parent_id) for row in stored if row.parent_id in children_ids
-    ]
+    grandchildren = [(row.id, row.parent_id) for row in stored if row.parent_id in children_ids]
     assert not grandchildren, f"the tree is three levels deep at: {grandchildren}"
 
 
@@ -235,10 +235,17 @@ def topic_has_parent(topics: Repository[IssueTopic], row_id: str, parent_id: str
     assert topics.get(parent_id) is not None, f"parent {parent_id!r} is not stored"
 
 
-@then(parsers.parse('every seeded id matches the pattern "{_pattern}"'))
-def ids_match_pattern(topics: Repository[IssueTopic], _pattern: str) -> None:
+@then(parsers.parse('every seeded id is a locale, a slug and a version, like "{example}"'))
+def ids_match_pattern(topics: Repository[IssueTopic], example: str) -> None:
+    """datamodel.md's `{locale}:{slug}:v{n}`, with the example asserted too.
+
+    The example from the Gherkin is checked against the same pattern, so a
+    scenario that quoted a shape the regex does not actually accept fails here
+    rather than silently documenting the wrong pattern.
+    """
+    assert ID_PATTERN.match(example), f"the scenario's own example {example!r} does not match"
     bad = [row.id for row in _stored(topics) if not ID_PATTERN.match(str(row.id))]
-    assert not bad, f"ids that do not match {{locale}}:{{slug}}:v{{n}}: {bad}"
+    assert not bad, f"ids that are not {{locale}}:{{slug}}:v{{n}}: {bad}"
 
 
 # --- naming neutrality ------------------------------------------------------
@@ -251,12 +258,11 @@ def names_are_neutral(topics: Repository[IssueTopic]) -> None:
     See `app.seed_taxonomy.STANCE_PRESUPPOSING_WORDS` for the word list and why
     each entry is on it.
     """
-    offenders: list[tuple[str | None, str]] = []
-    for row in _stored(topics):
-        lowered = row.name.lower()
-        for word in STANCE_PRESUPPOSING_WORDS:
-            if re.search(rf"\b{re.escape(word)}\b", lowered):
-                offenders.append((row.id, word))
+    offenders = [
+        (row.id, row.name, hit)
+        for row in _stored(topics)
+        if (hit := contains_stance_presupposing_word(row.name)) is not None
+    ]
     assert not offenders, f"stance-presupposing topic names: {offenders}"
 
 
@@ -277,7 +283,9 @@ def ids_are_unique(topics: Repository[IssueTopic]) -> None:
 # --- the report -------------------------------------------------------------
 
 
-@then(parsers.parse("the taxonomy seed reports {parents:d} topics and {children:d} subtopics written"))
+@then(
+    parsers.parse("the taxonomy seed reports {parents:d} topics and {children:d} subtopics written")
+)
 def seed_report_counts(result: dict[str, Any], parents: int, children: int) -> None:
     report = result["report"]
     assert len(report.topics_written) == parents, (
@@ -304,9 +312,7 @@ def _rows_with_id(fake: FakeZeroDBTransport, table: str, row_id: str) -> int:
 
 @then(parsers.parse("exactly {count:d} row carries each seeded topic id"))
 def one_row_per_topic(fake: FakeZeroDBTransport, count: int) -> None:
-    wrong = {
-        row_id: _rows_with_id(fake, "issue_topics", row_id) for row_id in taxonomy_row_ids()
-    }
+    wrong = {row_id: _rows_with_id(fake, "issue_topics", row_id) for row_id in taxonomy_row_ids()}
     offenders = {row_id: n for row_id, n in wrong.items() if n != count}
     assert not offenders, f"ids with a row count other than {count}: {offenders}"
 
@@ -320,11 +326,7 @@ def second_run_had_no_inserts(fake: FakeZeroDBTransport) -> None:
     run must issue zero POSTs — asserted here rather than inferred from the
     final count.
     """
-    inserts = [
-        call
-        for call in fake.calls
-        if call.method == "POST" and call.path.endswith("/rows")
-    ]
+    inserts = [call for call in fake.calls if call.method == "POST" and call.path.endswith("/rows")]
     assert not inserts, f"the second run appended {len(inserts)} new row(s)"
 
 

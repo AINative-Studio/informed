@@ -51,7 +51,7 @@ Feature: Issue taxonomy v1 (story 3.1)
 
   Scenario: Ids follow datamodel.md's locale, slug and version pattern
     When I seed the issue taxonomy
-    Then every seeded id matches the pattern "{locale}:{slug}:v{n}"
+    Then every seeded id is a locale, a slug and a version, like "en-US:healthcare:v1"
 
   # --- naming neutrality (prd.md: nonpartisan by construction) -------------
 

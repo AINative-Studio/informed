@@ -29,6 +29,7 @@ from app.seed_taxonomy import (
     TAXONOMY_VERSION,
     TOPICS,
     Topic,
+    contains_stance_presupposing_word,
     taxonomy_row_ids,
     taxonomy_rows,
 )
@@ -45,7 +46,7 @@ def _all_topics() -> list[Topic]:
 
 
 def test_there_are_twenty_top_level_topics() -> None:
-    """"About 20 topics" — pinned at exactly 20 so a 21st is a deliberate edit."""
+    """ "About 20 topics" — pinned at exactly 20 so a 21st is a deliberate edit."""
     assert len(TOPICS) == EXPECTED_TOPIC_COUNT == 20
 
 
@@ -70,12 +71,15 @@ def test_every_topic_has_exactly_three_subtopics() -> None:
 
 @pytest.mark.parametrize("topic", _all_topics(), ids=lambda topic: topic.slug)
 def test_no_topic_name_presupposes_a_stance(topic: Topic) -> None:
-    """One parametrised case per topic, so a failure names the offender."""
-    lowered = topic.name.lower()
-    hits = [
-        word for word in STANCE_PRESUPPOSING_WORDS if re.search(rf"\b{re.escape(word)}\b", lowered)
-    ]
-    assert not hits, f"{topic.name!r} contains stance-presupposing word(s) {hits}"
+    """One parametrised case per topic, so a failure names the offender.
+
+    Checked through the module's own `contains_stance_presupposing_word`, not a
+    reimplemented regex, so the allowlisted proper names ("Social Security",
+    "Civil liberties") are handled in exactly one place — the live verifier
+    calls the same function against what is actually stored.
+    """
+    hit = contains_stance_presupposing_word(topic.name)
+    assert hit is None, f"{topic.name!r} contains stance-presupposing word {hit!r}"
 
 
 def test_the_stance_word_list_is_not_empty_or_trivially_satisfied() -> None:
@@ -92,17 +96,57 @@ def test_the_stance_word_list_is_not_empty_or_trivially_satisfied() -> None:
         assert framed in STANCE_PRESUPPOSING_WORDS
 
 
-@pytest.mark.parametrize("framed_name", ["Gun safety", "Gun rights", "Immigration reform"])
-def test_the_neutrality_check_would_reject_a_framed_name(framed_name: str) -> None:
-    """The brief's own counter-examples, asserted to fail the check.
+@pytest.mark.parametrize(
+    "framed_name",
+    [
+        "Gun safety",
+        "Gun rights",
+        "Immigration reform",
+        "Border security",
+        "Voting rights",
+        "Election integrity",
+        "Reproductive rights",
+        "Consumer protection",
+        "Commonsense firearm limits",
+        "Fixing the broken asylum system",
+    ],
+)
+def test_the_neutrality_check_rejects_a_framed_name(framed_name: str) -> None:
+    """The brief's counter-examples and the real-world labels this tree avoids.
 
-    Without this, "no topic name presupposes a stance" could pass because the
-    check is broken rather than because the names are neutral.
+    Without these, "no topic name presupposes a stance" could pass because the
+    check is broken rather than because the names are neutral. Both labels of
+    each contested pair are here on purpose: a check that caught only one side
+    would itself be partisan.
     """
-    lowered = framed_name.lower()
-    assert any(
-        re.search(rf"\b{re.escape(word)}\b", lowered) for word in STANCE_PRESUPPOSING_WORDS
-    ), f"{framed_name!r} should have been caught as stance-presupposing"
+    assert contains_stance_presupposing_word(framed_name) is not None, (
+        f"{framed_name!r} should have been caught as stance-presupposing"
+    )
+
+
+@pytest.mark.parametrize(
+    "neutral_name",
+    [
+        "Social Security and retirement income",
+        "Civil liberties and discrimination law",
+        # Words that merely *contain* a listed word must not trip the check:
+        # whole-word matching is what makes the allowlist small.
+        "Research and development funding",
+        "Defense spending and force posture",
+        "Public lands and conservation",
+    ],
+)
+def test_the_neutrality_check_accepts_an_allowlisted_or_unrelated_name(neutral_name: str) -> None:
+    """The other half: the check must not be so broad it rejects proper names.
+
+    "Social Security" is a programme (Title II of the Social Security Act) and
+    "Civil liberties" is the standard domain label; see
+    `app.seed_taxonomy.ALLOWED_PHRASES`. "Research" and "Defense" are here
+    because a substring match rather than a whole-word one would flag them on
+    "search" and "defend".
+    """
+    hit = contains_stance_presupposing_word(neutral_name)
+    assert hit is None, f"{neutral_name!r} was wrongly flagged on {hit!r}"
 
 
 def test_topic_names_are_unique() -> None:
@@ -140,7 +184,8 @@ def test_slugs_are_unique_across_the_whole_tree() -> None:
 
 
 def test_every_slug_is_lowercase_kebab_case() -> None:
-    bad = [topic.slug for topic in _all_topics() if not re.match(r"^[a-z0-9]+(?:-[a-z0-9]+)*$", topic.slug)]
+    kebab = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+    bad = [topic.slug for topic in _all_topics() if not kebab.match(topic.slug)]
     assert not bad, f"slugs that are not lowercase kebab-case: {bad}"
 
 
@@ -267,3 +312,32 @@ def test_issue_topic_row_data_carries_every_field() -> None:
         taxonomy_version=1,
     )
     assert set(row.row_data()) == {"id", "parent_id", "name", "locale", "taxonomy_version"}
+
+
+# --- the seeder's defaults ---------------------------------------------------
+
+
+def test_the_seeder_paces_by_default() -> None:
+    """~80 writes at a 60 req/min ceiling, so an unpaced default is a hazard.
+
+    `app.seed.Seeder` defaults to a no-op pacer because the `Bootstrapper` that
+    owns it always injects one; this seeder's only production caller is its own
+    CLI, with nothing above it to supply one. Pinned on identity rather than by
+    timing a real sleep, so the test stays fast.
+    """
+    from app.seed_taxonomy import TaxonomySeeder
+
+    seeder = TaxonomySeeder(client=None)  # type: ignore[arg-type] - never called
+    paced = seeder._pace  # noqa: SLF001 - asserting the injected default
+    assert paced is not None
+    assert paced.__name__ == "pace", "the default pacer is not app.bootstrap's"
+
+
+def test_the_seeder_accepts_an_injected_no_op_pacer() -> None:
+    from app.seed_taxonomy import TaxonomySeeder
+
+    def noop() -> None:
+        return None
+
+    seeder = TaxonomySeeder(client=None, pace=noop)  # type: ignore[arg-type]
+    assert seeder._pace is noop  # noqa: SLF001 - asserting the injection
