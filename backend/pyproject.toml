@@ -10,6 +10,10 @@ dependencies = [
     "httpx>=0.27",
     "uvicorn[standard]>=0.30",
     "pyyaml>=6.0",
+    # Story 14.1: AES-256-GCM and HKDF for voter-profile envelope encryption.
+    # The standard library has HMAC and PBKDF2 but no AEAD cipher, and a
+    # hand-rolled one is not a thing to ship for special-category data.
+    "cryptography>=43.0",
 ]
 
 [project.optional-dependencies]
