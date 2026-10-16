@@ -1,12 +1,19 @@
-"""Building a ballot from an address (story 1.5).
+"""Building a ballot from an address (stories 1.5, 2.3).
 
 The walking skeleton's one piece of business logic, and the whole of what the
 `/v1/ballot` handler does beyond turning exceptions into status codes:
 
-    address -> StubAddressResolver -> district id
-            -> `districts` row (story 1.4 repository)
+    address -> CensusAddressResolver -> district id + the geocoder's own name
+            -> `districts` row, created on first resolution (story 2.3)
             -> `people` rows with a **current** term in that district
             -> BallotResponse
+
+Story 2.3 changed two things in that chain and nothing else. The resolver is
+real (story 1.5's stub is gone), and the `districts` read became a
+read-or-create: the table was empty in the live project, so against real
+geocoded ids every lookup would otherwise 404. See `app.districts.store` for
+why the row is created from the geocoder's answer rather than pre-seeded from a
+roster.
 
 "Current" is load-bearing, not a nicety: `people.terms[]` is a list because it
 holds term history (story 2.2 ingests every term a member has served), so
@@ -43,12 +50,12 @@ from datetime import date
 from app.ballot.models import BallotResponse, DistrictSummary, Officeholder
 from app.districts.resolver import (
     AddressResolver,
-    DistrictNotFoundError,
+    CensusAddressResolver,
     ResolvedAddress,
-    StubAddressResolver,
 )
+from app.districts.store import DistrictStore
 from app.repositories import Repository
-from app.repositories.models import District, Person, Term
+from app.repositories.models import Person, Term
 from app.zerodb import ZeroDBClient
 
 logger = logging.getLogger(__name__)
@@ -75,8 +82,10 @@ _BODY_ORDER = {HOUSE_BODY_ID: 0, SENATE_BODY_ID: 1}
 class BallotService:
     """Resolves an address to its district and the members who represent it.
 
-    The resolver is injected so story 2.3 swaps the Census Geocoder in without
-    touching this class, and so a test can point the stub at a second district.
+    The resolver is injected so a test drives a captured Census response rather
+    than the network, and so prd.md's `JurisdictionAdapter` can supply a
+    different one per country later. It defaults to `CensusAddressResolver`
+    (story 2.3), which replaced story 1.5's stub behind the same protocol.
     """
 
     def __init__(
@@ -86,8 +95,8 @@ class BallotService:
         resolver: AddressResolver | None = None,
         today: Callable[[], date] = date.today,
     ) -> None:
-        self._resolver = resolver or StubAddressResolver()
-        self._districts: Repository[District] = Repository(client=client, model=District)
+        self._resolver = resolver or CensusAddressResolver()
+        self._districts = DistrictStore(client=client)
         self._people: Repository[Person] = Repository(client=client, model=Person)
         #: Injected so a test can pin "now" without freezing the process clock,
         #: and so a future "what did my delegation look like on date X" read has
@@ -102,22 +111,22 @@ class BallotService:
         privacy first; story 2.3's acceptance criteria).
 
         Raises:
-            AddressResolutionError: the address is blank or unusable.
-            DistrictNotFoundError: it resolved to a district that is not in
-                ZeroDB. A subclass of the above, so a caller that does not care
-                about the distinction catches one exception and gets both.
+            AddressResolutionError: the address is blank or unusable, the
+                geocoder could not find it, it matched more than one district,
+                or the geocoder was unreachable. Each subclass carries a
+                message the voter can act on.
+            DistrictNotFoundError: it resolved to a district Informed could
+                neither read nor create a row for.
 
-        Neither message ever contains the address: both are returned to the
-        voter and logged (prd.md, privacy first).
+        No message ever contains the address: all are returned to the voter and
+        logged (prd.md, privacy first).
         """
-        resolved = self._resolver.resolve(address)
-        district = self._districts.get(resolved.district_id)
-        if district is None:
-            # A data gap, not a voter error: the geocoder (or stub) named a
-            # district nobody has ingested. Naming the id and not the address
-            # keeps the log line usable and the voter's address out of it.
-            logger.warning("no districts row for %s", resolved.district_id)
-            raise DistrictNotFoundError("We don't have district data for that address yet.")
+        resolution = self._resolver.resolve_district(address)
+        resolved = resolution.districts
+        # Created on first resolution rather than pre-seeded — see
+        # `app.districts.store` for why, and why the geocoder's own label is
+        # the right name for the row.
+        district = self._districts.ensure(resolved, name=resolution.name)
 
         return BallotResponse(
             district=DistrictSummary(
