@@ -158,4 +158,114 @@ describe('BallotPage', () => {
     const results = screen.getByRole('region', { name: /representatives/i });
     expect(results.textContent ?? '').not.toContain('123 Private Lane');
   });
+
+  describe('following an officeholder (story 15.1)', () => {
+    it('shows a Follow button next to each officeholder', async () => {
+      respondWith(BALLOT);
+      renderWithQuery(<BallotPage />);
+      await submitAddress();
+      await screen.findByText('Rep. Synthetic Example');
+
+      expect(screen.getAllByRole('button', { name: /^follow /i })).toHaveLength(3);
+    });
+
+    it('calls the follow endpoint and flips to Unfollow on success', async () => {
+      respondWith(BALLOT);
+      renderWithQuery(<BallotPage />);
+      await submitAddress();
+      await screen.findByText('Rep. Synthetic Example');
+
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({ followed_person_ids: ['person:ZZ000001'] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+      const user = userEvent.setup();
+      await user.click(screen.getByRole('button', { name: /follow rep\. synthetic example/i }));
+
+      const call = await waitFor(() => {
+        const match = fetchMock.mock.calls.find(([url]) =>
+          String(url).includes('/follow/person%3AZZ000001'),
+        );
+        expect(match).toBeDefined();
+        return match;
+      });
+      expect(call?.[1]).toMatchObject({ method: 'POST' });
+
+      expect(
+        await screen.findByRole('button', { name: /unfollow rep\. synthetic example/i }),
+      ).toBeInTheDocument();
+    });
+
+    it('calls the unfollow endpoint when an already-followed officeholder is toggled', async () => {
+      respondWith(BALLOT);
+      renderWithQuery(<BallotPage />);
+      await submitAddress();
+      await screen.findByText('Rep. Synthetic Example');
+
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({ followed_person_ids: ['person:ZZ000001'] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+      const user = userEvent.setup();
+      await user.click(screen.getByRole('button', { name: /follow rep\. synthetic example/i }));
+      await screen.findByRole('button', { name: /unfollow rep\. synthetic example/i });
+
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({ followed_person_ids: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+      await user.click(screen.getByRole('button', { name: /unfollow rep\. synthetic example/i }));
+
+      const call = await waitFor(() => {
+        const match = fetchMock.mock.calls.find(
+          ([url, init]) =>
+            String(url).includes('/follow/person%3AZZ000001') &&
+            (init as RequestInit | undefined)?.method === 'DELETE',
+        );
+        expect(match).toBeDefined();
+        return match;
+      });
+      expect(call).toBeDefined();
+
+      expect(
+        await screen.findByRole('button', { name: /follow rep\. synthetic example/i }),
+      ).toBeInTheDocument();
+    });
+
+    it('shows a readable message and does not flip state when a follow fails', async () => {
+      respondWith(BALLOT);
+      renderWithQuery(<BallotPage />);
+      await submitAddress();
+      await screen.findByText('Rep. Synthetic Example');
+
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({ detail: 'not a known person' }), {
+          status: 404,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+      const user = userEvent.setup();
+      await user.click(screen.getByRole('button', { name: /follow rep\. synthetic example/i }));
+
+      expect(await screen.findByRole('alert')).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: /follow rep\. synthetic example/i }),
+      ).toBeInTheDocument();
+    });
+
+    it('never recommends who to follow', async () => {
+      respondWith(BALLOT);
+      renderWithQuery(<BallotPage />);
+      await submitAddress();
+      await screen.findByText('Rep. Synthetic Example');
+
+      expect(document.body.textContent ?? '').not.toMatch(/vote for|recommend|endorse|best match/i);
+    });
+  });
 });
