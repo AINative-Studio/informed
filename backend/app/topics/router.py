@@ -11,12 +11,13 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 
 from app.seed_taxonomy import TAXONOMY_LOCALE, TAXONOMY_VERSION
-from app.topics.models import TopicTreeResponse
+from app.topics.models import TopicSuggestRequest, TopicSuggestResponse, TopicTreeResponse
 from app.topics.service import TopicService
 from app.zerodb import ZeroDBClient
+from app.zerodb.errors import ZeroDBValidationError
 
 router = APIRouter(prefix="/v1", tags=["topics"])
 
@@ -70,4 +71,47 @@ def get_topics(
     return service.tree(locale=locale, taxonomy_version=taxonomy_version)
 
 
-__all__ = ["get_topics", "router", "topic_service", "zerodb_client_for_topics"]
+@router.post(
+    "/topics/suggest",
+    response_model=TopicSuggestResponse,
+    summary="Map a voter's free-text concern to up to 3 topic suggestions",
+    description=(
+        "Story 3.5: a voter who does not know the taxonomy's names describes "
+        "a concern in their own words and gets back up to 3 candidate topics "
+        "by semantic similarity against story 3.4's `topics` vector "
+        "namespace.\n\n"
+        "**Read-only.** This endpoint writes nothing: no row, no vector, no "
+        "cache entry. The free text is used only to call ZeroDB's embedding "
+        "search for this one request and is never stored or logged. "
+        "`saved` is always `false` and `confirmation_required` is always "
+        "`true` in the response — per prd.md, a mapped topic is 'shown back "
+        "for confirmation (never silently)'. To actually use a suggestion, "
+        "the voter picks its `topic_id` and the client calls the existing "
+        "`POST /v1/profiles` endpoint with it, exactly as if the voter had "
+        "found that topic by browsing the tree."
+    ),
+    responses={
+        422: {"description": "Blank or missing free text"},
+    },
+)
+def suggest_topics(
+    service: Annotated[TopicService, Depends(topic_service)],
+    body: Annotated[TopicSuggestRequest, Body()],
+) -> TopicSuggestResponse:
+    try:
+        suggestions = service.suggest(text=body.text, locale=body.locale)
+    except ZeroDBValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="text is required to suggest topics",
+        ) from exc
+    return TopicSuggestResponse(suggestions=suggestions)
+
+
+__all__ = [
+    "get_topics",
+    "router",
+    "suggest_topics",
+    "topic_service",
+    "zerodb_client_for_topics",
+]
