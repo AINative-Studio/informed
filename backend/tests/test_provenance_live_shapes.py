@@ -11,8 +11,8 @@ Two findings shape this story, and both are recorded here rather than only in a
 PR nobody will re-read:
 
 **1. No live row carries a `source_url` at all.** The retrofit question stories
-2.1, 2.2 and 3.1 raise, answered from the data: 831 rows across all 23 tables
-were read (every one of `people`'s 539, paged), and not one carries a
+2.1, 2.2, 3.1 and 3.2 raise, answered from the data: 831 rows across all 23
+tables were read (every one of `people`'s 539, paged), and not one carries a
 `source_url`. `people`, `jurisdictions`, `bodies`, `districts`, `issue_topics`
 and `stances` have no such field in datamodel.md's field lists, so those
 stories are exempt from the rule rather than in violation of it — and
@@ -35,7 +35,7 @@ import pytest
 
 from app.bootstrap import Bootstrapper
 from app.repositories import ProvenanceContext, Repository
-from app.repositories.models import District, IssueTopic, Person, RollCall
+from app.repositories.models import District, IssueTopic, Person, RollCall, Stance
 from app.repositories.provenance import provenance_id, requires_provenance
 from app.zerodb import ZeroDBClient
 from app.zerodb.testing import FakeZeroDBTransport
@@ -117,13 +117,14 @@ def _provenance_ids(fake: FakeZeroDBTransport) -> set[str]:
 # =========================================================================
 
 
-@pytest.mark.parametrize("model", [Person, District, IssueTopic])
+@pytest.mark.parametrize("model", [Person, District, IssueTopic, Stance])
 def test_the_tables_already_loaded_live_carry_no_source_url(model: type) -> None:
-    """`people` (539 rows), `districts` (7) and `issue_topics` (80) were all
+    """`people` (539 rows), `districts` (7), `issue_topics` (80) and `stances`
+    (201, from story 3.2, which landed while this story was in flight) were all
     loaded before this story and all passed the live audit. They pass because
     their models declare no `source_url` — datamodel.md's field lists do not
     give them one — so datamodel.md's integrity rule does not reach them and
-    stories 2.1, 2.2 and 3.1 needed no backfill.
+    stories 2.1, 2.2, 3.1 and 3.2 needed no backfill.
     """
     assert "source_url" not in model.model_fields
     assert not requires_provenance(model)
