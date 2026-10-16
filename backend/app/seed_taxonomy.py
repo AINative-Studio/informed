@@ -157,19 +157,25 @@ EXPECTED_SUBTOPIC_COUNT = 60
 #: by `tests/test_issue_taxonomy_unit.py` and by the feature file, so a label
 #: added by a later story cannot quietly reintroduce a framing.
 #:
-#: Grouped by what they smuggle in:
+#: Grouped by what they smuggle in — the groups below are the comments in the
+#: set itself, so the two cannot drift:
 #:
-#:   * **a side of a named dispute** — `rights`, `safety`, `security`,
-#:     `freedom`, `liberty`, `integrity`, `choice`, `life` (as in the
-#:     pro-choice/pro-life and gun-rights/gun-safety and
-#:     voting-rights/election-integrity pairs);
+#:   * **a side of a named dispute** — one half of a pair that names the same
+#:     topic from two directions: gun-rights/gun-safety,
+#:     voting-rights/election-integrity, pro-choice/pro-life,
+#:     border-security/immigrant-rights;
 #:   * **that the status quo is broken** — `reform`, `fix`, `crisis`,
-#:     `modernize`, `restore`, `overhaul`;
+#:     `modernize`, `restore`, `overhaul`, `broken`;
 #:   * **that a direction is the good one** — `protection`, `relief`,
-#:     `strengthen`, `defend`, `expand`, `cut`, `improve`;
+#:     `strengthen`, `defend`, `improve`, `save`;
 #:   * **that the speaker is the reasonable party** — `sensible`,
-#:     `commonsense`, `responsible`, `fair`, `fairness`, `burden`, `waste`,
-#:     `handouts`, `amnesty`, `illegal`.
+#:     `commonsense`, `responsible`, `fairness`, and the pejoratives `burden`,
+#:     `waste`, `handouts`, `amnesty`, `illegal`.
+#:
+#: Not an attempt at a complete lexicon of political framing — no word list
+#: could be. It is a backstop that catches the specific framings this product's
+#: topic area actually attracts, and it is the reviewable artefact a later
+#: story (3.3's advisory panel) extends rather than a claim to be exhaustive.
 #:
 #: `security` and `liberty` have documented exceptions (`Social Security`,
 #: `Civil liberties`); see `ALLOWED_PHRASES` and the module docstring.
