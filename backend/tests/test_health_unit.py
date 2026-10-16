@@ -19,7 +19,8 @@ def test_health_payload_shape(client: TestClient) -> None:
 
 def test_routes_are_only_the_ones_built_so_far(client: TestClient) -> None:
     """Story 1.5 mounted `/v1/ballot`; story 4.1 added the onboarding trio;
-    story 3.5 adds `/v1/topics/suggest`.
+    story 3.5 added `/v1/topics/suggest`; stories 4.2/4.4 add the
+    tier-weights read and the profile load endpoint.
 
     Replaces story 1.1's "health is the only route" assertion, whose own
     docstring named 1.5 as the story that would change it, and that story's
@@ -37,6 +38,8 @@ def test_routes_are_only_the_ones_built_so_far(client: TestClient) -> None:
         "/v1/topics/suggest",
         "/v1/topics/{topic_id}/stances",
         "/v1/profiles",
+        "/v1/profiles/methodology",
+        "/v1/profiles/{user_id}",
     }
 
     # The remaining Core API endpoints are genuinely absent, not merely untested.

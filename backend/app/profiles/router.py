@@ -68,6 +68,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.profiles.crypto import ProfileKeyring, ProfileRootKey, RootKeyMissingError
+from app.profiles.methodology import MethodologyVersionService
 from app.profiles.service import AnonymousModeError, VoterProfileService
 from app.zerodb import ZeroDBClient
 
@@ -79,6 +80,16 @@ def zerodb_client_for_profiles() -> ZeroDBClient:
     function for why this is not shared with the ballot router's dependency.
     """
     return ZeroDBClient.from_env()
+
+
+def methodology_service(
+    client: Annotated[ZeroDBClient, Depends(zerodb_client_for_profiles)],
+) -> MethodologyVersionService:
+    """The tier-weight reader (story 4.2), wired to the same client as the
+    profile service. See `app.profiles.methodology`'s module docstring for
+    why the weights live there rather than as a constant in this router.
+    """
+    return MethodologyVersionService(client)
 
 
 def profile_service(
@@ -164,6 +175,117 @@ class SaveProfileResponse(BaseModel):
     updated_at: str = Field(description="When this version was written, ISO-8601 UTC")
 
 
+class TierWeightsResponse(BaseModel):
+    """What `GET /v1/profiles/methodology` returns (story 4.2).
+
+    The tier-editing UI reads this once to label and weight each tier's
+    section rather than hard-coding "3.0" / "1.5" / "0.5" into a component —
+    datamodel.md: "The live values come from `methodology_versions` and are
+    never hard-coded."
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    methodology_version: str = Field(
+        description="The methodology version id these weights came from"
+    )
+    weights: dict[str, float] = Field(
+        description=(
+            'Tier name -> weight, e.g. {"primary": 3.0, "secondary": 1.5, "nice_to_have": 0.5}'
+        )
+    )
+
+
+class LoadedInterest(BaseModel):
+    """One interest as returned by `GET /v1/profiles/{user_id}`.
+
+    The same fields `Interest` validates on the way in (story 14.1), returned
+    on the way out so a profile-editing UI can re-render exactly what was
+    saved, dealbreaker and all (story 4.3: "shown in the profile summary").
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    topic_id: str
+    stance_id: str
+    tier: str
+    intensity: int
+    dealbreaker: bool
+    note: str | None = None
+
+
+class LoadedProfile(BaseModel):
+    """The body of a successful `GET /v1/profiles/{user_id}` with a profile.
+
+    Mirrors `InterestProfile` (story 14.1) field for field, with `Interest`
+    rows reshaped through `LoadedInterest` so this response type — not
+    `InterestProfile` itself — is the one thing a client's shape can drift
+    against, the same separation `SaveProfileRequest`'s docstring describes
+    for the save side.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    interests: list[LoadedInterest]
+    evidence_mode: str
+    followed_person_ids: list[str]
+
+
+@router.get(
+    "/profiles/methodology",
+    response_model=TierWeightsResponse,
+    summary="The current tier weights, read from methodology_versions",
+    description=(
+        "Story 4.2: the tier-editing UI's own numbers for primary/secondary/"
+        "nice_to_have, read live from the methodology_versions table rather "
+        "than hard-coded into the client. See app.profiles.methodology's "
+        "module docstring for the seeding behaviour on a fresh environment."
+    ),
+)
+def get_tier_weights(
+    service: Annotated[MethodologyVersionService, Depends(methodology_service)],
+) -> TierWeightsResponse:
+    version = service.current_version()
+    return TierWeightsResponse(methodology_version=version.id, weights=version.tier_weights)
+
+
+@router.get(
+    "/profiles/{user_id}",
+    response_model=LoadedProfile | None,
+    summary="Load a voter's saved interest profile (story 4.4)",
+    description=(
+        "Decrypts and returns the voter's stored profile (story 14.1's "
+        "encrypted store), or `null` with a 200 when nothing has been saved "
+        "yet — 'never saved' and 'not found' are the same answer to a "
+        "client, not an error. Anonymous-mode profiles are never reachable "
+        "here: they never leave the browser (see app.profiles.service's "
+        "module docstring), so there is no user_id to load them by."
+    ),
+)
+def load_profile(
+    service: Annotated[VoterProfileService, Depends(profile_service)],
+    user_id: str,
+) -> LoadedProfile | None:
+    profile = service.load(user_id)
+    if profile is None:
+        return None
+    return LoadedProfile(
+        interests=[
+            LoadedInterest(
+                topic_id=item.topic_id,
+                stance_id=item.stance_id,
+                tier=item.tier,
+                intensity=item.intensity,
+                dealbreaker=item.dealbreaker,
+                note=item.note,
+            )
+            for item in profile.interests
+        ],
+        evidence_mode=profile.evidence_mode,
+        followed_person_ids=profile.followed_person_ids,
+    )
+
+
 @router.post(
     "/profiles",
     response_model=SaveProfileResponse,
@@ -245,8 +367,14 @@ def _safe_error_summary(exc: ValidationError) -> str:
 
 
 __all__ = [
+    "LoadedInterest",
+    "LoadedProfile",
     "SaveProfileRequest",
     "SaveProfileResponse",
+    "TierWeightsResponse",
+    "get_tier_weights",
+    "load_profile",
+    "methodology_service",
     "profile_service",
     "router",
     "save_profile",

@@ -1,9 +1,11 @@
 /**
  * The `POST /v1/profiles` client, and the anonymous-mode alternative (story 4.1).
+ * Also `GET /v1/profiles/{user_id}` (story 4.4) and `GET /v1/profiles/methodology`
+ * (story 4.2).
  *
  * Mirrors `backend/app/profiles/router.py`'s `SaveProfileRequest` /
- * `SaveProfileResponse`. Two save paths, matching datamodel.md's documented
- * split exactly:
+ * `SaveProfileResponse` / `LoadedProfile` / `TierWeightsResponse`. Three
+ * save/load paths, matching datamodel.md's documented split exactly:
  *
  *   * `saveProfile` — POSTs to the account-backed, encrypted store. Requires
  *     `consent: true`; the backend refuses anything else with a 422.
@@ -13,6 +15,13 @@
  *     not exist yet (it is a later story's endpoint, Epic 6), so today this
  *     is a store with nowhere yet to be read from — see the module docstring
  *     below for exactly what that means and what is deferred.
+ *   * `loadProfile` — GETs the decrypted, saved profile back for a signed-in
+ *     voter (story 4.4's "come back to it"), or `null` when nothing has been
+ *     saved — not an error, the same answer the backend gives for "never
+ *     saved" and "deleted".
+ *   * `fetchTierWeights` — GETs the live primary/secondary/nice_to_have
+ *     weights from `methodology_versions` (story 4.2), so a tier-editing UI
+ *     never hard-codes "3.0 / 1.5 / 0.5" itself.
  */
 
 import { apiUrl } from './ballot';
@@ -36,6 +45,19 @@ export interface SaveProfileResponse {
   version: number;
   locale: string;
   updated_at: string;
+}
+
+/** Mirrors `backend/app/profiles/router.py`'s `LoadedProfile`. */
+export interface LoadedProfile {
+  interests: Interest[];
+  evidence_mode: 'votes' | 'promises' | 'blend';
+  followed_person_ids: string[];
+}
+
+/** Mirrors `backend/app/profiles/router.py`'s `TierWeightsResponse`. */
+export interface TierWeightsResponse {
+  methodology_version: string;
+  weights: Record<'primary' | 'secondary' | 'nice_to_have', number>;
 }
 
 const API_BASE_URL: string = import.meta.env.VITE_API_BASE_URL ?? '';
@@ -80,6 +102,60 @@ export async function saveProfile(
     throw new ProfileSaveError(await messageFor(response), response.status);
   }
   return (await response.json()) as SaveProfileResponse;
+}
+
+/** Raised for any non-2xx answer from a load-side endpoint (story 4.4, 4.2). */
+export class ProfileLoadError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'ProfileLoadError';
+    this.status = status;
+  }
+}
+
+/**
+ * Load a voter's saved profile, or `null` if they have never saved one.
+ *
+ * `null` is the backend's documented answer for "never saved" (a 200 whose
+ * body is `null`, not a 404) — see `app.profiles.router.load_profile`'s
+ * docstring — so this function returns `null` for that case rather than
+ * throwing, and a caller does not need to special-case a 404.
+ */
+export async function loadProfile(userId: string, signal?: AbortSignal): Promise<LoadedProfile | null> {
+  const url = apiUrl(API_BASE_URL, `/v1/profiles/${encodeURIComponent(userId)}`, window.location.origin);
+  const response = await fetch(url.toString(), {
+    signal,
+    headers: { accept: 'application/json' },
+  });
+  if (!response.ok) {
+    throw new ProfileLoadError(
+      'We could not load your saved profile just now. Please try again.',
+      response.status,
+    );
+  }
+  return (await response.json()) as LoadedProfile | null;
+}
+
+/**
+ * The live tier weights (story 4.2), read from `methodology_versions` rather
+ * than hard-coded here — see `app.profiles.methodology`'s module docstring
+ * on the backend for why.
+ */
+export async function fetchTierWeights(signal?: AbortSignal): Promise<TierWeightsResponse> {
+  const url = apiUrl(API_BASE_URL, '/v1/profiles/methodology', window.location.origin);
+  const response = await fetch(url.toString(), {
+    signal,
+    headers: { accept: 'application/json' },
+  });
+  if (!response.ok) {
+    throw new ProfileLoadError(
+      'We could not load the current tier weights just now. Please try again.',
+      response.status,
+    );
+  }
+  return (await response.json()) as TierWeightsResponse;
 }
 
 async function messageFor(response: Response): Promise<string> {
