@@ -354,6 +354,74 @@ that is recorded and not verified. A forged one on
 to every voter. Until an auth story lands, keep this prefix off the public
 router — see `backend/app/panel_review/router.py`'s module docstring.
 
+### Public corrections: the two operational jobs (story 12.4)
+
+`POST /v1/corrections` is public and unauthenticated by design — prd.md
+requires a correction form on every claim, and one behind a login is one nobody
+uses. It creates two standing operational obligations, neither of which has a
+scheduler behind it yet. **Both are run by hand today.**
+
+**1. Triage within 72 hours.** prd.md commits to it, every correction stores its
+own `sla_due_at`, and the queue of missed commitments is one command:
+
+```sh
+set -a; . local.env; set +a
+python backend/scripts/triage_correction.py --past-sla   # what the SLA has been missed on
+python backend/scripts/triage_correction.py --queue      # everything still open
+python backend/scripts/triage_correction.py --show cor:…  # one report, in full
+python backend/scripts/triage_correction.py --id cor:… --status triaged
+```
+
+Triage is a **script, not an endpoint**, and deliberately so: there is no
+authentication anywhere in this codebase, and an unauthenticated
+`PATCH /v1/corrections/{id}` would let anyone who can reach the API mark an
+inconvenient correction `rejected` — on the one feature whose entire purpose is
+that mistakes cannot be buried. The mounted surface is the two public
+operations only (submit, and the reporter's own status read). Exposing triage
+over HTTP needs the auth story first.
+
+The status vocabulary is `received` → `triaged` → `resolved` | `rejected`.
+`triaged` is what the 72-hour promise asks for (prd.md says 72 hours to
+*triage*, not to fix) and reaching it stops the clock. `resolved` and
+`rejected` both close the report and both start the 90-day clock below.
+
+**2. Erase contact emails 90 days after resolution.** datamodel.md's retention
+table requires it, and this is the job that keeps the promise:
+
+```sh
+set -a; . local.env; set +a
+python backend/scripts/sweep_correction_emails.py --dry-run   # count first
+python backend/scripts/sweep_correction_emails.py             # then erase
+```
+
+It is idempotent, holds no cursor or watermark, and is a pure function of the
+stored rows and the clock — so it is safe to run at any cadence, and safe to
+schedule later with no code change. Daily is the natural one: the window is 90
+days, so a day's granularity is well inside the promise.
+
+**The honest gap, stated plainly: nothing schedules either job.** There is no
+scheduler, worker, cron or queue in this repository (the same gap
+`backend/app/ingest/candidacies.py` documents for weekly candidacy refreshes).
+Until one exists, an address that should have gone on day 90 sits there until
+someone runs the sweep, and a report submitted on Friday is triaged when
+someone looks. A cron entry, a Railway cron service or a GitHub Actions
+`schedule:` trigger can call both scripts as-is — that one scheduled runner,
+shared by every periodic task in this codebase, is the tracked follow-up.
+
+Neither script ever prints an email address. `--show` is the single deliberate
+exception, per-id and opt-in, for a human reading one report on their own
+screen; every listing and every sweep summary carries row ids and counts only,
+because those are what get pasted into tickets.
+
+`backend/scripts/verify_public_corrections_live.py` checks the whole story
+against the live project — the submission round trip, the 72-hour arithmetic,
+the token lookup (and that the row id does *not* open it), the status moves, the
+SLA queue, the 90-day sweep against a backdated correction, and the full HTTP
+surface with no credentials. Unlike the seed verifiers it **cleans up after
+itself**: every row it writes is marked `SYNTHETIC TEST CORRECTION` and is
+deleted in a `finally`, and the script fails if any marker row survives. Real
+corrections are permanent; test ones would sit in the SLA queue forever.
+
 ### If ZeroDB calls 402 with `storage_limit_exceeded`
 
 Measured during story 3.3: the live `informed` project reports **1.7558 GB**
