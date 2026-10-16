@@ -21,6 +21,7 @@ from app.profiles.crypto import (
     RootKeyMissingError,
 )
 from app.profiles.models import Interest, InterestProfile, VoterProfileRow
+from app.profiles.router import SaveProfileRequest, SaveProfileResponse, profile_service, router
 from app.profiles.service import AnonymousModeError, VoterProfileService
 
 #: The two tables profile storage touches, in the order they must exist. Named
@@ -40,6 +41,10 @@ __all__ = [
     "ProfileKeyring",
     "ProfileRootKey",
     "RootKeyMissingError",
+    "SaveProfileRequest",
+    "SaveProfileResponse",
     "VoterProfileRow",
     "VoterProfileService",
+    "profile_service",
+    "router",
 ]
