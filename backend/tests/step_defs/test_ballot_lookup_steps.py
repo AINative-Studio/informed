@@ -242,7 +242,13 @@ def delegate_district_exists(
 
 
 @when(parsers.parse('the voter submits the address "{address}"'))
-def submit_address(api: TestClient, context: Any, address: str) -> None:
+def submit_address(
+    api: TestClient, context: Any, transport: FakeZeroDBTransport, address: str
+) -> None:
+    # Recorded before the lookup, so the read count a Then asserts on is the
+    # lookup's own and not the fixture's: seeding upserts rows, and an upsert
+    # reads before it writes.
+    context.people_reads_before = people_reads(transport)
     context.response = api.get("/v1/ballot", params={"address": address})
 
 
@@ -291,6 +297,11 @@ def fetch_openapi(api: TestClient, context: Any) -> None:
 
 
 # --- Then ----------------------------------------------------------------
+
+
+def people_reads(transport: FakeZeroDBTransport) -> int:
+    """How many times `people` was queried, counted from the fake's call log."""
+    return len([call for call in transport.calls if call.path.endswith("/tables/people/query")])
 
 
 def payload(context: Any) -> dict[str, Any]:
@@ -393,17 +404,14 @@ def geocoder_call_count(resolver: CountingResolver, count: int) -> None:
     assert resolver.calls == count, f"the geocoder was called {resolver.calls} times"
 
 
-def people_reads(transport: FakeZeroDBTransport) -> int:
-    """How many times `people` was queried, counted from the fake's log."""
-    return len([call for call in transport.calls if call.path.endswith("/tables/people/query")])
-
-
 @then(parsers.parse("the people table was read at most {count:d} times"))
-def people_read_count(transport: FakeZeroDBTransport, count: int) -> None:
-    reads = people_reads(transport)
+def people_read_count(transport: FakeZeroDBTransport, context: Any, count: int) -> None:
+    """Reads attributable to the lookups, not to the fixture that seeded them."""
+    reads = people_reads(transport) - context.people_reads_before
     assert reads <= count, (
-        f"`people` was read {reads} times; one lookup must not page the table. "
-        "See BallotService.PEOPLE_PAGE_SIZE and PeopleSnapshot."
+        f"`people` was read {reads} times across the lookups; one lookup must "
+        "not page the table and a second must not re-read it. See "
+        "BallotService.PEOPLE_PAGE_SIZE and PeopleSnapshot."
     )
 
 

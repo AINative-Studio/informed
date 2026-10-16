@@ -92,7 +92,9 @@ def person(
     }
 
 
-def seed_district(client: ZeroDBClient, district_id: str = HOUSE_DISTRICT, *, name: str = "D") -> None:
+def seed_district(
+    client: ZeroDBClient, district_id: str = HOUSE_DISTRICT, *, name: str = "D"
+) -> None:
     state = district_id.split("state:")[1].split("/")[0]
     Repository(client=client, model=District).upsert(
         {
@@ -336,8 +338,19 @@ def test_the_races_never_carry_the_address(client: ZeroDBClient) -> None:
 # --- the latency budget --------------------------------------------------
 
 
+def people_reads(transport: FakeZeroDBTransport) -> int:
+    """How many times `people` was queried, counted from the fake's call log.
+
+    Counted as a *delta* by every caller rather than as a total, because seeding
+    a fixture upserts rows and an upsert reads before it writes — so the total
+    includes the fixture's own reads and would make this assertion measure the
+    test setup.
+    """
+    return len([c for c in transport.calls if c.path.endswith("/tables/people/query")])
+
+
 def test_one_lookup_reads_people_once(client: ZeroDBClient, transport: FakeZeroDBTransport) -> None:
-    """The budget's dominant controllable cost: how many round trips the scan takes.
+    """The budget's dominant controllable cost: how many round trips the read takes.
 
     Measured against the live project at 539 `people` rows: six pages of 100
     cost roughly 1,200 ms on their own, against a whole-request budget of 800,
@@ -346,10 +359,11 @@ def test_one_lookup_reads_people_once(client: ZeroDBClient, transport: FakeZeroD
     duration so it means the same thing on any machine.
     """
     seed_full_delegation(client)
+    before = people_reads(transport)
     service_for(client).ballot_for(ADDRESS)
 
-    reads = [c for c in transport.calls if c.path.endswith("/tables/people/query")]
-    assert len(reads) == 1, f"{len(reads)} reads of `people` for one lookup"
+    reads = people_reads(transport) - before
+    assert reads == 1, f"{reads} reads of `people` for one lookup"
 
 
 def test_the_people_page_is_big_enough_for_the_whole_congress() -> None:
@@ -376,11 +390,10 @@ def test_a_second_lookup_does_not_re_read_people(
     seed_full_delegation(client)
     service = service_for(client)
     service.ballot_for(ADDRESS)
-    before = len([c for c in transport.calls if c.path.endswith("/tables/people/query")])
+    before = people_reads(transport)
     second = service.ballot_for(ADDRESS)
-    after = len([c for c in transport.calls if c.path.endswith("/tables/people/query")])
 
-    assert after == before, "the second lookup re-read `people`"
+    assert people_reads(transport) == before, "the second lookup re-read `people`"
     assert [c.name for race in second.races for c in race.candidates] == [
         "Rep. Synthetic",
         "Sen. One",
@@ -406,7 +419,9 @@ def test_the_snapshot_is_keyed_on_nothing_at_all(client: ZeroDBClient) -> None:
     assert "500" not in str(getattr(snapshot, "_key", ""))
 
 
-def test_an_expired_snapshot_is_re_read(client: ZeroDBClient, transport: FakeZeroDBTransport) -> None:
+def test_an_expired_snapshot_is_re_read(
+    client: ZeroDBClient, transport: FakeZeroDBTransport
+) -> None:
     """A snapshot must go stale, or a swearing-in never reaches a voter.
 
     story 2.2's loader refreshes `people`; without a TTL the API would serve the
@@ -420,12 +435,11 @@ def test_an_expired_snapshot_is_re_read(client: ZeroDBClient, transport: FakeZer
     service = service_for(client, snapshot=snapshot)
 
     service.ballot_for(ADDRESS)
-    before = len([c for c in transport.calls if c.path.endswith("/tables/people/query")])
+    before = people_reads(transport)
     now[0] = 61.0
     service.ballot_for(ADDRESS)
-    after = len([c for c in transport.calls if c.path.endswith("/tables/people/query")])
 
-    assert after == before + 1, "the snapshot never expired"
+    assert people_reads(transport) == before + 1, "the snapshot never expired"
 
 
 def test_a_refreshed_snapshot_picks_up_a_newly_sworn_in_member(client: ZeroDBClient) -> None:
@@ -440,9 +454,7 @@ def test_a_refreshed_snapshot_picks_up_a_newly_sworn_in_member(client: ZeroDBCli
         person("person:ZZNEW", "us-house", HOUSE_DISTRICT, name="Rep. Newly Sworn")
     )
     now[0] = 61.0
-    assert [c.name for c in service.ballot_for(ADDRESS).races[0].candidates] == [
-        "Rep. Newly Sworn"
-    ]
+    assert [c.name for c in service.ballot_for(ADDRESS).races[0].candidates] == ["Rep. Newly Sworn"]
 
 
 def test_the_default_snapshot_ttl_is_short_enough_to_be_honest() -> None:
@@ -496,3 +508,87 @@ def test_the_response_schema_names_a_race_and_a_candidate(api: TestClient) -> No
     assert "Race" in schemas
     assert "BallotCandidate" in schemas
     assert "is_incumbent" in schemas["BallotCandidate"]["properties"]
+
+
+def test_the_router_hands_every_request_the_same_snapshot(
+    client: ZeroDBClient, transport: FakeZeroDBTransport
+) -> None:
+    """The wiring the latency fix depends on, and the half a service test cannot see.
+
+    A `PeopleSnapshot` per request would cache nothing: each request would read
+    `people` once and discard the rows, which is the 978 ms p95 this story
+    replaces. So `app.ballot.router` holds one for the process and
+    `ballot_service` puts it into every service it builds. A test that
+    constructs its own service supplies its own snapshot and so can never
+    notice if that wiring is wrong.
+
+    Called directly rather than over HTTP because the production factory
+    defaults the resolver to the real geocoder, and CI makes no network call
+    (CLAUDE.md). What is under test is the snapshot, not the resolver.
+    """
+    from app.ballot.router import ballot_service as build_service
+    from app.ballot.router import people_snapshot
+
+    # The dependency hands out one object, which is what "shared" means.
+    shared = people_snapshot()
+    assert people_snapshot() is shared
+    shared.invalidate()
+
+    seed_full_delegation(client)
+    first = build_service(client=client, snapshot=people_snapshot())
+    second = build_service(client=client, snapshot=people_snapshot())
+    assert first._snapshot is second._snapshot is shared
+
+    # Two services, one read: the cache outlives the request that filled it.
+    before = people_reads(transport)
+    first._snapshot.rows(lambda: list(Repository(client=client, model=Person).query(limit=100)))
+    second._snapshot.rows(lambda: pytest.fail("the second service re-read `people`"))
+    assert people_reads(transport) == before + 1
+
+    # Left clean for any later test in this process.
+    shared.invalidate()
+
+
+def test_invalidating_a_snapshot_forces_a_re_read(
+    client: ZeroDBClient, transport: FakeZeroDBTransport
+) -> None:
+    """An ingest job that has just refreshed `people` must be able to say so.
+
+    Story 2.2's loader runs in-process in some deployments, and waiting out a
+    ten-minute TTL after a deliberate refresh would serve a delegation the
+    process knows is stale.
+    """
+    seed_full_delegation(client)
+    snapshot = PeopleSnapshot()
+    service = service_for(client, snapshot=snapshot)
+    service.ballot_for(ADDRESS)
+    before = people_reads(transport)
+
+    snapshot.invalidate()
+    service.ballot_for(ADDRESS)
+    assert people_reads(transport) == before + 1
+
+
+def test_a_chamber_the_resolver_did_not_ask_for_produces_no_race(
+    client: ZeroDBClient,
+) -> None:
+    """The races are exactly the seats the resolver resolved, and no others.
+
+    A state-legislature term in the same division must not appear as a federal
+    race. This pins the scope deliberately rather than by omission: a loop
+    appending "any other chamber in the delegation" was written in
+    `_races_from` and deleted as unreachable, and this test is what says so —
+    `_delegation_for` matches exactly the two `(division, chamber)` pairs the
+    resolver produces, so a third chamber never reaches the grouping. When
+    prd.md's `JurisdictionAdapter` brings one, the resolver changes first and
+    this test is what fails to say the grouping must follow.
+    """
+    seed_district(client, name="Congressional District 19")
+    Repository(client=client, model=Person).upsert(
+        person("person:ZZSTATE", "us-state-assembly", HOUSE_DISTRICT, name="Asm. Synthetic")
+    )
+
+    ballot = service_for(client).ballot_for(ADDRESS)
+    assert [race.body_id for race in ballot.races] == [HOUSE_BODY_ID]
+    assert ballot.races[0].candidates == []
+    assert ballot.officeholders == []
