@@ -14,6 +14,14 @@ dependencies = [
     # The standard library has HMAC and PBKDF2 but no AEAD cipher, and a
     # hand-rolled one is not a thing to ship for special-category data.
     "cryptography>=43.0",
+    # Story 9.1: a minimal, textual PDF rendering of an archived campaign
+    # page. Deliberately NOT a headless-browser/HTML-to-PDF engine (no
+    # Playwright/Chromium, no WeasyPrint): reportlab is pure Python, has no
+    # system dependency, and is used here only to lay out extracted text and
+    # capture metadata onto a real PDF page -- see
+    # app/ingest/campaign_sites.py's module docstring for exactly what this
+    # does and does not claim about visual fidelity to the live page.
+    "reportlab>=4.2",
 ]
 
 [project.optional-dependencies]

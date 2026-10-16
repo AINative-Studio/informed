@@ -1039,6 +1039,70 @@ class PanelReview(RowModel):
         return self
 
 
+class PromiseSource(RowModel):
+    """One archived capture of a candidacy's campaign material (story 9.1).
+
+    datamodel.md: id pattern `src:{sha256}`; fields candidacy_id, source_type,
+    url, archived_file_id, captured_at; queried by candidacy.
+
+    The id is content-addressed — the sha256 of the captured bytes, exactly
+    like `provenance_log`'s `prov:{sha256}` — so this model has an EMPTY
+    `natural_key`: there is no combination of fields to derive it from the way
+    `Candidacy` derives `{election_id}:{district_id}:{person_id}`. The caller
+    (`app.ingest.campaign_sites`) computes the hash of what was actually
+    fetched and supplies `id` directly, the same posture `ProvenanceLog` takes
+    and for the same reason: a byte-identical re-capture hashes identically and
+    lands on the row that already exists (idempotent re-archival for free,
+    which is this story's "once per election cycle" requirement), while a
+    genuinely changed page hashes differently and gets a second row — a second
+    capture on file at a second time, which is correct history to keep rather
+    than something to overwrite.
+
+    ===========================================================================
+    WHY THIS FIELD IS `url`, NOT `source_url` — READ BEFORE "FIXING" THIS
+    ===========================================================================
+
+    `app.repositories.provenance.requires_provenance` — and therefore
+    `Repository`'s automatic `_refuse_if_untraceable`/`_record_provenance`
+    machinery (story 16.3) — triggers on a model declaring a field literally
+    named `source_url`. datamodel.md's own table spec for `promise_sources`
+    names this field `url`, not `source_url`, and the live `TABLE_SCHEMAS`
+    entry in `app.bootstrap` (story 1.3, predating this story) already created
+    the ZeroDB column as `url`. Renaming it here to satisfy the generic
+    detector would make this model disagree with the table ZeroDB already
+    holds and with datamodel.md's own documented field list — a worse bug than
+    the one it would "fix".
+
+    So `requires_provenance(PromiseSource)` is `False`, and a
+    `Repository(model=PromiseSource)` is built with **no** `ProvenanceContext`
+    (the repository layer would refuse one anyway — `MissingProvenanceError`
+    is raised in both directions by `Repository.__init__`, per `provenance.py`).
+    The datamodel.md integrity rule this row still owes — "every NoSQL row with
+    a source URL has a matching `provenance_log` entry" — is satisfied by
+    `app.ingest.campaign_sites` calling `app.repositories.provenance.write_provenance`
+    DIRECTLY and explicitly, right after the `promise_sources` row is written,
+    naming `entity_table="promise_sources"` and the row's own `url` as the
+    source. This is the same low-level helper the generic mechanism calls
+    internally, so the resulting `provenance_log` row is identical in shape to
+    one the automatic path would have produced; only the wiring that invokes it
+    differs. `tests/test_provenance_integrity.py`'s static check is correctly
+    silent about this module for the same reason: it looks for a sourced model
+    (one with `source_url`) built as a `Repository(...)` with no
+    `provenance=`, and `PromiseSource` is not a sourced model by that
+    definition — the obligation is met by code, just not by the field-name
+    convention the static check recognises.
+    """
+
+    table_name: ClassVar[str] = "promise_sources"
+    references: ClassVar[dict[str, str]] = {"candidacy_id": "candidacies"}
+
+    candidacy_id: str
+    source_type: str
+    url: str
+    archived_file_id: str
+    captured_at: str
+
+
 class ProvenanceLog(RowModel):
     """One fetch of one external record, keyed `prov:{sha256}` (story 5.1).
 
@@ -1102,6 +1166,7 @@ __all__ = [
     "JurisdictionLevel",
     "MemberVote",
     "Person",
+    "PromiseSource",
     "ProvenanceLog",
     "QaStatus",
     "RollCall",
