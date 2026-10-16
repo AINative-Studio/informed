@@ -122,6 +122,20 @@ _STATUS_ERRORS: dict[int, type[ZeroDBError]] = {
 DEFAULT_PRESIGN_EXPIRATION = 300
 MAX_PRESIGN_EXPIRATION = 3600
 
+#: Rows per request while filtering client-side around ZeroDB's broken
+#: server-side filter (see `_fallback_filtered_rows`). Big enough that a
+#: reference check on a realistic `people` or `roll_calls` table resolves in a
+#: request or two; small enough that no single response has to be held in
+#: memory whole.
+FALLBACK_PAGE_SIZE = 500
+
+#: Ceiling on pages read in one client-side filter walk: 50 x 500 = 25k rows.
+#: Deliberately far short of `member_votes`' ~600k, because this workaround
+#: must not become a full-table scan on the largest table in the system. A
+#: filtered read that needs to go deeper than this is a signal to fix the
+#: server-side filter, not to raise the ceiling.
+MAX_FALLBACK_PAGES = 50
+
 
 class ZeroDBClient:
     """The one way Informed's backend reaches ZeroDB.
@@ -152,6 +166,8 @@ class ZeroDBClient:
         backoff_max: float = 8.0,
         sleep: Callable[[float], None] | None = None,
         jitter: Callable[[], float] | None = None,
+        fallback_page_size: int = FALLBACK_PAGE_SIZE,
+        max_fallback_pages: int = MAX_FALLBACK_PAGES,
     ) -> None:
         """Build a client over an already-configured transport.
 
@@ -166,6 +182,11 @@ class ZeroDBClient:
             sleep: Injected for tests, which record waits instead of taking them.
             jitter: Injected for tests. Spreads retries so a fleet of workers
                 does not synchronise its hammering of a recovering ZeroDB.
+            fallback_page_size: Rows per request while filtering client-side
+                around ZeroDB's broken server-side filter.
+            max_fallback_pages: Ceiling on that walk. Injected small in tests so
+                the exhaustion path is reachable without seeding 25k rows; see
+                `_fallback_filtered_rows`.
         """
         self._transport = transport
         self._project_id = project_id
@@ -174,6 +195,8 @@ class ZeroDBClient:
         self._backoff_max = backoff_max
         self._sleep = sleep if sleep is not None else _default_sleep
         self._jitter = jitter if jitter is not None else random.random
+        self._fallback_page_size = max(1, fallback_page_size)
+        self._max_fallback_pages = max(1, max_fallback_pages)
 
     @classmethod
     def from_env(cls, settings: ZeroDBSettings | None = None) -> "ZeroDBClient":
@@ -1062,22 +1085,78 @@ class ZeroDBClient:
     def _fallback_filtered_rows(
         self,
         table_name: str,
-        filter: dict[str, Any],
+        filter: dict[str, Any],  # noqa: A002
         limit: int,
-        skip: int,  # noqa: A002
+        skip: int,
     ) -> list[Row]:
         """Filter client-side when ZeroDB's server-side filter returns nothing.
 
-        Covers the live-API gap documented on `query_rows`. Scoped to one page,
-        so it cannot turn into an accidental full-table scan.
+        Covers the live-API gap documented on `query_rows`, which story 1.4
+        re-measured: the server-side filter matches *nothing*, not merely some
+        rows, so this path runs on every filtered read against live ZeroDB.
+
+        **Pages, rather than reading one page** — the fix story 1.4's live run
+        forced. The previous version read `GET /rows?limit={limit}&skip={skip}`
+        once, so a `get_row` (which asks for `limit=1`) tested exactly the
+        table's first row and answered None for every other row in it. Live,
+        with three rows seeded behind one pre-existing row, it found none of
+        the three. Since `get_row` is the find step of `upsert_row` and of the
+        repository's reference check, that meant a duplicate on every re-ingest
+        and a rejected reference for data that was perfectly valid, on any
+        table past its first page.
+
+        Bounded on purpose, in two ways, because `member_votes` reaches ~600k
+        rows per Congress (datamodel.md) and an unbounded scan here would be a
+        different outage from the one it fixes:
+
+          * each page is at most `FALLBACK_PAGE_SIZE` rows, so memory stays
+            flat however large the table is;
+          * at most `MAX_FALLBACK_PAGES` pages are read, after which the walk
+            gives up and returns what it found. A caller asking for a single
+            row by id (`get_row`) stops at the first match long before that.
+
+        The ceiling is a real limitation, not a solved problem: a `get_row` for
+        a row sitting beyond it will still answer None. It is survivable today
+        because the ingest order puts parents (`people`, `roll_calls`) in tables
+        orders of magnitude smaller than that ceiling, and because `enough` is
+        checked per page so a hit ends the walk immediately. The actual fix has
+        to come from ZeroDB — see datamodel.md's open question, escalated to
+        AINative — and this method is where to delete the workaround once the
+        server-side filter works.
         """
-        response = self._request(
-            "GET",
-            f"/projects/{self._project_id}/database/tables/{table_name}/rows",
-            params={"limit": limit, "skip": skip},
-        )
-        rows = [self._parse(Row, response, item) for item in self._envelope(response)]
-        return [row for row in rows if _matches(row.row_data, filter)]
+        wanted = skip + limit if limit > 0 else 0
+        matched: list[Row] = []
+        offset = 0
+        page_size = self._fallback_page_size
+
+        for _ in range(self._max_fallback_pages):
+            response = self._request(
+                "GET",
+                f"/projects/{self._project_id}/database/tables/{table_name}/rows",
+                params={"limit": page_size, "skip": offset},
+            )
+            page = self._envelope(response)
+            matched.extend(
+                row
+                for row in (self._parse(Row, response, item) for item in page)
+                if _matches(row.row_data, filter)
+            )
+            # Stop as soon as the caller's window is filled — a `get_row` for a
+            # row on page one must not pay for page two — or when the table has
+            # no more rows to offer.
+            if (wanted and len(matched) >= wanted) or len(page) < page_size:
+                break
+            offset += page_size
+        else:
+            logger.warning(
+                "client-side filter on %s gave up after %d pages (%d rows); a matching "
+                "row beyond that is reported as absent",
+                table_name,
+                self._max_fallback_pages,
+                self._max_fallback_pages * page_size,
+            )
+
+        return matched[skip : skip + limit] if limit > 0 else matched
 
     @staticmethod
     def _require(value: str, name: str) -> None:
