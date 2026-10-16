@@ -131,7 +131,7 @@ def main() -> int:
         logger.info("verifying the panel review workflow against project %r", client.project_id)
 
         # --- 1. the ledger table exists ----------------------------------
-        tables = {table.name for table in client.list_tables(limit=100)}
+        tables = {table.table_name for table in client.list_tables(limit=200)}
         check(
             "the panel_reviews table exists live",
             "panel_reviews" in tables,
