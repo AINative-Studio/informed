@@ -361,6 +361,25 @@ DEMO_API_KEY = "DEMO_KEY"
 #: deliberately absent — see the module docstring's "What this does not cover".
 INGESTED_OFFICES: tuple[str, ...] = ("H", "S")
 
+#: Every state and territory that elects a voting member or delegate to
+#: Congress, as the two-letter codes OpenFEC's `state` filter accepts. Issued
+#: per state rather than as one national query so each response stays small
+#: and one state's failure can be retried without re-fetching the other 55.
+#: Shared by `scripts/load_candidacies.py` and `app.scheduling.jobs`'s weekly
+#: job so the list of states exists in exactly one place (story 16, the
+#: scheduled-job runner).
+# fmt: off
+# Kept as a hand-wrapped block: the formatter would otherwise put each of the
+# 56 codes on its own line, turning a scannable list into three screens.
+ALL_STATES: tuple[str, ...] = (
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "DC", "FL", "GA", "GU",
+    "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI",
+    "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND",
+    "MP", "OH", "OK", "OR", "PA", "PR", "RI", "SC", "SD", "TN", "TX", "UT",
+    "VT", "VA", "VI", "WA", "WV", "WI", "WY", "AS",
+)
+# fmt: on
+
 #: `office` -> the `bodies` id the seat belongs to, matching story 2.1's seed
 #: and story 2.2's loader exactly.
 _BODY_ID_FOR_OFFICE: dict[str, str] = {"H": "us-house", "S": "us-senate"}
@@ -1020,6 +1039,7 @@ class CandidacyLoader:
 
 
 __all__ = [
+    "ALL_STATES",
     "DEFAULT_DISTRICT_VALID_FROM",
     "DEFAULT_MIN_INTERVAL_SECONDS",
     "DEMO_API_KEY",

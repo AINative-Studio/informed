@@ -51,6 +51,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.ingest.candidacies import (  # noqa: E402
+    ALL_STATES,
     DEFAULT_MIN_INTERVAL_SECONDS,
     INGESTED_OFFICES,
     CandidacyLoader,
@@ -61,22 +62,6 @@ from app.ingest.candidacies import (  # noqa: E402
 from app.seed_elections import UPCOMING_ELECTIONS, ElectionSeeder  # noqa: E402
 from app.zerodb import ZeroDBClient  # noqa: E402
 from app.zerodb.errors import ZeroDBError  # noqa: E402
-
-#: Every state and territory that elects a voting member or delegate to
-#: Congress, as the two-letter codes OpenFEC's `state` filter accepts. Issued
-#: per state rather than as one national query so each response stays small
-#: and one state's failure can be retried without re-fetching the other 55.
-# fmt: off
-# Kept as a hand-wrapped block: the formatter would otherwise put each of the
-# 56 codes on its own line, turning a scannable list into three screens.
-ALL_STATES: tuple[str, ...] = (
-    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "DC", "FL", "GA", "GU",
-    "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI",
-    "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND",
-    "MP", "OH", "OK", "OR", "PA", "PR", "RI", "SC", "SD", "TN", "TX", "UT",
-    "VT", "VA", "VI", "WA", "WV", "WI", "WY", "AS",
-)
-# fmt: on
 
 
 def _pacer(min_interval_seconds: float = DEFAULT_MIN_INTERVAL_SECONDS):
