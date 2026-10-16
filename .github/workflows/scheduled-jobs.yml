@@ -1,0 +1,86 @@
+name: Scheduled jobs
+
+# Epic 16 infrastructure: the daily trigger for `scripts/run_scheduled_jobs.py`,
+# which is itself job-agnostic — it knows every registered job's own cadence
+# (daily, weekly, hourly) via `app.scheduling.jobs.default_jobs`, and skips
+# whatever is not yet due. Running this workflow daily is enough to serve
+# every job registered today, including the weekly and (future, story 5.6)
+# hourly ones, because "due" is computed from the stored last-run timestamp,
+# not from this workflow's own cadence — see `app.scheduling.registry`'s
+# module docstring. A future job needing sub-daily cadence (the hourly House
+# roll-call sync once story 5.6 ships) should either tighten this schedule or
+# add a second trigger; the runner itself needs no change either way.
+#
+# *** SECRETS REQUIRED BEFORE THIS CAN RUN FOR REAL ***
+# This workflow targets the `prod` GitHub Environment (docs/environments.md's
+# pattern: one GitHub Environment per deployment target, each with its own
+# scoped secrets) and expects it to already carry:
+#   - ZERODB_WORKSPACE_ID
+#   - ZERODB_PROJECT_ID
+#   - ZERODB_API_KEY
+# None of these exist yet — docs/environments.md's acceptance-criteria table
+# marks all three ZeroDB projects "Pending" and this repo's GitHub Environments
+# have never been configured. An agent session cannot create a GitHub
+# Environment or set its secrets through the UI; a human with repo admin
+# access must do both before a real (non-manual) run of this workflow will do
+# anything but fail fast on "no credentials". Until then:
+#   - the schedule below is correct and harmless to leave enabled — a run
+#     with no `prod` Environment configured fails at the "Run scheduled jobs"
+#     step with a clear "missing ZERODB_* / credential" error, not a silent
+#     no-op and not a fabricated success;
+#   - `workflow_dispatch` is included so a human can trigger a manual run once
+#     the secrets exist, without waiting for the next scheduled tick.
+#
+# The two ingest jobs (`load_candidacies`, `load_house_rollcalls`) ALSO need
+# FEC_API_KEY / CONGRESS_GOV_API_KEY respectively to do anything beyond report
+# themselves BLOCKED — neither key exists anywhere in this project today (see
+# `app.ingest.candidacies` / `app.ingest.house_rollcalls`'s module docstrings).
+# Add them as the same kind of environment secret once real keys exist; until
+# then this workflow's run log will correctly show both jobs as BLOCKED, not
+# FAILED, on every tick — see `scripts/run_scheduled_jobs.py`'s module
+# docstring for why that distinction matters to anyone reading the run log.
+
+on:
+  schedule:
+    # 06:00 UTC daily. Comfortably serves the daily sweep, the weekly
+    # candidacies refresh and (once credentialed) the hourly roll-call sync
+    # at least once within its own interval; see the top-of-file note on why
+    # this workflow's own cadence does not need to match any one job's.
+    - cron: '0 6 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  run-scheduled-jobs:
+    name: Run due scheduled jobs
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: prod
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Run scheduled jobs
+        env:
+          ZERODB_WORKSPACE_ID: ${{ secrets.ZERODB_WORKSPACE_ID }}
+          ZERODB_PROJECT_ID: ${{ secrets.ZERODB_PROJECT_ID }}
+          ZERODB_API_KEY: ${{ secrets.ZERODB_API_KEY }}
+          FEC_API_KEY: ${{ secrets.FEC_API_KEY }}
+          CONGRESS_GOV_API_KEY: ${{ secrets.CONGRESS_GOV_API_KEY }}
+        run: python scripts/run_scheduled_jobs.py
