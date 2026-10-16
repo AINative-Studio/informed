@@ -27,6 +27,7 @@ from app.zerodb.errors import ZeroDBRateLimitError
 from app.zerodb.models import (
     Event,
     GraphEdge,
+    Ontology,
     PresignedUrl,
     Row,
     StoredFile,
@@ -111,6 +112,48 @@ LIVE_PRESIGNED: dict[str, Any] = {
     "operation_type": "download",
 }
 
+#: Captured live from the real "informed" project during story 1.3, after a
+#: full bootstrap run had registered all 8 entity types / 11 predicates.
+#: `id`, `project_id` and `user_id` are redacted like every other payload
+#: here. This also pins the live-confirmed fact that drives
+#: `ZeroDBClient.graph_upsert_ontology`'s REPLACE-not-merge warning: the
+#: response is a plain echo of whatever is currently registered, with no
+#: field distinguishing "just written" from "already there" — which is
+#: exactly why `_bootstrap_ontology` has to read this shape BEFORE writing
+#: rather than infer "already current" from the write's own response.
+LIVE_ONTOLOGY: dict[str, Any] = {
+    "id": "00000000-0000-0000-0000-000000000000",
+    "project_id": "00000000-0000-0000-0000-000000000000",
+    "user_id": "00000000-0000-0000-0000-000000000000",
+    "entity_types": [
+        "person",
+        "candidacy",
+        "promise",
+        "stance",
+        "roll_call",
+        "bill",
+        "verdict",
+        "topic",
+    ],
+    "predicates": {
+        "on": {"source": "roll_call", "target": "bill"},
+        "about": {"source": "promise", "target": "stance"},
+        "under": {"source": "stance", "target": "topic"},
+        "voted": {"source": "person", "target": "roll_call"},
+        "ran_in": {"source": "person", "target": "candidacy"},
+        "opposes": {"source": "bill", "target": "stance"},
+        "advances": {"source": "bill", "target": "stance"},
+        "sponsored": {"source": "person", "target": "bill"},
+        "tested_by": {"source": "promise", "target": "roll_call"},
+        "has_verdict": {"source": "promise", "target": "verdict"},
+        "made_promise": {"source": "candidacy", "target": "promise"},
+    },
+    "constraints": {},
+    "version": 4,
+    "created_at": "2026-10-16T06:11:03.795738+00:00",
+    "updated_at": "2026-10-16T06:20:32.407064+00:00",
+}
+
 LIVE_EVENT: dict[str, Any] = {
     "topic": "live.check",
     "event_payload": {"roll_call_id": "x"},
@@ -151,6 +194,39 @@ def test_a_live_traversal_reads_the_entity_id_out_of_label() -> None:
         "us-house:119-2:452",
     ]
     assert traversal.nodes[1].entity_type == "roll_call"
+
+
+def test_a_live_ontology_payload_parses() -> None:
+    ontology = Ontology.model_validate(LIVE_ONTOLOGY)
+
+    assert set(ontology.entity_types) == {
+        "person",
+        "candidacy",
+        "promise",
+        "stance",
+        "roll_call",
+        "bill",
+        "verdict",
+        "topic",
+    }
+    assert "made_promise" in ontology.predicates
+    assert ontology.predicates["made_promise"] == {
+        "source": "candidacy",
+        "target": "promise",
+    }
+
+
+def test_graph_get_ontology_reads_the_live_shape_through_the_client() -> None:
+    """`graph_get_ontology` must parse the exact shape the GET endpoint
+    returns — pinned here rather than only unit-tested against the fake."""
+    fake = FakeZeroDBTransport()
+    fake.always_return_json(LIVE_ONTOLOGY)
+    client = ZeroDBClient(transport=fake, project_id="proj-test")
+
+    ontology = client.graph_get_ontology()
+
+    assert ontology is not None
+    assert "ran_in" in ontology.predicates
 
 
 def test_a_live_file_payload_with_null_metadata_parses_to_an_empty_dict() -> None:
@@ -272,7 +348,14 @@ def test_a_malformed_retry_after_falls_back_to_the_clients_own_backoff(bad: Any)
 
 @pytest.mark.parametrize(
     "payload",
-    [LIVE_TABLE, LIVE_ROW, LIVE_EDGE, LIVE_FILE_WITH_NULL_METADATA, LIVE_PRESIGNED],
+    [
+        LIVE_TABLE,
+        LIVE_ROW,
+        LIVE_EDGE,
+        LIVE_FILE_WITH_NULL_METADATA,
+        LIVE_PRESIGNED,
+        LIVE_ONTOLOGY,
+    ],
 )
 def test_unknown_extra_fields_never_break_parsing(payload: dict[str, Any]) -> None:
     """ZeroDB adds fields over time; a new one must not fail an ingest run."""
@@ -282,6 +365,7 @@ def test_unknown_extra_fields_never_break_parsing(payload: dict[str, Any]) -> No
         "predicate": GraphEdge,
         "file_key": StoredFile,
         "presigned_url": PresignedUrl,
+        "entity_types": Ontology,
     }
     model = next(m for key, m in models.items() if key in payload)
 

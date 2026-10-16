@@ -162,6 +162,27 @@ def hits_carry_metadata(result: dict[str, Any]) -> None:
     assert all(hit.metadata.get("promise_id") == "prm:1" for hit in result["hits"].results)
 
 
+@when(parsers.parse('I create an HNSW index for namespace "{namespace}"'))
+def create_vector_index(client: ZeroDBClient, result: dict[str, Any], namespace: str) -> None:
+    result["index"] = client.create_vector_index(namespace=namespace, index_type="hnsw")
+
+
+@when("I read vector stats")
+def read_vector_stats(client: ZeroDBClient, result: dict[str, Any]) -> None:
+    result["stats"] = client.get_vector_stats()
+
+
+@then(parsers.parse('namespace "{namespace}" has an index'))
+def namespace_has_index(result: dict[str, Any], namespace: str) -> None:
+    assert result["index"].namespace == namespace
+    assert result["index"].status == "created"
+
+
+@then(parsers.parse('the vector stats show {count:d} vector in namespace "{namespace}"'))
+def vector_stats_show_count(result: dict[str, Any], count: int, namespace: str) -> None:
+    assert result["stats"].namespaces.get(namespace) == count
+
+
 # --- graph ----------------------------------------------------------------
 
 

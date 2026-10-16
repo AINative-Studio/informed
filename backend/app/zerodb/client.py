@@ -90,6 +90,8 @@ from app.zerodb.models import (
     StoredFile,
     Table,
     Traversal,
+    VectorIndex,
+    VectorStats,
 )
 from app.zerodb.settings import ZeroDBSettings
 from app.zerodb.transport import (
@@ -506,6 +508,67 @@ class ZeroDBClient:
         )
         return self._parse(SearchResults, response)
 
+    def create_vector_index(
+        self,
+        *,
+        namespace: str,
+        index_type: str = "hnsw",
+    ) -> VectorIndex:
+        """Create a search index for one vector namespace.
+
+        Wraps `zerodb_create_vector_index`, confirmed live against the real
+        "informed" project during story 1.3. Two things the live API does
+        that are NOT obvious from the tool description:
+
+          1. The endpoint is `POST /public/v1/vectors/index` with
+             `project_id` as a QUERY parameter — unlike every other ZeroDB
+             call in this client, it is not under `/projects/{project_id}/...`.
+          2. **The namespace must already contain at least one vector**, or
+             this returns 404/400. A namespace with nothing embedded in it
+             yet cannot be indexed; `embed_and_store` at least one vector
+             into it first.
+          3. **This call is NOT idempotent.** Calling it twice for the same
+             namespace does not error and does not return the existing
+             index — it silently creates a second, independently-named
+             index. There is also no live "list existing indexes" endpoint
+             to check against first (see `VectorIndex`'s docstring for the
+             deprecated one). Callers that must not double-index a namespace
+             (story 1.3's bootstrap) have to track what they already created
+             themselves; this client makes no attempt to hide that gap.
+
+        `distance_metric`/`index_params` are accepted by the MCP tool
+        description but are not part of the live REST endpoint's
+        `VectorIndexRequest` schema (`namespace` + `index_type` only), so
+        they are not sent — passing them would do nothing.
+        """
+        self._require(namespace, "namespace")
+        payload = {"namespace": namespace, "index_type": index_type}
+        response = self._request(
+            "POST",
+            "/public/v1/vectors/index",
+            json=payload,
+            params={"project_id": self._project_id},
+        )
+        return self._parse(VectorIndex, response)
+
+    def get_vector_stats(self, *, namespace: str | None = None) -> VectorStats:
+        """Per-namespace vector counts for this project.
+
+        Wraps `zerodb_vector_stats` via the live, non-deprecated
+        `/projects/{project_id}/database/vectors/stats` endpoint (the
+        `/public/zerodb/vectors/indexes` endpoint this superseded is marked
+        removed/410 in the live OpenAPI schema). This is also how a caller
+        checks `create_vector_index`'s "namespace must have ≥1 vector"
+        precondition before calling it.
+        """
+        params: dict[str, Any] = {}
+        if namespace is not None:
+            params["namespace"] = namespace
+        response = self._request(
+            "GET", f"/projects/{self._project_id}/database/vectors/stats", params=params
+        )
+        return self._parse(VectorStats, response)
+
     # =====================================================================
     # Knowledge graph — the evidence graph behind every grounded answer
     # =====================================================================
@@ -521,6 +584,21 @@ class ZeroDBClient:
 
         Wraps `zerodb_graph_ontology_upsert`. Called once by story 1.3 with the
         entity types and predicates in datamodel.md.
+
+        **Confirmed live during this story: this is a REPLACE, not a merge.**
+        The call name says "upsert" and repeating it with the exact same full
+        payload is safe (it ends in the same state, not a duplicate), but a
+        call with a narrower `entity_types`/`predicates` than what is already
+        registered silently drops everything not included — there is no
+        merge-by-key behaviour the way `update_row` has. A live diagnostic
+        call with a two-entity-type, one-predicate payload during this story
+        replaced the real "informed" project's full 8-entity-type,
+        11-predicate ontology down to just those two before the next full
+        bootstrap run restored it. Every caller of this method MUST pass the
+        complete, current `entity_types`/`predicates` it wants registered —
+        never a partial update — exactly like `_bootstrap_ontology` already
+        does. See `graph_get_ontology` to read the current state first when
+        a caller needs to confirm what is registered before writing.
         """
         if not entity_types:
             raise ZeroDBValidationError("an ontology needs at least one entity type")
@@ -532,6 +610,33 @@ class ZeroDBClient:
         if constraints is not None:
             payload["constraints"] = constraints
         response = self._request("POST", "/public/memory/v2/graph/ontology", json=payload)
+        return self._parse(Ontology, response)
+
+    def graph_get_ontology(self) -> Ontology | None:
+        """Read the currently registered ontology, or None if never set.
+
+        Confirmed live during this story: `GET /public/memory/v2/graph/ontology`
+        (project id as a query parameter, like `create_vector_index`) returns
+        the full current `entity_types`/`predicates`. Used by
+        `_bootstrap_ontology` to check what was already registered BEFORE
+        writing, which is the only way to tell a genuine first registration
+        apart from a repeat call — `graph_upsert_ontology`'s own response
+        always echoes back exactly what was just sent, so checking the
+        write's response can never answer "was this already current".
+
+        Returns None for a project that has never registered an ontology,
+        tolerating `ZeroDBNotFoundError` the same way `get_schema_version`
+        tolerates a `schema_versions` table that does not exist yet — "no
+        ontology yet" is an ordinary answer, not an error.
+        """
+        try:
+            response = self._request(
+                "GET",
+                "/public/memory/v2/graph/ontology",
+                params={"project_id": self._project_id},
+            )
+        except ZeroDBNotFoundError:
+            return None
         return self._parse(Ontology, response)
 
     def graph_upsert_entity(
