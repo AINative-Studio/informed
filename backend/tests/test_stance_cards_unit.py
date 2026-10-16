@@ -39,7 +39,9 @@ from app.seed_taxonomy import EXPECTED_SUBTOPIC_COUNT, TOPICS, taxonomy_rows
 
 #: datamodel.md: `stances` ids are `{topic_id}:{slug}`, and a `topic_id` is
 #: itself `{locale}:{slug}:v{n}`.
-ID_PATTERN = re.compile(r"^[a-z]{2}-[A-Z]{2}:[a-z0-9]+(?:-[a-z0-9]+)*:v\d+:[a-z0-9]+(?:-[a-z0-9]+)*$")
+ID_PATTERN = re.compile(
+    r"^[a-z]{2}-[A-Z]{2}:[a-z0-9]+(?:-[a-z0-9]+)*:v\d+:[a-z0-9]+(?:-[a-z0-9]+)*$"
+)
 
 
 def _subtopic_slugs() -> set[str]:
@@ -52,9 +54,7 @@ def _subtopic_slugs() -> set[str]:
 def test_every_subtopic_from_story_3_1_has_stances() -> None:
     """All 60, not "most": a subtopic with no cards is a dead end in the UI."""
     covered = set(stances_by_topic())
-    expected = {
-        str(row.id) for row in taxonomy_rows() if row.parent_id is not None
-    }
+    expected = {str(row.id) for row in taxonomy_rows() if row.parent_id is not None}
     assert len(expected) == EXPECTED_SUBTOPIC_COUNT
     missing = sorted(expected - covered)
     assert not missing, f"subtopics with no stance cards: {missing}"
@@ -89,8 +89,7 @@ def test_each_subtopic_has_at_least_three_stances(topic_id: str) -> None:
     """One parametrised case per subtopic, so a failure names the thin one."""
     cards = stances_by_topic().get(topic_id, [])
     assert len(cards) >= MINIMUM_STANCES_PER_SUBTOPIC, (
-        f"{topic_id} has {len(cards)} stance(s), needs at least "
-        f"{MINIMUM_STANCES_PER_SUBTOPIC}"
+        f"{topic_id} has {len(cards)} stance(s), needs at least {MINIMUM_STANCES_PER_SUBTOPIC}"
     )
 
 
@@ -163,8 +162,7 @@ def test_the_whole_corpus_is_not_tilted_to_one_side() -> None:
     strong_negative = codes.count(-2)
     strong_positive = codes.count(2)
     assert abs(strong_negative - strong_positive) <= 3, (
-        f"strong options are not offered evenly: {strong_negative} at -2 vs "
-        f"{strong_positive} at +2"
+        f"strong options are not offered evenly: {strong_negative} at -2 vs {strong_positive} at +2"
     )
 
 
@@ -381,7 +379,9 @@ def test_every_row_id_starts_with_its_topic_id() -> None:
     under an id that no `{topic_id}:` prefix query could find.
     """
     bad = [
-        (str(row.id), row.topic_id) for row in stance_rows() if not str(row.id).startswith(f"{row.topic_id}:")
+        (str(row.id), row.topic_id)
+        for row in stance_rows()
+        if not str(row.id).startswith(f"{row.topic_id}:")
     ]
     assert not bad, f"ids that do not start with their topic_id: {bad[:5]}"
 
@@ -495,7 +495,9 @@ def test_stance_has_no_default_selection_field() -> None:
         "sort_order",
         "position",
     }
-    assert not fields & forbidden, f"Stance carries selection/ordering field(s): {fields & forbidden}"
+    assert not fields & forbidden, (
+        f"Stance carries selection/ordering field(s): {fields & forbidden}"
+    )
     assert fields == {
         "id",
         "topic_id",
@@ -576,7 +578,9 @@ def test_stance_row_data_carries_every_field() -> None:
         id="en-US:prescription-drug-pricing:v1:cap-out-of-pocket-costs",
         topic_id="en-US:prescription-drug-pricing:v1",
         label="Cap what patients pay at the pharmacy counter",
-        description="Set a legal ceiling on monthly out-of-pocket costs for insulin and other drugs.",
+        description=(
+            "Set a legal ceiling on monthly out-of-pocket costs for insulin and other drugs."
+        ),
         direction_code="+1",
         wording_version=1,
     )

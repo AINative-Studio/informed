@@ -24,7 +24,8 @@ model in the story that first reads or writes it. Story 1.4 modelled the five
 that exercise all of the generic repository machinery, story 2.1 added
 `jurisdictions` and `bodies` because it seeds them, and story 3.1 added
 `issue_topics` — the first table whose declared reference points back at
-itself.
+itself — and story 3.2 added `stances`, whose id is required to extend the id
+of the row it references.
 
 Story 1.4's five and what each one proves:
 `districts` (no references at all), `people` (an embedded `terms[]` list),
@@ -342,6 +343,93 @@ class IssueTopic(RowModel):
         return self
 
 
+class Stance(RowModel):
+    """One balanced stance card, keyed `{topic_id}:{slug}` (story 3.2).
+
+    datamodel.md: id pattern `{topic_id}:{slug}`; fields topic_id, label,
+    description, direction_code, wording_version; main query "by topic".
+
+    A stance card is the outcome a voter wants, in plain words (prd.md Feature
+    1: "lower out-of-pocket drug costs"). Three or more hang off every one of
+    story 3.1's 60 subtopics, written to span the real disagreement rather than
+    to avoid taking a position — see `app.seed_stances` for the corpus and the
+    editorial rules it is held to.
+
+    The id is supplied rather than derived, for the same reason `IssueTopic`'s
+    is: `build_id` joins natural-key values verbatim, and the natural key here
+    is (topic_id, slug) — which would in fact produce the right string. The
+    problem is the other direction: `slug` is not a stored field, so declaring
+    it in a natural key would mean either storing a redundant column or
+    teaching `build_id` about a field the model does not have. Composing the id
+    where the slug lives (`app.seed_stances.StanceCard.row_id`) and validating
+    the relationship here is the smaller of the two.
+
+    `topic_id` is a declared reference, so the repository refuses a card whose
+    subtopic is not stored (datamodel.md rule 5). That is what makes story
+    3.1's seed a hard prerequisite of this one, and it is checked live rather
+    than assumed.
+
+    **There is deliberately no `default`, `preselected`, `display_order` or
+    `rank` field.** Story 3.2's third acceptance criterion is "no stance is
+    preselected", and the way to satisfy it is for the concept to have nowhere
+    to live: with `extra="forbid"`, a write carrying `default: true` is
+    refused rather than stored and ignored, and a stored-but-ignored flag is
+    the dangerous case — a later UI story would find it and honour it. The
+    absence is pinned by a test (`test_stance_has_no_default_selection_field`)
+    so that adding one has to be argued for.
+
+    Ordering is absent for the same reason. datamodel.md gives this table no
+    order column, and any stored order is a ranking: whichever card sits first
+    gets picked more. Display order is randomized — per request by
+    `app.stances.service.StanceService`, per session by the client. See that
+    module's docstring for the split.
+
+    `wording_version` is the panel-reviewed wording's revision (story 3.3 is
+    the review workflow; prd.md: "wording changes are versioned and public").
+    All of story 3.2's rows are at 1. Bounded below because version 0 is not
+    published wording. Unlike `issue_topics`, the version is NOT part of the
+    id: a wording fix must keep the id stable, because a voter's encrypted
+    profile stores `stance_id` and re-wording a card must not orphan their
+    saved choice. That is the opposite trade from the taxonomy's, and it is
+    deliberate — a taxonomy version re-parents and renames topics, where a
+    wording version only rewrites the same position in better English.
+    """
+
+    table_name: ClassVar[str] = "stances"
+    references: ClassVar[dict[str, str]] = {"topic_id": "issue_topics"}
+
+    topic_id: str
+    label: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    #: A signed position on the subtopic's own axis, as a string because
+    #: ZeroDB's `stances` schema declares this column `"string"` (bootstrap's
+    #: `TABLE_SCHEMAS`). See `app.seed_stances.DIRECTION_CODES` for the scheme
+    #: and why it is signed rather than a set of named categories.
+    direction_code: str = Field(pattern=r"^(?:0|[-+][12])$")
+    wording_version: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def _the_id_extends_the_topic_id(self) -> Stance:
+        """datamodel.md's `{topic_id}:{slug}`, checked rather than trusted.
+
+        The one query datamodel.md documents for this table is "by topic", and
+        it filters on the `topic_id` field — so a row whose id sat under a
+        different topic's prefix would store fine and simply never appear in
+        the menu for either topic. A silent disappearance is worse than a
+        refused write, and the two values are written in different places
+        (`StanceCard.row_id` composes the id, the card declares the slug), so
+        a mismatch is a live possibility rather than a theoretical one.
+
+        Skipped when `id` is None: the repository fills it in before writing,
+        and a model constructed for validation alone need not carry one.
+        """
+        if self.id is not None and not self.id.startswith(f"{self.topic_id}:"):
+            raise ValueError(
+                f"stance id {self.id!r} does not extend its topic_id {self.topic_id!r}"
+            )
+        return self
+
+
 class District(RowModel):
     """A legislative district, keyed by its OCD-ID.
 
@@ -632,6 +720,7 @@ __all__ = [
     "QaStatus",
     "RollCall",
     "RowModel",
+    "Stance",
     "Tally",
     "Term",
     "Verdict",

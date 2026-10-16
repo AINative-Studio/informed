@@ -41,7 +41,9 @@ scenarios("../features/stance_cards.feature")
 
 #: datamodel.md's documented id pattern for `stances`: `{topic_id}:{slug}`,
 #: where `topic_id` is itself `{locale}:{slug}:v{n}`.
-ID_PATTERN = re.compile(r"^[a-z]{2}-[A-Z]{2}:[a-z0-9]+(?:-[a-z0-9]+)*:v\d+:[a-z0-9]+(?:-[a-z0-9]+)*$")
+ID_PATTERN = re.compile(
+    r"^[a-z]{2}-[A-Z]{2}:[a-z0-9]+(?:-[a-z0-9]+)*:v\d+:[a-z0-9]+(?:-[a-z0-9]+)*$"
+)
 
 #: A seed large enough that a shuffle of 3-5 items is very unlikely to land on
 #: the stored order twice in a row, but fixed so the suite never flakes. See
@@ -247,7 +249,9 @@ def no_stance_on_a_parent(stances: Repository[Stance]) -> None:
     be too coarse to map to a roll call, which is what story 4's scoring needs.
     """
     offenders = [
-        (row.id, row.topic_id) for row in _stored_stances(stances) if row.topic_id in _top_level_ids()
+        (row.id, row.topic_id)
+        for row in _stored_stances(stances)
+        if row.topic_id in _top_level_ids()
     ]
     assert not offenders, f"stances attached to a top-level topic: {offenders}"
 
@@ -384,7 +388,14 @@ def no_default_field_stored(zerodb: ZeroDBClient) -> None:
     bytes in storage carry one, which only an unvalidated read can answer.
     """
     page = zerodb.query_rows("stances", limit=1000)
-    forbidden = {"default", "preselected", "selected", "recommended", "is_default", "default_choice"}
+    forbidden = {
+        "default",
+        "preselected",
+        "selected",
+        "recommended",
+        "is_default",
+        "default_choice",
+    }
     offenders = [
         (row.row_data.get("id"), sorted(set(row.row_data) & forbidden))
         for row in page.rows
@@ -465,7 +476,9 @@ def _rows_with_id(fake: FakeZeroDBTransport, table: str, row_id: str) -> int:
 def one_row_per_stance(fake: FakeZeroDBTransport, count: int) -> None:
     counts = {row_id: _rows_with_id(fake, "stances", row_id) for row_id in stance_row_ids()}
     offenders = {row_id: n for row_id, n in counts.items() if n != count}
-    assert not offenders, f"ids with a row count other than {count}: {dict(list(offenders.items())[:5])}"
+    assert not offenders, (
+        f"ids with a row count other than {count}: {dict(list(offenders.items())[:5])}"
+    )
 
 
 @then("the second stance run issued no row inserts")
