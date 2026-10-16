@@ -7,6 +7,11 @@ module's whole job is checking what already exists before creating anything,
 because ZeroDB itself has no upsert-by-natural-key (`POST /rows` always
 appends — see datamodel.md's "Open questions").
 
+It also **seeds** the fixed reference rows story 2.1 specifies, by calling
+`app.seed.Seeder` once the tables exist. That is rows rather than structure, so
+it lives in its own module — see `app/seed.py` for the split, and for why those
+three rows are permanent rather than cleaned up like a verify script's.
+
 What "idempotent" means for each primitive here:
 
   * Tables — `ZeroDBClient.list_tables()` is checked first; a table already
@@ -35,9 +40,11 @@ What "idempotent" means for each primitive here:
 
 Rate limiting: the live "informed" project was observed to throttle at 60
 requests/minute (datamodel.md "Open questions"). A cold bootstrap makes
-roughly 32 calls (23 tables incl. `schema_versions` + 4 namespaces x 2 calls
+roughly 35 calls (23 tables incl. `schema_versions` + 4 namespaces x 2 calls
 each [seed vector, then index] + 1 ontology read + 1 ontology write +
-1 schema-version write), close enough to that ceiling that this module paces
+1 schema-version write + 3 reference-data seed writes, each of which is
+itself a find-then-write and so costs more than one request — see
+`app.seed`), close enough to that ceiling that this module paces
 every call through an injectable `pace` callback rather than relying on the
 client's retry-on-429 as the only defense. The default pacer sleeps enough to
 keep calls at least `DEFAULT_MIN_INTERVAL_SECONDS` apart; tests inject a
@@ -57,6 +64,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.seed import Seeder, SeedReport
 from app.zerodb.client import ZeroDBClient
 from app.zerodb.errors import ZeroDBNotFoundError
 from app.zerodb.models import Table
@@ -397,6 +405,11 @@ class BootstrapReport:
     namespaces_skipped: list[str] = field(default_factory=list)
     ontology_registered: bool = False
     ontology_already_current: bool = False
+    #: What the reference-data seed wrote (story 2.1). Always populated, and
+    #: deliberately NOT part of `is_noop`: the seed restates its three fixed
+    #: rows on every run, so "it wrote three rows" says nothing about whether
+    #: anything changed. See `app.seed`'s module docstring.
+    seed: SeedReport = field(default_factory=SeedReport)
     schema_version: str = SCHEMA_VERSION
     schema_version_changed: bool = False
 
@@ -409,6 +422,13 @@ class BootstrapReport:
         docstring), so `ontology_registered` alone does not mean anything
         changed — `ontology_already_current` is what distinguishes a true
         first registration from a repeat call that reaffirmed the same state.
+
+        The seed is excluded for the same reason, one step further: it has no
+        "already current" signal at all, because it restates its rows
+        unconditionally rather than reading them first. A second bootstrap
+        whose only writes were the seed's three restatements is still a no-op
+        in the sense this property means — nothing about the environment
+        differs afterwards.
         """
         return (
             not self.tables_created
@@ -456,10 +476,20 @@ class Bootstrapper:
         writes into the `schema_versions` row. That row is therefore read
         FIRST, before any writing happens, so `_bootstrap_vector_namespaces`
         has something to check against.
+
+        The reference-data seed (story 2.1) runs immediately after the tables,
+        before the vector and graph work, for two reasons: its rows have to go
+        into tables that already exist, and its three writes are the cheapest
+        step here — so a project whose ontology call later fails still has a
+        usable reference tree rather than a schema with nothing in it. Row
+        seeding lives in `app.seed`, not in this module; see that module's
+        docstring for the schema-versus-data split and for why those rows are
+        permanent.
         """
         report = BootstrapReport()
         previously_indexed = self._previously_indexed_namespaces()
         self._bootstrap_tables(report)
+        self._seed_reference_data(report)
         self._bootstrap_vector_namespaces(report, previously_indexed)
         self._bootstrap_ontology(report)
         self._record_schema_version(report, previously_indexed)
@@ -512,6 +542,18 @@ class Bootstrapper:
                 break
             skip += limit
         return tables
+
+    # --- fixed reference data (story 2.1) ---------------------------------
+
+    def _seed_reference_data(self, report: BootstrapReport) -> None:
+        """Seed the US federal jurisdiction and its two chambers.
+
+        Delegated whole to `app.seed.Seeder`, sharing this bootstrap's pacer so
+        the seed's writes count against the same 60 req/min budget as
+        everything else here. This method exists only to connect the two and to
+        carry the seed's report into the bootstrap's.
+        """
+        report.seed = Seeder(self._client, pace=self._pace).run()
 
     # --- vector namespaces + HNSW indexes --------------------------------
 

@@ -42,6 +42,13 @@ Feature: Idempotent ZeroDB bootstrap (story 1.3)
     Then a schema version row is recorded
     And the schema version is queryable afterwards
 
+  # Story 2.1's acceptance criterion is "after bootstrap", so it is asserted
+  # from here too. The seed's own behaviour — field values, idempotency,
+  # ordering, reference refusal — is covered in seed_reference_data.feature.
+  Scenario: Running bootstrap once seeds the US federal reference data
+    When I run the bootstrap
+    Then the bootstrap report says 3 reference rows were seeded
+
   # --- idempotency: the hard part ----------------------------------------
 
   Scenario: Running bootstrap twice creates no duplicate tables

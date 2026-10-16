@@ -71,6 +71,17 @@ def main() -> int:
             report.schema_version,
             report.schema_version_changed,
         )
+    # Reported on every run, no-op or not: the seed restates its three fixed
+    # rows unconditionally (see app/seed.py), so it has no "already current"
+    # state to fold into `is_noop` — and an operator still wants to see that
+    # the reference tree is in place.
+    logger.info(
+        "Reference data seeded: %d row(s) — jurisdictions %s, bodies %s. "
+        "These rows are permanent reference data, not test fixtures: do not delete them.",
+        report.seed.row_count,
+        ", ".join(report.seed.jurisdictions_written) or "none",
+        ", ".join(report.seed.bodies_written) or "none",
+    )
     return 0
 
 
