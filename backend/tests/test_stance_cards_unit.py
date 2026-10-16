@@ -28,8 +28,10 @@ from app.seed_stances import (
     MINIMUM_STANCES_PER_SUBTOPIC,
     PARTISAN_IDENTITY_WORDS,
     STANCES,
+    STANCES_BY_TOPIC,
     WORDING_VERSION,
     StanceCard,
+    balance_complaints,
     contains_partisan_identity_word,
     stance_row_ids,
     stance_rows,
@@ -107,24 +109,80 @@ def test_the_minimum_is_the_acceptance_criterion_and_not_lower() -> None:
 def test_each_subtopics_stances_span_both_sides_of_the_axis(topic_id: str) -> None:
     """The real content of "balanced", asserted per subtopic.
 
-    Three checks in one, because they fail together and a reader wants all
-    three facts at once:
-
-      1. the codes are not all the same value — three cards coded `+1` are
-         three flavours of one position dressed up as a choice;
-      2. at least one is negative and at least one positive — `+1` and `+2`
-         are one side twice, and a one-sided menu plus a neutral option is
-         still one-sided;
-      3. no code repeats — two cards both coded `-1` make that side twice as
-         likely to be picked by a voter skimming, which is a nudge even when
-         both wordings are fair.
+    Through `balance_complaints` rather than a regex of assertions here, because
+    the same rule is checked in four places — this test, the import-time guard
+    in `app.seed_stances`, the feature file's step definitions and
+    `scripts/verify_stance_cards_live.py` — and four hand-rolled versions would
+    eventually disagree about an edge case, with the loosest deciding what
+    ships. The function's own behaviour is pinned by
+    `test_balance_complaints_catches_each_way_a_set_can_be_unbalanced` below,
+    so this is not circular.
     """
-    codes = [int(card.direction_code) for card in stances_by_topic()[topic_id]]
-    assert len(set(codes)) > 1, f"{topic_id}: every stance is coded {codes[0]}"
-    assert any(code < 0 for code in codes), f"{topic_id}: no option on the negative side: {codes}"
-    assert any(code > 0 for code in codes), f"{topic_id}: no option on the positive side: {codes}"
-    duplicated = sorted({code for code in codes if codes.count(code) > 1})
-    assert not duplicated, f"{topic_id}: repeated direction code(s) {duplicated}"
+    codes = [card.direction_code for card in stances_by_topic()[topic_id]]
+    complaints = balance_complaints({topic_id: codes})
+    assert not complaints, f"{topic_id}: {'; '.join(complaints[topic_id])} — codes were {codes}"
+
+
+@pytest.mark.parametrize(
+    ("codes", "expected_substring"),
+    [
+        # Balanced: nothing reported.
+        (["-1", "0", "+1"], None),
+        (["+1", "-1", "+2", "-2"], None),
+        # Too few cards for the acceptance criterion.
+        (["-1", "+1"], "needs 3"),
+        # One position in three outfits.
+        (["+1", "+1", "+1"], "every stance is coded 1"),
+        # Two distinct values, still one side twice plus a neutral.
+        (["+1", "+2", "0"], "no option on the negative side"),
+        (["-1", "-2", "0"], "no option on the positive side"),
+        # A repeated point on the axis doubles its chance of being picked.
+        (["-1", "-1", "+1"], "repeated direction code(s) [-1]"),
+    ],
+)
+def test_balance_complaints_catches_each_way_a_set_can_be_unbalanced(
+    codes: list[str], expected_substring: str | None
+) -> None:
+    """A guard on the guard: the shared balance check must actually reject.
+
+    Without this, every "the corpus is balanced" assertion in the suite could
+    pass because `balance_complaints` returns nothing for everything. Each case
+    is one of the four failure modes the module docstring argues for, plus two
+    balanced sets so the function is not simply rejecting everything.
+    """
+    complaints = balance_complaints({"t": codes})
+    if expected_substring is None:
+        assert not complaints, f"{codes} was wrongly complained about: {complaints}"
+    else:
+        assert "t" in complaints, f"{codes} should have been complained about"
+        assert any(expected_substring in reason for reason in complaints["t"]), (
+            f"{codes} was complained about, but not for {expected_substring!r}: {complaints['t']}"
+        )
+
+
+def test_balance_complaints_reports_every_unbalanced_subtopic_at_once() -> None:
+    """A caller asserts on emptiness and prints the mapping, so it must be whole.
+
+    Reporting only the first problem would mean an author fixing a corpus
+    rediscovering it one subtopic per test run.
+    """
+    complaints = balance_complaints(
+        {"a": ["+1", "+1", "+1"], "b": ["-1", "0", "+1"], "c": ["-1", "-2", "0"]}
+    )
+    assert set(complaints) == {"a", "c"}
+
+
+def test_the_declared_grouping_constant_matches_the_function() -> None:
+    """`STANCES_BY_TOPIC` is the module's own copy, used by the import guard.
+
+    Pinned so the constant cannot drift from the function a test or verifier
+    calls — the guard would then be checking something other than what ships.
+    """
+    assert stances_by_topic() == STANCES_BY_TOPIC
+    assert STANCES_BY_TOPIC is not stances_by_topic(), (
+        "the function must hand back a fresh dict, so a caller mutating its "
+        "lists cannot corrupt the module's own view"
+    )
 
 
 def test_direction_codes_come_from_the_documented_vocabulary() -> None:

@@ -2137,6 +2137,66 @@ def stances_by_topic() -> dict[str, list[StanceCard]]:
     return grouped
 
 
+#: The declared grouping, computed once. `stances_by_topic()` stays a function
+#: because a caller that mutates the lists it gets back should not corrupt
+#: everyone else's view; this is the module's own copy, used by the import-time
+#: guard below.
+STANCES_BY_TOPIC: dict[str, list[StanceCard]] = stances_by_topic()
+
+
+def balance_complaints(codes_by_topic: dict[str, list[str]]) -> dict[str, list[str]]:
+    """What is wrong with each subtopic's direction codes, if anything.
+
+    Takes *codes* rather than cards, so the same function answers the question
+    for the declared corpus, for a set of rows read back through `Stance`, and
+    for raw `row_data` dicts off a live unfiltered read. That is the point of it
+    existing: story 3.2's balance rule is asserted in four places — the
+    import-time guard below, `tests/test_stance_cards_unit.py`,
+    `tests/features/stance_cards.feature`'s step definitions and
+    `scripts/verify_stance_cards_live.py` — and four hand-rolled versions of
+    "spans the axis" would eventually disagree about an edge case, with the
+    loosest one deciding what ships. One implementation, four callers, exactly
+    as story 3.1 does with `contains_stance_presupposing_word`.
+
+    A subtopic is complained about when any of four things holds. Each is
+    argued in the module docstring, and each has a distinct failure mode that a
+    reader of the message wants named:
+
+      * **too few cards** — fewer than `MINIMUM_STANCES_PER_SUBTOPIC`, the
+        acceptance criterion;
+      * **one direction only** — every card coded the same, which is one
+        position in three outfits rather than a choice;
+      * **one side only** — no negative or no positive code. Two distinct
+        values is not enough: `+1` and `+2` are one side twice, and a one-sided
+        menu plus a neutral option is still one-sided;
+      * **a repeated code** — two cards at the same point on the axis, which
+        makes that point twice as likely to be picked by a voter skimming,
+        a nudge even when both wordings are fair.
+
+    Returns a mapping of topic id to the reasons for it, empty when the whole
+    input is balanced — so a caller asserts on emptiness and prints the
+    mapping, rather than discovering one problem at a time.
+    """
+    complaints: dict[str, list[str]] = {}
+    for topic_id, raw_codes in codes_by_topic.items():
+        reasons: list[str] = []
+        codes = [int(code) for code in raw_codes]
+        if len(codes) < MINIMUM_STANCES_PER_SUBTOPIC:
+            reasons.append(f"only {len(codes)} stance(s), needs {MINIMUM_STANCES_PER_SUBTOPIC}")
+        if len(set(codes)) < 2:
+            reasons.append(f"every stance is coded {codes[0] if codes else 'nothing'}")
+        elif not any(code < 0 for code in codes):
+            reasons.append(f"no option on the negative side: {sorted(codes)}")
+        elif not any(code > 0 for code in codes):
+            reasons.append(f"no option on the positive side: {sorted(codes)}")
+        repeated = sorted({code for code in codes if codes.count(code) > 1})
+        if repeated:
+            reasons.append(f"repeated direction code(s) {repeated}")
+        if reasons:
+            complaints[topic_id] = reasons
+    return complaints
+
+
 # ---------------------------------------------------------------------------
 # The seeder
 # ---------------------------------------------------------------------------
@@ -2240,41 +2300,21 @@ class StanceSeeder:
 # same properties and name the offending subtopic when they fail.
 # ---------------------------------------------------------------------------
 
-_BY_TOPIC = stances_by_topic()
-
-assert len(_BY_TOPIC) == EXPECTED_SUBTOPIC_COUNT, (
-    f"expected cards for all {EXPECTED_SUBTOPIC_COUNT} subtopics, got {len(_BY_TOPIC)}"
+_COMPLAINTS = balance_complaints(
+    {
+        topic_id: [card.direction_code for card in cards]
+        for topic_id, cards in STANCES_BY_TOPIC.items()
+    }
+)
+assert not _COMPLAINTS, "the stance corpus is not balanced:\n  " + "\n  ".join(
+    f"{topic_id}: {'; '.join(reasons)}" for topic_id, reasons in sorted(_COMPLAINTS.items())
 )
 
-_THIN = {
-    topic_id: len(cards)
-    for topic_id, cards in _BY_TOPIC.items()
-    if len(cards) < MINIMUM_STANCES_PER_SUBTOPIC
-}
-assert not _THIN, f"subtopics with fewer than {MINIMUM_STANCES_PER_SUBTOPIC} stances: {_THIN}"
+assert len(STANCES_BY_TOPIC) == EXPECTED_SUBTOPIC_COUNT, (
+    f"expected cards for all {EXPECTED_SUBTOPIC_COUNT} subtopics, got {len(STANCES_BY_TOPIC)}"
+)
 
-_ONE_SIDED = {
-    topic_id: sorted(int(card.direction_code) for card in cards)
-    for topic_id, cards in _BY_TOPIC.items()
-    if not (
-        any(int(card.direction_code) < 0 for card in cards)
-        and any(int(card.direction_code) > 0 for card in cards)
-    )
-}
-assert not _ONE_SIDED, f"subtopics offering only one side of their axis: {_ONE_SIDED}"
-
-_REPEATED = {
-    topic_id: sorted(
-        code
-        for code in {int(card.direction_code) for card in cards}
-        if [int(c.direction_code) for c in cards].count(code) > 1
-    )
-    for topic_id, cards in _BY_TOPIC.items()
-}
-_REPEATED = {topic_id: codes for topic_id, codes in _REPEATED.items() if codes}
-assert not _REPEATED, f"subtopics with a repeated direction code: {_REPEATED}"
-
-del _BY_TOPIC, _THIN, _ONE_SIDED, _REPEATED
+del _COMPLAINTS
 
 
 __all__ = [
@@ -2282,10 +2322,12 @@ __all__ = [
     "MINIMUM_STANCES_PER_SUBTOPIC",
     "PARTISAN_IDENTITY_WORDS",
     "STANCES",
+    "STANCES_BY_TOPIC",
     "WORDING_VERSION",
     "StanceCard",
     "StanceSeedReport",
     "StanceSeeder",
+    "balance_complaints",
     "contains_partisan_identity_word",
     "stance_row_ids",
     "stance_rows",

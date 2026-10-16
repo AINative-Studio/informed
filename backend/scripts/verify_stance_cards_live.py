@@ -80,6 +80,7 @@ from app.seed_stances import (  # noqa: E402
     STANCES,
     WORDING_VERSION,
     StanceSeeder,
+    balance_complaints,
     contains_partisan_identity_word,
     stance_row_ids,
     stance_rows,
@@ -337,18 +338,27 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0915 - a linear script of checks r
             f"{len(dangling)} topic_id(s) that are not stored subtopics: {dangling[:5]}",
         )
 
-        uniform: dict[str, list[int]] = {}
-        one_sided: dict[str, list[int]] = {}
-        repeated: dict[str, list[int]] = {}
-        for topic_id, rows in sorted(live_by_topic.items()):
-            codes = [int(row.get("direction_code", "0")) for row in rows]
-            if len(set(codes)) < 2:
-                uniform[topic_id] = sorted(codes)
-            if not (any(code < 0 for code in codes) and any(code > 0 for code in codes)):
-                one_sided[topic_id] = sorted(codes)
-            duplicated = sorted({code for code in codes if codes.count(code) > 1})
-            if duplicated:
-                repeated[topic_id] = duplicated
+        # The balance rule, computed over the LIVE codes by the same function
+        # the import-time guard, the unit tests and the feature file use — so a
+        # live corpus that drifted from the declaration is judged by exactly
+        # the rule that shipped, not by a fourth hand-rolled copy of it.
+        complaints = balance_complaints(
+            {
+                topic_id: [str(row.get("direction_code", "")) for row in rows]
+                for topic_id, rows in live_by_topic.items()
+            }
+        )
+
+        def _matching(fragment: str) -> dict[str, list[str]]:
+            return {
+                topic_id: reasons
+                for topic_id, reasons in complaints.items()
+                if any(fragment in reason for reason in reasons)
+            }
+
+        uniform = _matching("every stance is coded")
+        one_sided = _matching("no option on the")
+        repeated = _matching("repeated direction code")
         check(
             "no live subtopic's stances all share one direction code",
             not uniform,

@@ -28,6 +28,7 @@ from app.seed_stances import (
     WORDING_VERSION,
     StanceCard,
     StanceSeeder,
+    balance_complaints,
     contains_partisan_identity_word,
     stance_row_ids,
     stance_rows,
@@ -298,19 +299,35 @@ def ids_match_pattern(stances: Repository[Stance]) -> None:
 # --- spanning the spectrum --------------------------------------------------
 
 
+def _stored_codes_by_topic(stances: Repository[Stance]) -> dict[str, list[str]]:
+    """What `balance_complaints` takes, read back out of storage.
+
+    The shared balance check is fed *stored* codes here rather than the declared
+    ones, which is the whole value of the feature file over the unit tests: a
+    row written by some other path, or a `direction_code` mangled on the round
+    trip, is caught even though the declaration is fine.
+    """
+    return {
+        topic_id: [row.direction_code for row in rows]
+        for topic_id, rows in _by_topic(stances).items()
+    }
+
+
 @then("no subtopic's stances all share one direction code")
 def directions_are_not_uniform(stances: Repository[Stance]) -> None:
     """The acceptance criterion's real content, stated negatively.
 
     Three stances all coded `+1` would be three flavours of one position
     dressed up as a choice, which is the failure mode "balanced" exists to
-    exclude. Checked over what is stored rather than over the declaration, so
-    a row written by any other path is caught too.
+    exclude. Checked through `app.seed_stances.balance_complaints` so this
+    scenario, the unit tests, the import-time guard and the live verifier are
+    one implementation rather than four that can disagree.
     """
+    complaints = balance_complaints(_stored_codes_by_topic(stances))
     uniform = {
-        topic_id: sorted({row.direction_code for row in rows})
-        for topic_id, rows in sorted(_by_topic(stances).items())
-        if len({row.direction_code for row in rows}) < 2
+        topic_id: reasons
+        for topic_id, reasons in complaints.items()
+        if any("every stance is coded" in reason for reason in reasons)
     }
     assert not uniform, f"subtopics whose stances all point the same way: {uniform}"
 
@@ -323,11 +340,12 @@ def directions_span_both_signs(stances: Repository[Stance]) -> None:
     menu, so the check is on the signs rather than on the count of distinct
     values.
     """
-    one_sided = {}
-    for topic_id, rows in sorted(_by_topic(stances).items()):
-        codes = [int(row.direction_code) for row in rows]
-        if not (any(code < 0 for code in codes) and any(code > 0 for code in codes)):
-            one_sided[topic_id] = sorted(codes)
+    complaints = balance_complaints(_stored_codes_by_topic(stances))
+    one_sided = {
+        topic_id: reasons
+        for topic_id, reasons in complaints.items()
+        if any("no option on the" in reason for reason in reasons)
+    }
     assert not one_sided, f"subtopics offering only one side of the axis: {one_sided}"
 
 
@@ -349,12 +367,12 @@ def directions_are_distinct_within_a_subtopic(stances: Repository[Stance]) -> No
     as likely to be picked by a voter skimming, which is a nudge even when both
     wordings are fair.
     """
-    clashes = {}
-    for topic_id, rows in sorted(_by_topic(stances).items()):
-        codes = [int(row.direction_code) for row in rows]
-        duplicated = sorted({code for code in codes if codes.count(code) > 1})
-        if duplicated:
-            clashes[topic_id] = duplicated
+    complaints = balance_complaints(_stored_codes_by_topic(stances))
+    clashes = {
+        topic_id: reasons
+        for topic_id, reasons in complaints.items()
+        if any("repeated direction code" in reason for reason in reasons)
+    }
     assert not clashes, f"subtopics with a repeated direction code: {clashes}"
 
 
