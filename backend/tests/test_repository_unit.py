@@ -294,6 +294,38 @@ def test_a_cached_reference_check_does_not_leak_between_calls(
     assert any("/tables/roll_calls/" in call.path for call in fake.calls)
 
 
+def test_a_batch_aborts_at_the_first_missing_reference_keeping_earlier_rows(
+    fake: FakeZeroDBTransport,
+    people: Repository[Person],
+    roll_calls: Repository[RollCall],
+    member_votes: Repository,
+) -> None:
+    """upsert_many is not a transaction, and the partial write must be usable.
+
+    Pins the documented behaviour so nobody later "fixes" it into a silent
+    skip: the rows before the bad one stay written, which is the right outcome
+    for an idempotent ingest (fix the data, re-run, and those become no-ops).
+    Caching the negative result is safe here because a batch writes one table
+    and its references point at others, so a batch can never create the parent
+    it is about to be rejected for.
+    """
+    people.upsert(person_row())
+    roll_calls.upsert(roll_call_row())
+
+    with pytest.raises(MissingReferenceError):
+        member_votes.upsert_many(
+            [
+                member_vote_row(),
+                member_vote_row(person_id="person:NOBODY"),
+                member_vote_row(position="nay"),
+            ]
+        )
+
+    written = [row["row_data"] for row in fake.rows["member_votes"].values()]
+    assert len(written) == 1
+    assert written[0]["id"] == "us-house:119-2:452:B000944"
+
+
 def test_reference_checking_can_be_disabled_for_a_trusted_bulk_load(
     fake: FakeZeroDBTransport, member_votes: Repository
 ) -> None:

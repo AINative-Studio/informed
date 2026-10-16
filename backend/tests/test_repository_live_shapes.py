@@ -138,6 +138,64 @@ def test_get_row_still_answers_none_for_a_row_that_really_is_absent(
     assert client.get_row("people", "person:NOBODY") is None
 
 
+def test_skip_and_limit_window_the_matches_not_the_pages_walked(
+    fake: FakeZeroDBTransport,
+) -> None:
+    """`skip` counts matching rows, and must be applied exactly once.
+
+    The risk the paging fix introduces: `skip` is now both an offset into the
+    table being walked and an offset into the caller's result window. Applying
+    it in both places would silently drop rows — and with matches interleaved
+    among non-matches, the page boundaries do not line up with the match
+    boundaries, so an off-by-one here would be invisible to a test whose rows
+    all match.
+    """
+    client = ZeroDBClient(
+        transport=fake,
+        project_id="proj-test",
+        backoff_base=0.0,
+        sleep=lambda _: None,
+        fallback_page_size=3,
+        max_fallback_pages=20,
+    )
+    client.create_table("people", {"id": "string"})
+    for index in range(10):
+        client.insert_row("people", {"id": f"match-{index}", "canonical_name": "Wanted"})
+        client.insert_row("people", {"id": f"noise-{index}", "canonical_name": "Other"})
+
+    page = client.query_rows("people", filter={"canonical_name": "Wanted"}, limit=4, skip=2)
+
+    assert [row.row_data["id"] for row in page.rows] == [
+        "match-2",
+        "match-3",
+        "match-4",
+        "match-5",
+    ]
+
+
+def test_an_unwindowed_read_returns_every_match_across_pages(
+    fake: FakeZeroDBTransport,
+) -> None:
+    """A filtered read must not stop at the first page's worth of matches."""
+    client = ZeroDBClient(
+        transport=fake,
+        project_id="proj-test",
+        backoff_base=0.0,
+        sleep=lambda _: None,
+        fallback_page_size=3,
+        max_fallback_pages=20,
+    )
+    client.create_table("people", {"id": "string"})
+    for index in range(10):
+        client.insert_row("people", {"id": f"match-{index}", "canonical_name": "Wanted"})
+        client.insert_row("people", {"id": f"noise-{index}", "canonical_name": "Other"})
+
+    page = client.query_rows("people", filter={"canonical_name": "Wanted"}, limit=100)
+
+    assert len(page.rows) == 10
+    assert page.total == 10
+
+
 def test_get_row_pages_rather_than_reading_the_whole_table_at_once(
     client: ZeroDBClient, fake: FakeZeroDBTransport
 ) -> None:
