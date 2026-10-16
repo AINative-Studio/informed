@@ -153,6 +153,25 @@ GitHub. That migration does not change the env var contract in
 6. Before committing anything, run a quick local secret scan (see below) —
    CI should also run one, but don't rely on that alone.
 
+### `scripts/bootstrap.py` also seeds permanent reference data
+
+The bootstrap creates the schema **and** writes three fixed rows (story 2.1):
+`jurisdictions/us-federal`, `bodies/us-house`, `bodies/us-senate`. They are the
+root of the reference tree — story 2.2's legislator terms, 2.3's districts and
+2.4's ballot lookup all reference them by id — and the seed is idempotent, so
+re-running bootstrap restates them rather than duplicating them.
+
+**Do not delete those three rows.** Unlike the `zzz-live-check-*` rows the
+`verify_*_live.py` scripts write and then clean up, these are production
+reference data in every environment, dev included. A `us-federal` row in the
+live project is the seed's output, not leftover test debris. If one is deleted,
+re-run `python backend/scripts/bootstrap.py` to put it back.
+
+Row-seeding lives in `backend/app/seed.py`, separate from the schema work in
+`backend/app/bootstrap.py`; `backend/scripts/verify_seed_live.py` checks the
+three rows against the live project (and is itself the one verify script that
+deliberately leaves what it wrote in place).
+
 ### If ZeroDB calls 403 with `API_KEY_PROJECT_MISMATCH`
 
 A key's **name** on AINative's platform and the **project it is actually
