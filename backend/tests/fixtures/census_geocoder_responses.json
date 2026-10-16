@@ -1,0 +1,892 @@
+{
+  "agreeing_two_matches_ma_01": {
+    "result": {
+      "addressMatches": [
+        {
+          "addressComponents": {
+            "city": "SPRINGFIELD",
+            "fromAddress": "100",
+            "preDirection": "",
+            "preQualifier": "",
+            "preType": "",
+            "state": "MA",
+            "streetName": "MAIN",
+            "suffixDirection": "",
+            "suffixQualifier": "",
+            "suffixType": "ST",
+            "toAddress": "150",
+            "zip": "01151"
+          },
+          "coordinates": {
+            "x": -72.505593954851,
+            "y": 42.159937933515
+          },
+          "geographies": {
+            "120th Congressional Districts": [
+              {
+                "BASENAME": "1",
+                "CD120": "01",
+                "CDSESSN": "120",
+                "GEOID": "2501",
+                "LSADC": "C2",
+                "MTFCC": "G5200",
+                "NAME": "Congressional District 1",
+                "STATE": "25"
+              }
+            ],
+            "States": [
+              {
+                "BASENAME": "Massachusetts",
+                "GEOID": "25",
+                "MTFCC": "G4000",
+                "NAME": "Massachusetts",
+                "STATE": "25",
+                "STATENS": "00606926",
+                "STUSAB": "MA"
+              }
+            ]
+          },
+          "matchedAddress": "100 MAIN ST, SPRINGFIELD, MA, 01151",
+          "tigerLine": {
+            "side": "L",
+            "tigerLineId": "4024664"
+          }
+        },
+        {
+          "addressComponents": {
+            "city": "SPRINGFIELD",
+            "fromAddress": "2",
+            "preDirection": "",
+            "preQualifier": "",
+            "preType": "",
+            "state": "MA",
+            "streetName": "MAIN",
+            "suffixDirection": "",
+            "suffixQualifier": "",
+            "suffixType": "ST",
+            "toAddress": "108",
+            "zip": "01105"
+          },
+          "coordinates": {
+            "x": -72.57898548405,
+            "y": 42.089532937819
+          },
+          "geographies": {
+            "120th Congressional Districts": [
+              {
+                "BASENAME": "1",
+                "CD120": "01",
+                "CDSESSN": "120",
+                "GEOID": "2501",
+                "LSADC": "C2",
+                "MTFCC": "G5200",
+                "NAME": "Congressional District 1",
+                "STATE": "25"
+              }
+            ],
+            "States": [
+              {
+                "BASENAME": "Massachusetts",
+                "GEOID": "25",
+                "MTFCC": "G4000",
+                "NAME": "Massachusetts",
+                "STATE": "25",
+                "STATENS": "00606926",
+                "STUSAB": "MA"
+              }
+            ]
+          },
+          "matchedAddress": "100 MAIN ST, SPRINGFIELD, MA, 01105",
+          "tigerLine": {
+            "side": "L",
+            "tigerLineId": "4062867"
+          }
+        }
+      ],
+      "input": {
+        "address": {
+          "address": "100 Main St, Springfield"
+        },
+        "benchmark": {
+          "benchmarkDescription": "Public Address Ranges - Current Benchmark",
+          "benchmarkName": "Public_AR_Current",
+          "id": "4",
+          "isDefault": true
+        },
+        "vintage": {
+          "id": "4",
+          "isDefault": true,
+          "vintageDescription": "Current Vintage - Current Benchmark",
+          "vintageName": "Current_Current"
+        }
+      }
+    }
+  },
+  "ambiguous_springfield": {
+    "result": {
+      "addressMatches": [
+        {
+          "addressComponents": {
+            "city": "SPRINGFIELD",
+            "fromAddress": "198",
+            "preDirection": "",
+            "preQualifier": "",
+            "preType": "",
+            "state": "CO",
+            "streetName": "MAIN",
+            "suffixDirection": "",
+            "suffixQualifier": "",
+            "suffixType": "ST",
+            "toAddress": "100",
+            "zip": "81073"
+          },
+          "coordinates": {
+            "x": -102.61642983432,
+            "y": 37.41346972508
+          },
+          "geographies": {
+            "120th Congressional Districts": [
+              {
+                "BASENAME": "4",
+                "CD120": "04",
+                "CDSESSN": "120",
+                "GEOID": "0804",
+                "LSADC": "C2",
+                "MTFCC": "G5200",
+                "NAME": "Congressional District 4",
+                "STATE": "08"
+              }
+            ],
+            "States": [
+              {
+                "BASENAME": "Colorado",
+                "GEOID": "08",
+                "MTFCC": "G4000",
+                "NAME": "Colorado",
+                "STATE": "08",
+                "STATENS": "01779779",
+                "STUSAB": "CO"
+              }
+            ]
+          },
+          "matchedAddress": "100 MAIN ST, SPRINGFIELD, CO, 81073",
+          "tigerLine": {
+            "side": "R",
+            "tigerLineId": "138123463"
+          }
+        },
+        {
+          "addressComponents": {
+            "city": "SPRINGFIELD",
+            "fromAddress": "100",
+            "preDirection": "",
+            "preQualifier": "",
+            "preType": "",
+            "state": "MA",
+            "streetName": "MAIN",
+            "suffixDirection": "",
+            "suffixQualifier": "",
+            "suffixType": "ST",
+            "toAddress": "150",
+            "zip": "01151"
+          },
+          "coordinates": {
+            "x": -72.505593954851,
+            "y": 42.159937933515
+          },
+          "geographies": {
+            "120th Congressional Districts": [
+              {
+                "BASENAME": "1",
+                "CD120": "01",
+                "CDSESSN": "120",
+                "GEOID": "2501",
+                "LSADC": "C2",
+                "MTFCC": "G5200",
+                "NAME": "Congressional District 1",
+                "STATE": "25"
+              }
+            ],
+            "States": [
+              {
+                "BASENAME": "Massachusetts",
+                "GEOID": "25",
+                "MTFCC": "G4000",
+                "NAME": "Massachusetts",
+                "STATE": "25",
+                "STATENS": "00606926",
+                "STUSAB": "MA"
+              }
+            ]
+          },
+          "matchedAddress": "100 MAIN ST, SPRINGFIELD, MA, 01151",
+          "tigerLine": {
+            "side": "L",
+            "tigerLineId": "4024664"
+          }
+        },
+        {
+          "addressComponents": {
+            "city": "SPRINGFIELD",
+            "fromAddress": "2",
+            "preDirection": "",
+            "preQualifier": "",
+            "preType": "",
+            "state": "MA",
+            "streetName": "MAIN",
+            "suffixDirection": "",
+            "suffixQualifier": "",
+            "suffixType": "ST",
+            "toAddress": "108",
+            "zip": "01105"
+          },
+          "coordinates": {
+            "x": -72.57898548405,
+            "y": 42.089532937819
+          },
+          "geographies": {
+            "120th Congressional Districts": [
+              {
+                "BASENAME": "1",
+                "CD120": "01",
+                "CDSESSN": "120",
+                "GEOID": "2501",
+                "LSADC": "C2",
+                "MTFCC": "G5200",
+                "NAME": "Congressional District 1",
+                "STATE": "25"
+              }
+            ],
+            "States": [
+              {
+                "BASENAME": "Massachusetts",
+                "GEOID": "25",
+                "MTFCC": "G4000",
+                "NAME": "Massachusetts",
+                "STATE": "25",
+                "STATENS": "00606926",
+                "STUSAB": "MA"
+              }
+            ]
+          },
+          "matchedAddress": "100 MAIN ST, SPRINGFIELD, MA, 01105",
+          "tigerLine": {
+            "side": "L",
+            "tigerLineId": "4062867"
+          }
+        },
+        {
+          "addressComponents": {
+            "city": "SPRINGFIELD",
+            "fromAddress": "100",
+            "preDirection": "",
+            "preQualifier": "",
+            "preType": "",
+            "state": "NE",
+            "streetName": "MAIN",
+            "suffixDirection": "",
+            "suffixQualifier": "",
+            "suffixType": "ST",
+            "toAddress": "198",
+            "zip": "68059"
+          },
+          "coordinates": {
+            "x": -96.134550686475,
+            "y": 41.081851045534
+          },
+          "geographies": {
+            "120th Congressional Districts": [
+              {
+                "BASENAME": "2",
+                "CD120": "02",
+                "CDSESSN": "120",
+                "GEOID": "3102",
+                "LSADC": "C2",
+                "MTFCC": "G5200",
+                "NAME": "Congressional District 2",
+                "STATE": "31"
+              }
+            ],
+            "States": [
+              {
+                "BASENAME": "Nebraska",
+                "GEOID": "31",
+                "MTFCC": "G4000",
+                "NAME": "Nebraska",
+                "STATE": "31",
+                "STATENS": "01779792",
+                "STUSAB": "NE"
+              }
+            ]
+          },
+          "matchedAddress": "100 MAIN ST, SPRINGFIELD, NE, 68059",
+          "tigerLine": {
+            "side": "L",
+            "tigerLineId": "28466701"
+          }
+        },
+        {
+          "addressComponents": {
+            "city": "SPRINGFIELD",
+            "fromAddress": "298",
+            "preDirection": "",
+            "preQualifier": "",
+            "preType": "",
+            "state": "OH",
+            "streetName": "MAIN",
+            "suffixDirection": "",
+            "suffixQualifier": "",
+            "suffixType": "ST",
+            "toAddress": "2",
+            "zip": "45502"
+          },
+          "coordinates": {
+            "x": -83.824135068944,
+            "y": 39.799913839966
+          },
+          "geographies": {
+            "120th Congressional Districts": [
+              {
+                "BASENAME": "15",
+                "CD120": "15",
+                "CDSESSN": "120",
+                "GEOID": "3915",
+                "LSADC": "C2",
+                "MTFCC": "G5200",
+                "NAME": "Congressional District 15",
+                "STATE": "39"
+              }
+            ],
+            "States": [
+              {
+                "BASENAME": "Ohio",
+                "GEOID": "39",
+                "MTFCC": "G4000",
+                "NAME": "Ohio",
+                "STATE": "39",
+                "STATENS": "01085497",
+                "STUSAB": "OH"
+              }
+            ]
+          },
+          "matchedAddress": "100 MAIN ST, SPRINGFIELD, OH, 45502",
+          "tigerLine": {
+            "side": "R",
+            "tigerLineId": "135014546"
+          }
+        },
+        {
+          "addressComponents": {
+            "city": "SPRINGFIELD",
+            "fromAddress": "100",
+            "preDirection": "",
+            "preQualifier": "",
+            "preType": "",
+            "state": "OR",
+            "streetName": "MAIN",
+            "suffixDirection": "",
+            "suffixQualifier": "",
+            "suffixType": "ST",
+            "toAddress": "110",
+            "zip": "97477"
+          },
+          "coordinates": {
+            "x": -123.024628767822,
+            "y": 44.046264135067
+          },
+          "geographies": {
+            "120th Congressional Districts": [
+              {
+                "BASENAME": "4",
+                "CD120": "04",
+                "CDSESSN": "120",
+                "GEOID": "4104",
+                "LSADC": "C2",
+                "MTFCC": "G5200",
+                "NAME": "Congressional District 4",
+                "STATE": "41"
+              }
+            ],
+            "States": [
+              {
+                "BASENAME": "Oregon",
+                "GEOID": "41",
+                "MTFCC": "G4000",
+                "NAME": "Oregon",
+                "STATE": "41",
+                "STATENS": "01155107",
+                "STUSAB": "OR"
+              }
+            ]
+          },
+          "matchedAddress": "100 MAIN ST, SPRINGFIELD, OR, 97477",
+          "tigerLine": {
+            "side": "L",
+            "tigerLineId": "178172672"
+          }
+        },
+        {
+          "addressComponents": {
+            "city": "SPRINGFIELD",
+            "fromAddress": "198",
+            "preDirection": "",
+            "preQualifier": "",
+            "preType": "",
+            "state": "VT",
+            "streetName": "MAIN",
+            "suffixDirection": "",
+            "suffixQualifier": "",
+            "suffixType": "ST",
+            "toAddress": "70",
+            "zip": "05156"
+          },
+          "coordinates": {
+            "x": -72.481583944403,
+            "y": 43.296920205623
+          },
+          "geographies": {
+            "120th Congressional Districts": [
+              {
+                "BASENAME": "Congressional District (at Large)",
+                "CD120": "00",
+                "CDSESSN": "120",
+                "GEOID": "5000",
+                "LSADC": "C1",
+                "MTFCC": "G5200",
+                "NAME": "Congressional District (at Large)",
+                "STATE": "50"
+              }
+            ],
+            "States": [
+              {
+                "BASENAME": "Vermont",
+                "GEOID": "50",
+                "MTFCC": "G4000",
+                "NAME": "Vermont",
+                "STATE": "50",
+                "STATENS": "01779802",
+                "STUSAB": "VT"
+              }
+            ]
+          },
+          "matchedAddress": "100 MAIN ST, SPRINGFIELD, VT, 05156",
+          "tigerLine": {
+            "side": "R",
+            "tigerLineId": "139275180"
+          }
+        }
+      ],
+      "input": {
+        "address": {
+          "address": "100 Main St, Springfield"
+        },
+        "benchmark": {
+          "benchmarkDescription": "Public Address Ranges - Current Benchmark",
+          "benchmarkName": "Public_AR_Current",
+          "id": "4",
+          "isDefault": true
+        },
+        "vintage": {
+          "id": "4",
+          "isDefault": true,
+          "vintageDescription": "Current Vintage - Current Benchmark",
+          "vintageName": "Current_Current"
+        }
+      }
+    }
+  },
+  "cheyenne_wy_at_large": {
+    "result": {
+      "addressMatches": [
+        {
+          "addressComponents": {
+            "city": "CHEYENNE",
+            "fromAddress": "200",
+            "preDirection": "W",
+            "preQualifier": "",
+            "preType": "",
+            "state": "WY",
+            "streetName": "24TH",
+            "suffixDirection": "",
+            "suffixQualifier": "",
+            "suffixType": "ST",
+            "toAddress": "298",
+            "zip": "82001"
+          },
+          "coordinates": {
+            "x": -104.820004035339,
+            "y": 41.139850611856
+          },
+          "geographies": {
+            "120th Congressional Districts": [
+              {
+                "BASENAME": "Congressional District (at Large)",
+                "CD120": "00",
+                "CDSESSN": "120",
+                "GEOID": "5600",
+                "LSADC": "C1",
+                "MTFCC": "G5200",
+                "NAME": "Congressional District (at Large)",
+                "STATE": "56"
+              }
+            ],
+            "States": [
+              {
+                "BASENAME": "Wyoming",
+                "GEOID": "56",
+                "MTFCC": "G4000",
+                "NAME": "Wyoming",
+                "STATE": "56",
+                "STATENS": "01779807",
+                "STUSAB": "WY"
+              }
+            ]
+          },
+          "matchedAddress": "200 W 24TH ST, CHEYENNE, WY, 82001",
+          "tigerLine": {
+            "side": "R",
+            "tigerLineId": "160149258"
+          }
+        }
+      ],
+      "input": {
+        "address": {
+          "address": "200 W 24th St, Cheyenne, WY 82002"
+        },
+        "benchmark": {
+          "benchmarkDescription": "Public Address Ranges - Current Benchmark",
+          "benchmarkName": "Public_AR_Current",
+          "id": "4",
+          "isDefault": true
+        },
+        "vintage": {
+          "id": "4",
+          "isDefault": true,
+          "vintageDescription": "Current Vintage - Current Benchmark",
+          "vintageName": "Current_Current"
+        }
+      }
+    }
+  },
+  "error_blank_address_400": {
+    "errors": [
+      "Address cannot be empty and cannot exceed 100 characters"
+    ],
+    "status": "400"
+  },
+  "montpelier_vt_at_large": {
+    "result": {
+      "addressMatches": [
+        {
+          "addressComponents": {
+            "city": "MONTPELIER",
+            "fromAddress": "115",
+            "preDirection": "",
+            "preQualifier": "",
+            "preType": "",
+            "state": "VT",
+            "streetName": "STATE",
+            "suffixDirection": "",
+            "suffixQualifier": "",
+            "suffixType": "ST",
+            "toAddress": "131",
+            "zip": "05602"
+          },
+          "coordinates": {
+            "x": -72.580283682082,
+            "y": 44.261260106574
+          },
+          "geographies": {
+            "120th Congressional Districts": [
+              {
+                "BASENAME": "Congressional District (at Large)",
+                "CD120": "00",
+                "CDSESSN": "120",
+                "GEOID": "5000",
+                "LSADC": "C1",
+                "MTFCC": "G5200",
+                "NAME": "Congressional District (at Large)",
+                "STATE": "50"
+              }
+            ],
+            "States": [
+              {
+                "BASENAME": "Vermont",
+                "GEOID": "50",
+                "MTFCC": "G4000",
+                "NAME": "Vermont",
+                "STATE": "50",
+                "STATENS": "01779802",
+                "STUSAB": "VT"
+              }
+            ]
+          },
+          "matchedAddress": "115 STATE ST, MONTPELIER, VT, 05602",
+          "tigerLine": {
+            "side": "R",
+            "tigerLineId": "648478220"
+          }
+        }
+      ],
+      "input": {
+        "address": {
+          "address": "115 State St, Montpelier, VT 05633"
+        },
+        "benchmark": {
+          "benchmarkDescription": "Public Address Ranges - Current Benchmark",
+          "benchmarkName": "Public_AR_Current",
+          "id": "4",
+          "isDefault": true
+        },
+        "vintage": {
+          "id": "4",
+          "isDefault": true,
+          "vintageDescription": "Current Vintage - Current Benchmark",
+          "vintageName": "Current_Current"
+        }
+      }
+    }
+  },
+  "no_match": {
+    "result": {
+      "addressMatches": [],
+      "input": {
+        "address": {
+          "address": "99999 Nowhere Blvd, Nowhereville, ZZ 00000"
+        },
+        "benchmark": {
+          "benchmarkDescription": "Public Address Ranges - Current Benchmark",
+          "benchmarkName": "Public_AR_Current",
+          "id": "4",
+          "isDefault": true
+        },
+        "vintage": {
+          "id": "4",
+          "isDefault": true,
+          "vintageDescription": "Current Vintage - Current Benchmark",
+          "vintageName": "Current_Current"
+        }
+      }
+    }
+  },
+  "san_juan_pr_resident_commissioner": {
+    "result": {
+      "addressMatches": [
+        {
+          "addressComponents": {
+            "city": "SAN JUAN",
+            "fromAddress": "57",
+            "preDirection": "",
+            "preQualifier": "",
+            "preType": "CLL",
+            "state": "PR",
+            "streetName": "DE LA FORTALEZA",
+            "suffixDirection": "",
+            "suffixQualifier": "",
+            "suffixType": "",
+            "toAddress": "99",
+            "urb": "",
+            "zip": "00901"
+          },
+          "coordinates": {
+            "x": -66.118515793897,
+            "y": 18.464417472074
+          },
+          "geographies": {
+            "120th Congressional Districts": [
+              {
+                "BASENAME": "Resident Commissioner District (at Large)",
+                "CD120": "98",
+                "CDSESSN": "120",
+                "GEOID": "7298",
+                "LSADC": "C3",
+                "MTFCC": "G5200",
+                "NAME": "Resident Commissioner District (at Large)",
+                "STATE": "72"
+              }
+            ],
+            "States": [
+              {
+                "BASENAME": "Puerto Rico",
+                "GEOID": "72",
+                "MTFCC": "G4000",
+                "NAME": "Puerto Rico",
+                "STATE": "72",
+                "STATENS": "01779808",
+                "STUSAB": "PR"
+              }
+            ]
+          },
+          "matchedAddress": "63 CLL DE LA FORTALEZA, SAN JUAN, PR, 00901",
+          "tigerLine": {
+            "side": "L",
+            "tigerLineId": "206640973"
+          }
+        }
+      ],
+      "input": {
+        "address": {
+          "address": "Calle Fortaleza 63, San Juan, PR 00901"
+        },
+        "benchmark": {
+          "benchmarkDescription": "Public Address Ranges - Current Benchmark",
+          "benchmarkName": "Public_AR_Current",
+          "id": "4",
+          "isDefault": true
+        },
+        "vintage": {
+          "id": "4",
+          "isDefault": true,
+          "vintageDescription": "Current Vintage - Current Benchmark",
+          "vintageName": "Current_Current"
+        }
+      }
+    }
+  },
+  "seattle_wa_07": {
+    "result": {
+      "addressMatches": [
+        {
+          "addressComponents": {
+            "city": "SEATTLE",
+            "fromAddress": "400",
+            "preDirection": "",
+            "preQualifier": "",
+            "preType": "",
+            "state": "WA",
+            "streetName": "BROAD",
+            "suffixDirection": "",
+            "suffixQualifier": "",
+            "suffixType": "ST",
+            "toAddress": "498",
+            "zip": "98109"
+          },
+          "coordinates": {
+            "x": -122.348868336565,
+            "y": 47.619822816651
+          },
+          "geographies": {
+            "120th Congressional Districts": [
+              {
+                "BASENAME": "7",
+                "CD120": "07",
+                "CDSESSN": "120",
+                "GEOID": "5307",
+                "LSADC": "C2",
+                "MTFCC": "G5200",
+                "NAME": "Congressional District 7",
+                "STATE": "53"
+              }
+            ],
+            "States": [
+              {
+                "BASENAME": "Washington",
+                "GEOID": "53",
+                "MTFCC": "G4000",
+                "NAME": "Washington",
+                "STATE": "53",
+                "STATENS": "01779804",
+                "STUSAB": "WA"
+              }
+            ]
+          },
+          "matchedAddress": "400 BROAD ST, SEATTLE, WA, 98109",
+          "tigerLine": {
+            "side": "L",
+            "tigerLineId": "239761859"
+          }
+        }
+      ],
+      "input": {
+        "address": {
+          "address": "400 Broad St, Seattle, WA 98109"
+        },
+        "benchmark": {
+          "benchmarkDescription": "Public Address Ranges - Current Benchmark",
+          "benchmarkName": "Public_AR_Current",
+          "id": "4",
+          "isDefault": true
+        },
+        "vintage": {
+          "id": "4",
+          "isDefault": true,
+          "vintageDescription": "Current Vintage - Current Benchmark",
+          "vintageName": "Current_Current"
+        }
+      }
+    }
+  },
+  "washington_dc_delegate": {
+    "result": {
+      "addressMatches": [
+        {
+          "addressComponents": {
+            "city": "WASHINGTON",
+            "fromAddress": "1600",
+            "preDirection": "",
+            "preQualifier": "",
+            "preType": "",
+            "state": "DC",
+            "streetName": "PENNSYLVANIA",
+            "suffixDirection": "NW",
+            "suffixQualifier": "",
+            "suffixType": "AVE",
+            "toAddress": "1648",
+            "zip": "20500"
+          },
+          "coordinates": {
+            "x": -77.035189204737,
+            "y": 38.898702605245
+          },
+          "geographies": {
+            "120th Congressional Districts": [
+              {
+                "BASENAME": "Delegate District (at Large)",
+                "CD120": "98",
+                "CDSESSN": "120",
+                "GEOID": "1198",
+                "LSADC": "C4",
+                "MTFCC": "G5200",
+                "NAME": "Delegate District (at Large)",
+                "STATE": "11"
+              }
+            ],
+            "States": [
+              {
+                "BASENAME": "District of Columbia",
+                "GEOID": "11",
+                "MTFCC": "G4000",
+                "NAME": "District of Columbia",
+                "STATE": "11",
+                "STATENS": "01702382",
+                "STUSAB": "DC"
+              }
+            ]
+          },
+          "matchedAddress": "1600 PENNSYLVANIA AVE NW, WASHINGTON, DC, 20500",
+          "tigerLine": {
+            "side": "L",
+            "tigerLineId": "76225813"
+          }
+        }
+      ],
+      "input": {
+        "address": {
+          "address": "1600 Pennsylvania Ave NW, Washington, DC 20500"
+        },
+        "benchmark": {
+          "benchmarkDescription": "Public Address Ranges - Current Benchmark",
+          "benchmarkName": "Public_AR_Current",
+          "id": "4",
+          "isDefault": true
+        },
+        "vintage": {
+          "id": "4",
+          "isDefault": true,
+          "vintageDescription": "Current Vintage - Current Benchmark",
+          "vintageName": "Current_Current"
+        }
+      }
+    }
+  }
+}

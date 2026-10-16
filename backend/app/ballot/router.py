@@ -10,8 +10,12 @@ The status codes, and why each:
     and 422 is what FastAPI already returns for a missing `?address=`, so a
     blank one and an absent one answer the same way rather than one 400 and one
     422 for the same mistake.
-  * **404** — the resolved district has no `districts` row. Informed's data gap,
-    not the voter's error; nothing they type differently will help.
+  * **404** — the address resolved to a district Informed cannot record. Since
+    story 2.3 a `districts` row is created on first resolution, so "we have no
+    row for your district" is no longer reachable; what remains is "we cannot
+    write one", in practice because the chamber it references was never seeded.
+    Still Informed's data gap and not the voter's error — nothing they type
+    differently will help — which is why it keeps the same status.
   * **200 with an empty `officeholders`** — the district exists but its members
     have not been ingested (story 2.2). An honest empty answer, not an error.
 
@@ -49,8 +53,12 @@ def ballot_service(
 ) -> BallotService:
     """A service wired to this request's client and the default resolver.
 
-    The default resolver is `StubAddressResolver` (story 1.5); story 2.3 changes
-    this one line to the Census Geocoder client and nothing else moves.
+    The default resolver is `CensusAddressResolver` (story 2.3), which replaced
+    story 1.5's stub behind the same `AddressResolver` protocol — one changed
+    default, no changed caller. Declared as a dependency rather than constructed
+    inside the handler so a test can override the resolver without a second HTTP
+    surface, and so prd.md's `JurisdictionAdapter` has one place to vary it per
+    country later.
     """
     return BallotService(client=client)
 
@@ -60,7 +68,7 @@ def ballot_service(
     response_model=BallotResponse,
     summary="Districts and sitting officeholders for an address",
     responses={
-        404: {"description": "No district data for that address yet"},
+        404: {"description": "That district resolved but Informed cannot record it"},
         422: {"description": "The address is missing or blank"},
     },
 )

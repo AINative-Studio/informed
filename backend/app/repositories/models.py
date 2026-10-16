@@ -283,23 +283,25 @@ class Body(RowModel):
 class District(RowModel):
     """A legislative district, keyed by its OCD-ID.
 
-    Modelled as the simplest case: no declared references, so it proves the
-    repository skips reference checking entirely rather than making a pointless
-    round trip.
+    `body_id` holds a `bodies` id and **is** a declared reference, as of story
+    2.3. Story 1.4 modelled this table with no references and explicitly left
+    the call to 2.3, on the grounds that 2.3 is the story that writes real
+    district rows and so is the one that should pay for turning the check on (a
+    `bodies` row must exist before every `districts` row). 2.3 writes those rows
+    lazily, from the geocoder's own answer, which makes the check load-bearing
+    rather than ceremonial: it is the one thing standing between a resolved
+    district and a `districts` row pointing at a chamber Informed has never
+    heard of. datamodel.md rule 5 — integrity lives in code.
 
-    `body_id` holds a `bodies` id and is deliberately **not** declared as a
-    reference yet, even though story 2.1 added the `Body` model it would point
-    at. Declaring it is **story 2.3's** call, not this story's: 2.3 is what
-    writes real district rows, and turning the check on changes what story
-    1.5's walking-skeleton fixtures and live verification have to seed (a
-    `bodies` row before every `districts` row). Making that change from a story
-    whose own acceptance criterion says nothing about districts would be
-    scope creep into another story's tests, so the field stays plain and the
-    seeded `us-house`/`us-senate` rows are simply waiting for 2.3 to point at
-    them.
+    It is also what keeps the ballot endpoint's documented 404 reachable. Once
+    districts are created on demand, "Informed has no row for your district" is
+    no longer a thing a voter can hit; "Informed cannot record your district,
+    because its chamber was never seeded" is, and it is the same kind of failure
+    — a data gap on Informed's side, not an address the voter can retype.
     """
 
     table_name: ClassVar[str] = "districts"
+    references: ClassVar[dict[str, str]] = {"body_id": "bodies"}
 
     body_id: str
     name: str
