@@ -11,7 +11,7 @@ Feature: Idempotent ZeroDB bootstrap (story 1.3)
 
   Scenario: Running bootstrap once creates all 22 datamodel.md tables plus the infrastructure tables
     When I run the bootstrap
-    Then exactly 25 tables exist
+    Then exactly 26 tables exist
     And the table "jurisdictions" exists
     And the table "people" exists
     And the table "roll_calls" exists
@@ -27,6 +27,8 @@ Feature: Idempotent ZeroDB bootstrap (story 1.3)
     # issue_topics and stances so the seeders cannot wipe a review decision.
     And the table "panel_reviews" exists
     And the table "schema_versions" exists
+    # Epic 16: the scheduled-job runner's own last-run bookkeeping.
+    And the table "scheduled_jobs" exists
 
   Scenario: Running bootstrap once creates all 4 vector namespaces with HNSW indexes
     When I run the bootstrap
@@ -60,7 +62,7 @@ Feature: Idempotent ZeroDB bootstrap (story 1.3)
   Scenario: Running bootstrap twice creates no duplicate tables
     Given the bootstrap has already run once
     When I run the bootstrap again
-    Then exactly 25 tables exist
+    Then exactly 26 tables exist
 
   Scenario: Running bootstrap twice creates no duplicate vector namespaces
     Given the bootstrap has already run once
