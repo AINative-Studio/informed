@@ -21,10 +21,12 @@ from app.districts.store import (
     DEFAULT_VALID_FROM,
     DistrictStore,
     OverlappingValidityError,
+    base_id_of,
     contains,
     version_id_for,
 )
 from app.repositories import Repository
+from app.repositories.errors import RowValidationError
 from app.repositories.models import District
 from app.zerodb import ZeroDBClient
 from app.zerodb.testing import FakeZeroDBTransport
@@ -94,6 +96,12 @@ def test_an_at_large_division_gets_a_version_id_too() -> None:
     assert version_id_for(AT_LARGE_ID, valid_to="2022-12-31") == f"{AT_LARGE_ID}@2022-12-31"
 
 
+@pytest.mark.parametrize("valid_to", [None, "2022-12-31"])
+def test_base_id_of_inverts_version_id_for(valid_to: str | None) -> None:
+    """The two must not drift: one is how a version id is written, one how it is read."""
+    assert base_id_of(version_id_for(DISTRICT_ID, valid_to=valid_to)) == DISTRICT_ID
+
+
 # --- range containment ---------------------------------------------------
 
 
@@ -134,15 +142,34 @@ def test_an_unparseable_valid_from_excludes_the_version() -> None:
     bad row answer for every date and silently shadow the good rows for the
     same district. A version Informed cannot place in time is a version it
     cannot vouch for.
+
+    `model_construct` on purpose: `District`'s validator now refuses such a row
+    on write, so the only way one reaches `contains` is by having been stored
+    before that check existed — which is exactly the row this behaviour is the
+    second line of defence for, and which validation cannot be used to build.
     """
-    district = District(
+    district = District.model_construct(
         id=DISTRICT_ID,
         body_id="us-house",
         name="Synthetic",
         state="ZZ",
         valid_from="not-a-date",
+        valid_to=None,
     )
     assert contains(district, date(2026, 11, 3)) is False
+
+
+def test_an_unparseable_valid_to_excludes_the_version() -> None:
+    """Same rule at the other bound: unreadable is not "open-ended"."""
+    district = District.model_construct(
+        id=f"{DISTRICT_ID}@garbage",
+        body_id="us-house",
+        name="Synthetic",
+        state="ZZ",
+        valid_from="2013-01-03",
+        valid_to="not-a-date",
+    )
+    assert contains(district, date(2016, 11, 8)) is False
 
 
 # --- the lookup ----------------------------------------------------------
@@ -395,3 +422,156 @@ def test_the_model_still_accepts_the_shape_already_live(
     )
     assert stored.valid_from == DEFAULT_VALID_FROM
     assert stored.valid_to is None
+
+
+def test_redistrict_refuses_an_unreadable_effective_date(store: DistrictStore) -> None:
+    """A redistricting Informed cannot date cannot be recorded at all.
+
+    It would have to close the current version "the day before" a date that
+    does not exist, so there is no boundary to write and no honest guess.
+    """
+    write_current(store, DISTRICT_ID, valid_from="2023-01-03", name="Old map")
+    with pytest.raises(OverlappingValidityError, match="ISO-8601"):
+        store.redistrict(DISTRICT_ID, name="New map", valid_from="next January")
+
+
+def test_redistrict_recorded_twice_reports_the_version_it_superseded(
+    store: DistrictStore,
+) -> None:
+    """The idempotent path describes what is stored, not what the call did."""
+    write_current(store, DISTRICT_ID, valid_from="2023-01-03", name="Old map")
+    first = store.redistrict(DISTRICT_ID, name="New map", valid_from="2027-01-03")
+    again = store.redistrict(DISTRICT_ID, name="New map", valid_from="2027-01-03")
+
+    assert first.superseded is not None
+    assert again.superseded is not None
+    assert again.superseded.id == first.superseded.id
+    assert again.superseded.valid_to == "2027-01-02"
+
+
+def test_redistrict_with_the_same_date_but_a_new_name_is_not_idempotent(
+    store: DistrictStore,
+) -> None:
+    """Only an identical restatement is a no-op.
+
+    A different name for the same effective date is a *correction* to the
+    current map, not a second redistricting, so it must not be mistaken for
+    "already recorded" and silently dropped. It is refused as an overlap,
+    because a map cannot begin on the day the one it replaces began.
+    """
+    write_current(store, DISTRICT_ID, valid_from="2023-01-03", name="Old map")
+    with pytest.raises(OverlappingValidityError):
+        store.redistrict(DISTRICT_ID, name="Corrected label", valid_from="2023-01-03")
+
+
+def test_a_stored_row_with_an_unreadable_date_fails_the_read_loudly(
+    store: DistrictStore, client: ZeroDBClient
+) -> None:
+    """A row the model refuses is a loud read failure, not a silently skipped one.
+
+    This is `Repository._parse_row`'s documented choice and story 2.7 does not
+    override it: "a short list would make a page look complete while silently
+    dropping records, and in a system whose whole claim is cited evidence, a
+    quietly missing record is worse than a loud failure". A district whose
+    validity Informed cannot read is exactly that kind of record.
+
+    Pinned as a test rather than left implicit because it bounds what
+    `contains`'s unreadable-date branch is for: that branch protects any caller
+    holding a `District` built some other way (`model_construct`, a future
+    non-repository reader), not the repository path, which never gets there.
+
+    Written straight through the client because `District`'s validator refuses
+    such a row, so the only way one exists is to predate that check.
+    """
+    client.insert_row(
+        "districts",
+        {
+            "id": f"{DISTRICT_ID}@legacy",
+            "body_id": "us-house",
+            "name": "Undateable legacy row",
+            "state": "ZZ",
+            "valid_from": "sometime in 2013",
+            "valid_to": "legacy",
+        },
+    )
+    with pytest.raises(RowValidationError, match="does not fit District"):
+        store.get(DISTRICT_ID, as_of=date(2026, 11, 3))
+
+
+def test_the_model_refuses_an_unparseable_valid_to() -> None:
+    with pytest.raises(ValueError, match="valid_to"):
+        District(
+            id=f"{DISTRICT_ID}@whenever",
+            body_id="us-house",
+            name="Unparseable end",
+            state="ZZ",
+            valid_from="2013-01-03",
+            valid_to="the end of the decade",
+        )
+
+
+def test_restating_a_first_version_redistricting_reports_nothing_superseded(
+    store: DistrictStore,
+) -> None:
+    """A district whose only version is its first has nothing behind it.
+
+    The idempotent re-run must say so rather than name whichever closed
+    version happens to exist for some other boundary.
+    """
+    store.redistrict(DISTRICT_ID, name="First map", valid_from="2027-01-03")
+    again = store.redistrict(DISTRICT_ID, name="First map", valid_from="2027-01-03")
+
+    assert again.superseded is None
+    assert again.current.valid_from == "2027-01-03"
+
+
+def test_record_version_with_an_unreadable_date_fails_on_the_model_not_the_overlap(
+    store: DistrictStore,
+) -> None:
+    """The overlap check defers to the model rather than inventing an overlap.
+
+    An unreadable `valid_from` describes no interval, so it cannot overlap
+    anything, and reporting it as an overlap would send an operator looking for
+    a conflicting row that does not exist. The repository's validation error is
+    the right failure (its `__cause__` carries the field-level detail).
+    """
+    with pytest.raises(RowValidationError, match="districts row is invalid"):
+        store.record_version(
+            DISTRICT_ID,
+            body_id="us-house",
+            name="Undateable",
+            state="ZZ",
+            valid_from="sometime in 2013",
+        )
+
+
+def test_a_version_scan_stops_at_the_cap_and_says_so(
+    client: ZeroDBClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Crossing the scan cap is logged as an error, never silently truncated.
+
+    The symptom of a silent truncation is a missing version — a lookup for a
+    date answering None when Informed does hold that map — which is exactly
+    the kind of quiet wrongness a loud log is cheaper than. Driven by shrinking
+    the cap and the page size rather than writing 20,000 rows.
+    """
+    capped = DistrictStore(client=client, page_size=1, max_rows_scanned=2)
+    for valid_from, valid_to in (
+        ("2003-01-07", "2012-12-31"),
+        ("2013-01-03", "2022-12-31"),
+        ("2023-01-03", None),
+    ):
+        capped.record_version(
+            DISTRICT_ID,
+            body_id="us-house",
+            name=f"Map from {valid_from}",
+            state="ZZ",
+            valid_from=valid_from,
+            valid_to=valid_to,
+        )
+
+    with caplog.at_level("ERROR"):
+        found = capped.versions(DISTRICT_ID)
+
+    assert len(found) == 2, "the scan must stop at the cap rather than page forever"
+    assert "outgrown a full scan" in caplog.text

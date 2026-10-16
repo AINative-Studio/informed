@@ -45,9 +45,30 @@ scoring and be counted as "some other position" instead of rejected.
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+def _as_iso_date(value: str | None) -> date | None:
+    """An ISO-8601 calendar date from a stored string, or None if unreadable.
+
+    Accepts a bare `YYYY-MM-DD` and a full timestamp, because which of the two
+    a source emits is its choice and a date Informed could read as either is
+    not a data error. Returns None rather than raising, so each caller decides
+    what an unreadable bound means for it (the `District` validator refuses the
+    write; `app.districts.store` treats such a version as not valid on any
+    date).
+    """
+    if not value:
+        return None
+    text = value.strip().removesuffix("Z")
+    try:
+        return date.fromisoformat(text[:10] if "T" in text else text)
+    except ValueError:
+        return None
+
 
 # --- controlled vocabularies (datamodel.md "Legislative record" and
 # "Promises, verdicts and positions") --------------------------------------
@@ -448,6 +469,20 @@ class District(RowModel):
     no longer a thing a voter can hit; "Informed cannot record your district,
     because its chamber was never seeded" is, and it is the same kind of failure
     — a data gap on Informed's side, not an address the voter can retype.
+
+    `valid_from` and `valid_to` are a **closed-open-ended interval of whole
+    days, both bounds inclusive** (story 2.7). `valid_from` is the first day
+    this map applies; `valid_to` is the last day it applied, or null meaning
+    "still current". Story 2.3 was already writing both — `valid_from` set to
+    the day the 119th Congress convened and `valid_to` null — so the fields are
+    not new here; what story 2.7 adds is that they are *validated* and that
+    `app.districts.store` can read them back for a date.
+
+    Both bounds are inclusive because the alternative leaves a hole: if
+    `valid_to` were exclusive, the day a map was replaced would belong to no
+    district at all, and an election held on it would map to nothing. The
+    validation below is the one place that interval is checked, so no writer
+    can store a range that cannot be read back (datamodel.md rule 5).
     """
 
     table_name: ClassVar[str] = "districts"
@@ -458,6 +493,37 @@ class District(RowModel):
     state: str
     valid_from: str
     valid_to: str | None = None
+
+    @model_validator(mode="after")
+    def _validity_range_is_readable(self) -> District:
+        """Both bounds parse as ISO dates, and `valid_to` is not before `valid_from`.
+
+        Checked at the model rather than left to the store, because a date
+        nobody can parse is not a smaller version of a valid row — it is a row
+        whose whole purpose (saying when this map applied) is unmet, and a
+        reader asking "which district was valid on election day" would silently
+        skip it. Rejecting the write is the only answer that leaves the
+        question answerable.
+
+        A backwards range is rejected for the same reason and more bluntly: it
+        describes an interval containing no days, so the row could never answer
+        for any date, and storing it would only mislead whoever read it next.
+        """
+        start = _as_iso_date(self.valid_from)
+        if start is None:
+            raise ValueError(
+                f"districts.valid_from must be an ISO-8601 date, got {self.valid_from!r}"
+            )
+        if self.valid_to is None:
+            return self
+        end = _as_iso_date(self.valid_to)
+        if end is None:
+            raise ValueError(f"districts.valid_to must be an ISO-8601 date, got {self.valid_to!r}")
+        if end < start:
+            raise ValueError(
+                f"districts.valid_to {self.valid_to!r} is before valid_from {self.valid_from!r}"
+            )
+        return self
 
 
 class Term(BaseModel):
