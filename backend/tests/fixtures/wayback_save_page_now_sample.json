@@ -1,0 +1,67 @@
+{
+  "_comment": [
+    "Real response shapes from live calls to web.archive.org during story 9.1",
+    "(2026-10-16), not invented. Two things were confirmed live and matter for",
+    "how app/ingest/campaign_sites.py treats this API:",
+    "",
+    "1. `GET /wayback/available?url=...` -- the 'availability' lookup -- is",
+    "   genuinely free and keyless. A live call for https://www.congress.gov/",
+    "   returned exactly the 'available_response' envelope below (status 200).",
+    "   This can only report an EXISTING snapshot; it cannot trigger a new one.",
+    "",
+    "2. Save Page Now itself (the capture-TRIGGERING endpoint,",
+    "   POST /save/<url> with Accept: application/json) is NOT free/keyless for",
+    "   programmatic use, contrary to this story's brief. A live call with no",
+    "   credentials returned exactly the 'unauthenticated_response' envelope",
+    "   below -- HTTP 401, 'You need to be logged in to use Save Page Now.' The",
+    "   plain (non-JSON) GET /save/<url> a logged-out browser session would use",
+    "   was also tried live and returned HTTP 429 (rate-limited guest access,",
+    "   confirmed by the 'x-rl: 0' header on the real response) with no",
+    "   snapshot produced -- also captured below as 'rate_limited_response'.",
+    "",
+    "   So this module treats Save Page Now as OPTIONAL and best-effort: it is",
+    "   attempted only when SPN2 credentials are configured (an access/secret",
+    "   key pair from a free archive.org account, per the official SPN2 docs),",
+    "   and a failure of any kind -- 401, 429, timeout, or no credentials",
+    "   configured at all -- degrades to 'not archived on Wayback this run'",
+    "   rather than failing the capture. The 'success_response' envelope below",
+    "   is the documented shape SPN2 returns to an authenticated caller (per",
+    "   https://docs.google.com/document/d/1Nsv52MvSjbLb2PCpHlat0gkzw0EvtSgpKHu4mk0MnrA,",
+    "   fetched live during this story) -- held as a fixture only, since no",
+    "   archive.org account credentials exist in this environment to confirm",
+    "   it against a real authenticated call. See the module docstring."
+  ],
+  "available_response": {
+    "url": "https://www.congress.gov/",
+    "archived_snapshots": {
+      "closest": {
+        "status": "200",
+        "available": true,
+        "url": "http://web.archive.org/web/20261011211739/https://www.congress.gov/",
+        "timestamp": "20261011211739"
+      }
+    }
+  },
+  "available_response_no_snapshot": {
+    "url": "https://this-domain-has-never-been-archived.example/",
+    "archived_snapshots": {}
+  },
+  "unauthenticated_response": {
+    "status_code": 401,
+    "body": {
+      "message": "You need to be logged in to use Save Page Now."
+    }
+  },
+  "rate_limited_response": {
+    "status_code": 429
+  },
+  "success_response": {
+    "status_code": 200,
+    "body": {
+      "url": "https://example-campaign-site.test/",
+      "job_id": "spn2-9c2e6f9a-1b2e-4e7e-9b1d-example",
+      "status": "success",
+      "timestamp": "20261016221413"
+    }
+  }
+}
