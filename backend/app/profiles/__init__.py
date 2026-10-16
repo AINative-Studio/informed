@@ -34,15 +34,18 @@ from app.profiles.methodology import (
 )
 from app.profiles.models import Interest, InterestProfile, VoterProfileRow
 from app.profiles.router import (
+    FollowResponse,
     LoadedInterest,
     LoadedProfile,
     SaveProfileRequest,
     SaveProfileResponse,
     TierWeightsResponse,
+    follow_person,
     profile_service,
     router,
+    unfollow_person,
 )
-from app.profiles.service import AnonymousModeError, VoterProfileService
+from app.profiles.service import AnonymousModeError, PersonNotFoundError, VoterProfileService
 
 #: The two tables profile storage touches, in the order they must exist. Named
 #: here so a test fixture and the live verification script cannot disagree with
@@ -57,12 +60,14 @@ __all__ = [
     "KEY_WRAP_TABLE",
     "PROFILE_TABLES",
     "AnonymousModeError",
+    "FollowResponse",
     "Interest",
     "InterestProfile",
     "LoadedInterest",
     "LoadedProfile",
     "MethodologyVersion",
     "MethodologyVersionService",
+    "PersonNotFoundError",
     "ProfileCipher",
     "ProfileKeyring",
     "ProfileRootKey",
@@ -72,6 +77,8 @@ __all__ = [
     "TierWeightsResponse",
     "VoterProfileRow",
     "VoterProfileService",
+    "follow_person",
     "profile_service",
     "router",
+    "unfollow_person",
 ]

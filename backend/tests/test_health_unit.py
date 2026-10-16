@@ -22,7 +22,7 @@ def test_routes_are_only_the_ones_built_so_far(client: TestClient) -> None:
     story 3.5 added `/v1/topics/suggest`; stories 4.2/4.4 add the
     tier-weights read and the profile load endpoint; story 3.3 adds the
     `/v1/panel` review surface; story 12.2 adds the public `/v1/methodology`
-    page and its changelog.
+    page and its changelog; story 15.1 adds the follow/unfollow endpoints.
 
     Replaces story 1.1's "health is the only route" assertion, whose own
     docstring named 1.5 as the story that would change it, and that story's
@@ -42,6 +42,10 @@ def test_routes_are_only_the_ones_built_so_far(client: TestClient) -> None:
         "/v1/profiles",
         "/v1/profiles/methodology",
         "/v1/profiles/{user_id}",
+        # Story 15.1: follow/unfollow an incumbent, read-modify-write through
+        # the same encrypted VoterProfileService every other profile change
+        # uses — see app.profiles.router's module docstring on this endpoint.
+        "/v1/profiles/{user_id}/follow/{person_id}",
         # Story 3.3: the advisory panel's review workflow. Reviewer-facing,
         # under one prefix so there is one thing to protect once an auth story
         # lands — see `app.panel_review.router`'s module docstring, which is
