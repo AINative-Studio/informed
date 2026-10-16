@@ -33,6 +33,12 @@ Feature: A voter's address returns their federal representatives
     Then the response does not echo the address back
     And no row written to ZeroDB contains the address
 
+  Scenario: A former representative is not shown as a current one
+    Given the district's previous representative is also stored in ZeroDB, with a term that has ended
+    When the voter submits the address "1600 Pennsylvania Ave, Washington, DC"
+    Then it lists exactly 1 House member
+    And the former representative is not among them
+
   Scenario: A district with no officeholders yet returns an empty race, not an error
     Given the district "ocd-division/country:us/state:wy/cd:at-large" exists in ZeroDB
     When the voter submits an address in that district

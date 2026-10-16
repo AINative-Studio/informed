@@ -7,12 +7,13 @@ than just "the ballot is wrong".
 
 from __future__ import annotations
 
+from datetime import date, timedelta
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app.ballot.service import BallotService
+from app.ballot.service import HOUSE_BODY_ID, SENATE_BODY_ID, BallotService
 from app.districts.resolver import AddressResolutionError, StubAddressResolver
 from app.main import create_app, zerodb_client
 from app.repositories import Repository
@@ -49,13 +50,24 @@ def seed_district(client: ZeroDBClient, district_id: str = HOUSE_DISTRICT) -> No
     )
 
 
+#: Term bounds relative to today, so no test starts failing on a calendar date.
+#: A hard-coded "2027-01-03" would have quietly become a *past* term in 2027 and
+#: turned every delegation test red for a reason nobody would look for.
+TODAY = date.today()
+TERM_START = (TODAY - timedelta(days=365)).isoformat()
+TERM_END = (TODAY + timedelta(days=365)).isoformat()
+PAST_TERM_START = (TODAY - timedelta(days=365 * 6)).isoformat()
+PAST_TERM_END = (TODAY - timedelta(days=365 * 4)).isoformat()
+
+
 def person(
     person_id: str,
     body_id: str,
     district_id: str,
     *,
     name: str = "Synthetic Member",
-    end: str | None = "2027-01-03",
+    start: str = TERM_START,
+    end: str | None = TERM_END,
 ) -> dict[str, Any]:
     return {
         "id": person_id,
@@ -66,7 +78,7 @@ def person(
                 "body_id": body_id,
                 "district_id": district_id,
                 "party": "Independent",
-                "start": "2023-01-03",
+                "start": start,
                 "end": end,
             }
         ],
@@ -208,6 +220,240 @@ def test_service_never_puts_the_address_in_its_result(client: ZeroDBClient) -> N
     seed_full_delegation(client)
     ballot = BallotService(client=client).ballot_for("500 Private Lane, Example, CA")
     assert "Private Lane" not in str(ballot.model_dump(mode="json"))
+
+
+def test_service_excludes_a_member_whose_term_has_ended(client: ZeroDBClient) -> None:
+    """A former representative is not a representative.
+
+    `people.terms[]` is a **list** precisely because it holds term history, and
+    story 2.2 ingests real members with every term they have served. Matching on
+    any term rather than a current one means a district whose past
+    representative is in the table returns two House members, which breaks this
+    story's own acceptance criterion ("1 House member and 2 senators") for every
+    voter with term history — and presents a non-officeholder as their
+    representative, which prd.md's "evidence over opinion" does not permit.
+    """
+    seed_full_delegation(client)
+    Repository(client=client, model=Person).upsert(
+        person(
+            "person:ZZRETIRED",
+            "us-house",
+            HOUSE_DISTRICT,
+            name="Former Rep. Retired",
+            start=PAST_TERM_START,
+            end=PAST_TERM_END,
+        )
+    )
+
+    ballot = BallotService(client=client).ballot_for(ADDRESS)
+    house = [o for o in ballot.officeholders if o.body_id == HOUSE_BODY_ID]
+    assert [o.name for o in house] == ["Rep. Synthetic"]
+
+
+def test_service_excludes_a_member_whose_term_has_not_started(client: ZeroDBClient) -> None:
+    """A member-elect is not yet in office either.
+
+    The mirror of the test above. Between an election and a swearing-in both the
+    outgoing and incoming member are in `people` with terms for the same
+    district, so a start check is as load-bearing as an end check — and that is
+    exactly the window in which a voter is most likely to look.
+    """
+    seed_full_delegation(client)
+    future_start = (TODAY + timedelta(days=30)).isoformat()
+    Repository(client=client, model=Person).upsert(
+        person(
+            "person:ZZELECT",
+            "us-house",
+            HOUSE_DISTRICT,
+            name="Rep.-elect Incoming",
+            start=future_start,
+            end=(TODAY + timedelta(days=760)).isoformat(),
+        )
+    )
+
+    ballot = BallotService(client=client).ballot_for(ADDRESS)
+    house = [o for o in ballot.officeholders if o.body_id == HOUSE_BODY_ID]
+    assert [o.name for o in house] == ["Rep. Synthetic"]
+
+
+def test_service_keeps_a_member_whose_term_has_no_end_date(client: ZeroDBClient) -> None:
+    """An open-ended term is a current one, not an invalid one.
+
+    `Term.end` is optional in the model, and an ingest source that does not
+    publish an end date is common. Treating a missing end as "not current" would
+    silently empty a delegation, which is a worse failure than the bug this
+    group of tests fixes — so the absent case is pinned explicitly.
+    """
+    seed_district(client)
+    Repository(client=client, model=Person).upsert(
+        person("person:ZZOPEN", "us-house", HOUSE_DISTRICT, name="Rep. Open Term", end=None)
+    )
+
+    ballot = BallotService(client=client).ballot_for(ADDRESS)
+    assert [o.name for o in ballot.officeholders] == ["Rep. Open Term"]
+
+
+def test_service_keeps_a_member_whose_term_has_no_start_date(client: ZeroDBClient) -> None:
+    """Likewise a missing start: unknown is not the same as "not yet"."""
+    seed_district(client)
+    people: Repository[Person] = Repository(client=client, model=Person)
+    people.upsert(
+        {
+            "id": "person:ZZNOSTART",
+            "canonical_name": "Rep. No Start",
+            "terms": [
+                {
+                    "body_id": "us-house",
+                    "district_id": HOUSE_DISTRICT,
+                    "party": "Independent",
+                    "end": TERM_END,
+                }
+            ],
+        }
+    )
+
+    ballot = BallotService(client=client).ballot_for(ADDRESS)
+    assert [o.name for o in ballot.officeholders] == ["Rep. No Start"]
+
+
+def test_service_picks_the_current_term_of_a_member_with_term_history(
+    client: ZeroDBClient,
+) -> None:
+    """One person, several terms in the same seat, counted once.
+
+    How story 2.2's data actually looks: a long-serving member carries one term
+    per Congress for the same district. The delegation must list them once, from
+    their current term, not once per term they have ever served.
+    """
+    seed_district(client)
+    people: Repository[Person] = Repository(client=client, model=Person)
+    people.upsert(
+        {
+            "id": "person:ZZLONG",
+            "canonical_name": "Rep. Long Serving",
+            "terms": [
+                {
+                    "body_id": "us-house",
+                    "district_id": HOUSE_DISTRICT,
+                    "party": "Independent",
+                    "start": PAST_TERM_START,
+                    "end": PAST_TERM_END,
+                },
+                {
+                    "body_id": "us-house",
+                    "district_id": HOUSE_DISTRICT,
+                    "party": "Independent",
+                    "start": TERM_START,
+                    "end": TERM_END,
+                },
+            ],
+        }
+    )
+
+    ballot = BallotService(client=client).ballot_for(ADDRESS)
+    assert len(ballot.officeholders) == 1
+    assert ballot.officeholders[0].name == "Rep. Long Serving"
+
+
+def test_service_lists_a_member_who_moved_from_the_house_to_the_senate_once(
+    client: ZeroDBClient,
+) -> None:
+    """A real pattern: a representative elected to the Senate from the same state.
+
+    Their House term has ended and their Senate term is current, so they belong
+    in the Senate list and nowhere else. Listing them in both would overstate
+    the delegation and show a chamber they no longer sit in.
+    """
+    seed_district(client)
+    people: Repository[Person] = Repository(client=client, model=Person)
+    people.upsert(
+        {
+            "id": "person:ZZMOVED",
+            "canonical_name": "Sen. Formerly House",
+            "terms": [
+                {
+                    "body_id": "us-house",
+                    "district_id": HOUSE_DISTRICT,
+                    "party": "Independent",
+                    "start": PAST_TERM_START,
+                    "end": PAST_TERM_END,
+                },
+                {
+                    "body_id": "us-senate",
+                    "district_id": SENATE_DISTRICT,
+                    "party": "Independent",
+                    "start": TERM_START,
+                    "end": TERM_END,
+                },
+            ],
+        }
+    )
+
+    ballot = BallotService(client=client).ballot_for(ADDRESS)
+    assert [(o.name, o.body_id) for o in ballot.officeholders] == [
+        ("Sen. Formerly House", SENATE_BODY_ID)
+    ]
+
+
+def test_service_ignores_an_unparseable_term_date_rather_than_dropping_the_member(
+    client: ZeroDBClient,
+) -> None:
+    """A malformed date must not silently remove someone from a delegation.
+
+    `Term.start`/`end` are plain strings in the model, so an ingest adapter can
+    put anything there. Dropping the member would make a bad date look like a
+    vacant seat; keeping them surfaces the row so the data can be corrected.
+    """
+    seed_district(client)
+    people: Repository[Person] = Repository(client=client, model=Person)
+    people.upsert(
+        {
+            "id": "person:ZZBADDATE",
+            "canonical_name": "Rep. Bad Date",
+            "terms": [
+                {
+                    "body_id": "us-house",
+                    "district_id": HOUSE_DISTRICT,
+                    "party": "Independent",
+                    "start": "not-a-date",
+                    "end": "also-not-a-date",
+                }
+            ],
+        }
+    )
+
+    ballot = BallotService(client=client).ballot_for(ADDRESS)
+    assert [o.name for o in ballot.officeholders] == ["Rep. Bad Date"]
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "expected"),
+    [
+        # Both bounds are inclusive: a term's start is the swearing-in day and
+        # its end the last day in office, so excluding either would leave a
+        # one-day hole in the delegation at each boundary.
+        ("2026-06-15", "2026-06-15", True),
+        ("2026-06-15", "2026-12-31", True),
+        ("2026-01-01", "2026-06-15", True),
+        ("2026-06-16", "2026-12-31", False),
+        ("2026-01-01", "2026-06-14", False),
+        # A timestamped bound is a date, not an unknown: reading it as unknown
+        # would make every term from such a source look current.
+        ("2026-06-15T00:00:00Z", "2026-12-31T00:00:00Z", True),
+        ("2026-01-01T00:00:00Z", "2026-06-14T23:59:59Z", False),
+    ],
+)
+def test_term_currency_at_each_boundary(
+    client: ZeroDBClient, start: str, end: str, expected: bool
+) -> None:
+    """Term bounds decided against an injected date, not the real clock."""
+    seed_district(client)
+    Repository(client=client, model=Person).upsert(
+        person("person:ZZBOUND", "us-house", HOUSE_DISTRICT, start=start, end=end)
+    )
+
+    ballot = BallotService(client=client, today=lambda: date(2026, 6, 15)).ballot_for(ADDRESS)
+    assert bool(ballot.officeholders) is expected
 
 
 def test_service_pages_through_people_rather_than_reading_one_page(

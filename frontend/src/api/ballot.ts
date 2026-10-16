@@ -40,8 +40,25 @@ export const SENATE_BODY_ID = 'us-senate';
  * Where the API lives. `VITE_API_BASE_URL` per .env.example; empty by default
  * so the request is same-origin, which is what a deployed build wants and what
  * the BDD suite's route interception matches.
+ *
+ * A trailing slash is stripped, because `http://localhost:8000/` is a natural
+ * way to write a base URL and would otherwise concatenate into
+ * `http://localhost:8000//v1/ballot` — a double slash most servers 404 on, and
+ * a failure that would only show up in a deploy whose config happened to be
+ * written that way.
  */
 const API_BASE_URL: string = import.meta.env.VITE_API_BASE_URL ?? '';
+
+/**
+ * Build an API URL from a base and a root-relative path.
+ *
+ * Exported so the trailing-slash cases are directly testable: the base comes
+ * from per-environment deploy config, which this code never sees, so the one
+ * place to be sure about it is here.
+ */
+export function apiUrl(base: string, path: string, origin: string): URL {
+  return new URL(`${base.replace(/\/+$/, '')}${path}`, origin);
+}
 
 /** Raised for any non-2xx answer, carrying a message fit to show a voter. */
 export class BallotError extends Error {
@@ -62,7 +79,7 @@ export class BallotError extends Error {
  * detail is not, and must not be rendered into the page.
  */
 export async function fetchBallot(address: string, signal?: AbortSignal): Promise<Ballot> {
-  const url = new URL(`${API_BASE_URL}/v1/ballot`, window.location.origin);
+  const url = apiUrl(API_BASE_URL, '/v1/ballot', window.location.origin);
   url.searchParams.set('address', address);
 
   const response = await fetch(url.toString(), {

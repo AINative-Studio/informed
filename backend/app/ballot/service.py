@@ -5,8 +5,13 @@ The walking skeleton's one piece of business logic, and the whole of what the
 
     address -> StubAddressResolver -> district id
             -> `districts` row (story 1.4 repository)
-            -> `people` rows whose `terms[]` put them in that district
+            -> `people` rows with a **current** term in that district
             -> BallotResponse
+
+"Current" is load-bearing, not a nicety: `people.terms[]` is a list because it
+holds term history (story 2.2 ingests every term a member has served), so
+matching on any term would hand a voter their former representative alongside
+their sitting one. See `_is_current`.
 
 Why the delegation lookup pages the table and matches in Python rather than
 asking ZeroDB to filter:
@@ -32,6 +37,8 @@ truncating a voter's delegation.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
+from datetime import date
 
 from app.ballot.models import BallotResponse, DistrictSummary, Officeholder
 from app.districts.resolver import (
@@ -77,10 +84,15 @@ class BallotService:
         *,
         client: ZeroDBClient,
         resolver: AddressResolver | None = None,
+        today: Callable[[], date] = date.today,
     ) -> None:
         self._resolver = resolver or StubAddressResolver()
         self._districts: Repository[District] = Repository(client=client, model=District)
         self._people: Repository[Person] = Repository(client=client, model=Person)
+        #: Injected so a test can pin "now" without freezing the process clock,
+        #: and so a future "what did my delegation look like on date X" read has
+        #: a seam to use rather than a second code path.
+        self._today = today
 
     def ballot_for(self, address: str) -> BallotResponse:
         """The district and sitting delegation for one address.
@@ -117,7 +129,7 @@ class BallotService:
         )
 
     def _delegation_for(self, resolved: ResolvedAddress) -> list[Officeholder]:
-        """Every sitting member whose terms put them in these divisions.
+        """Every member with a current term in these divisions.
 
         An empty list is a legitimate answer, not an error: a district whose
         legislators have not been ingested yet (which is every district until
@@ -128,10 +140,13 @@ class BallotService:
             resolved.district_id: HOUSE_BODY_ID,
             resolved.senate_district_id: SENATE_BODY_ID,
         }
+        # Read the clock once per request, so a delegation cannot be assembled
+        # from two different "today"s if the scan straddles midnight.
+        today = self._today()
         officeholders = [
             officeholder
             for person in self._scan_people()
-            for officeholder in _officeholders_from(person, wanted)
+            for officeholder in _officeholders_from(person, wanted, today=today)
         ]
         officeholders.sort(key=lambda o: (_BODY_ORDER.get(o.body_id, 99), o.name))
         return officeholders
@@ -160,15 +175,27 @@ class BallotService:
         return people
 
 
-def _officeholders_from(person: Person, wanted: dict[str, str]) -> list[Officeholder]:
+def _officeholders_from(
+    person: Person, wanted: dict[str, str], *, today: date
+) -> list[Officeholder]:
     """The entries this person contributes to a delegation, usually zero or one.
 
-    A person is matched by a term whose `district_id` is one of the wanted
-    divisions **and** whose `body_id` is the chamber that division belongs to.
-    Both halves are checked because the two are independent facts in the row:
-    a senator's term carries the state division, a representative's carries the
-    `/cd:` one, and a row where they disagree is bad data that must not be
-    presented as a representative of a chamber they do not sit in.
+    A term matches on three independent facts, all of which must hold:
+
+      1. its `district_id` is one of the wanted divisions;
+      2. its `body_id` is the chamber that division belongs to — checked
+         separately because a senator's term carries the state division and a
+         representative's carries the `/cd:` one, and a row where the two
+         disagree is bad data that must not be presented as membership of a
+         chamber this person does not sit in;
+      3. **it is current** — see `_is_current`.
+
+    `people.terms[]` is a list because it holds term *history*: story 2.2
+    ingests every term a member has served, and a long-serving representative
+    carries one per Congress for the same seat. Without (3) a district whose
+    past representative is in the table returns two House members, which breaks
+    this story's own acceptance criterion and, worse, tells a voter that someone
+    who left office years ago represents them.
     """
     seen: set[str] = set()
     found: list[Officeholder] = []
@@ -176,9 +203,52 @@ def _officeholders_from(person: Person, wanted: dict[str, str]) -> list[Officeho
         body_id = wanted.get(term.district_id or "")
         if body_id is None or term.body_id != body_id or body_id in seen:
             continue
+        if not _is_current(term, today=today):
+            continue
         seen.add(body_id)
         found.append(_officeholder(person, term, body_id))
     return found
+
+
+def _is_current(term: Term, *, today: date) -> bool:
+    """Whether this term is in effect today.
+
+    Both bounds are **inclusive**, because a term's `start` is the swearing-in
+    day and its `end` the last day in office; excluding them would leave a
+    one-day vacancy in a delegation at each boundary.
+
+    An absent or unparseable bound is treated as **not disqualifying**, which is
+    the deliberate choice here. `Term.start`/`end` are optional plain strings in
+    the model, so an ingest source that publishes no end date (common) or a
+    malformed one (possible) would otherwise silently empty a delegation — and a
+    voter shown no representative cannot tell that from a genuinely vacant seat,
+    whereas a voter shown one with a bad date surfaces a row that can be fixed.
+    Erring toward including is the lesser failure; the nightly audit, not this
+    read path, is where bad dates should be caught.
+    """
+    start = _as_date(term.start)
+    if start is not None and start > today:
+        return False
+    end = _as_date(term.end)
+    return not (end is not None and end < today)
+
+
+def _as_date(value: str | None) -> date | None:
+    """An ISO-8601 date from a term bound, or None if absent or unparseable.
+
+    A bound published as a full timestamp (`2023-01-03T00:00:00Z`) is accepted
+    as well as a bare date, because which of the two an ingest source emits is
+    its choice, and reading a timestamp as "unknown" would quietly make every
+    term from that source current.
+    """
+    if not value:
+        return None
+    text = value.strip().removesuffix("Z")
+    try:
+        return date.fromisoformat(text[:10] if "T" in text else text)
+    except ValueError:
+        logger.warning("unparseable term bound %r; treating it as unknown", value)
+        return None
 
 
 def _officeholder(person: Person, term: Term, body_id: str) -> Officeholder:

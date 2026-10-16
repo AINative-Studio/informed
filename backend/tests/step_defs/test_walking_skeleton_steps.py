@@ -12,6 +12,7 @@ ships with, and assert on the district it returns.
 
 from __future__ import annotations
 
+from datetime import date, timedelta
 from typing import Any
 
 import pytest
@@ -98,6 +99,44 @@ def officeholders_exist(people: Repository[Person]) -> None:
         people.upsert(person)
 
 
+#: Term bounds relative to today, so no scenario starts failing on a calendar
+#: date. A hard-coded future year would quietly become a past term.
+TODAY = date.today()
+TERM_START = (TODAY - timedelta(days=365)).isoformat()
+TERM_END = (TODAY + timedelta(days=365)).isoformat()
+
+#: The name of the former representative used by the term-history scenario.
+FORMER_REPRESENTATIVE = "Former Rep. Synthetic Predecessor"
+
+
+@given(
+    "the district's previous representative is also stored in ZeroDB, with a term that has ended"
+)
+def former_representative_exists(people: Repository[Person]) -> None:
+    """Term history, which is how story 2.2's real data will look.
+
+    `people.terms[]` is a list because it holds every term a member has served,
+    so a district's past representative sits in the same table as its current
+    one. The ballot must tell them apart.
+    """
+    people.upsert(
+        {
+            "id": "person:ZZ000099",
+            "canonical_name": FORMER_REPRESENTATIVE,
+            "external_ids": {"bioguide": "ZZ000099"},
+            "terms": [
+                {
+                    "body_id": "us-house",
+                    "district_id": TEST_DISTRICT_ID,
+                    "party": "Independent",
+                    "start": (TODAY - timedelta(days=365 * 6)).isoformat(),
+                    "end": (TODAY - timedelta(days=365 * 4)).isoformat(),
+                }
+            ],
+        }
+    )
+
+
 def synthetic_officeholders() -> list[dict[str, Any]]:
     """One House member and two senators, shaped exactly as datamodel.md says.
 
@@ -114,8 +153,8 @@ def synthetic_officeholders() -> list[dict[str, Any]]:
                     "body_id": "us-house",
                     "district_id": TEST_DISTRICT_ID,
                     "party": "Independent",
-                    "start": "2023-01-03",
-                    "end": "2025-01-03",
+                    "start": TERM_START,
+                    "end": TERM_END,
                 }
             ],
         },
@@ -128,8 +167,8 @@ def synthetic_officeholders() -> list[dict[str, Any]]:
                     "body_id": "us-senate",
                     "district_id": "ocd-division/country:us/state:ca",
                     "party": "Independent",
-                    "start": "2021-01-03",
-                    "end": "2027-01-03",
+                    "start": TERM_START,
+                    "end": TERM_END,
                 }
             ],
         },
@@ -142,8 +181,8 @@ def synthetic_officeholders() -> list[dict[str, Any]]:
                     "body_id": "us-senate",
                     "district_id": "ocd-division/country:us/state:ca",
                     "party": "Independent",
-                    "start": "2023-01-03",
-                    "end": "2029-01-03",
+                    "start": TERM_START,
+                    "end": TERM_END,
                 }
             ],
         },
@@ -213,6 +252,12 @@ def lists_house_members(context: Any, count: int) -> None:
 def lists_senators(context: Any, count: int) -> None:
     senate = [o for o in payload(context)["officeholders"] if o["body_id"] == "us-senate"]
     assert len(senate) == count, f"got {len(senate)} senators: {senate}"
+
+
+@then("the former representative is not among them")
+def former_representative_excluded(context: Any) -> None:
+    names = [o["name"] for o in payload(context)["officeholders"]]
+    assert FORMER_REPRESENTATIVE not in names, f"a former member was listed: {names}"
 
 
 @then("every officeholder carries the body they serve in")

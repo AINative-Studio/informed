@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from datetime import date, timedelta
 from typing import Any
 
 from fastapi.testclient import TestClient
@@ -81,12 +82,24 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("verify-ballot-1.5")
 
 
+#: Term bounds relative to today, so this script does not start failing on a
+#: calendar date. A hard-coded future year would quietly become a past term and
+#: make every delegation check fail for a reason nobody would look for.
+TODAY = date.today()
+TERM_START = (TODAY - timedelta(days=365)).isoformat()
+TERM_END = (TODAY + timedelta(days=365)).isoformat()
+PAST_TERM_START = (TODAY - timedelta(days=365 * 6)).isoformat()
+PAST_TERM_END = (TODAY - timedelta(days=365 * 4)).isoformat()
+
+
 def person_row(
     suffix: str,
     *,
     body_id: str,
     district_id: str,
     name: str,
+    start: str = TERM_START,
+    end: str = TERM_END,
 ) -> dict[str, Any]:
     """A `people` row per datamodel.md: canonical_name, external_ids, terms[]."""
     bioguide = f"ZZ{suffix}"
@@ -99,8 +112,8 @@ def person_row(
                 "body_id": body_id,
                 "district_id": district_id,
                 "party": "Independent",
-                "start": "2023-01-03",
-                "end": "2029-01-03",
+                "start": start,
+                "end": end,
             }
         ],
     }
@@ -150,6 +163,20 @@ DECOYS = [
         body_id=SENATE_BODY_ID,
         district_id=HOUSE_DISTRICT_ID,
         name=f"Synthetic Chamber Mismatch ({MARKER})",
+    ),
+    person_row(
+        "9004-decoy-former",
+        # The right district and the right chamber, but the term ENDED. This is
+        # how story 2.2's real data will look — `people.terms[]` is a list
+        # because it holds term history — and matching on any term rather than
+        # a current one returns two House members for this district, which
+        # breaks the acceptance criterion and tells a voter that someone who
+        # left office years ago represents them.
+        body_id=HOUSE_BODY_ID,
+        district_id=HOUSE_DISTRICT_ID,
+        name=f"Synthetic Former Representative ({MARKER})",
+        start=PAST_TERM_START,
+        end=PAST_TERM_END,
     ),
 ]
 
@@ -272,6 +299,11 @@ def main() -> int:
             "the chamber-mismatched row is excluded",
             DECOYS[2]["id"] not in {o["person_id"] for o in officeholders},
             "a row whose body_id and district_id disagree was presented anyway",
+        )
+        check(
+            "the former representative of this very district is excluded",
+            DECOYS[3]["id"] not in {o["person_id"] for o in officeholders},
+            "a member whose term has ended was presented as a current one",
         )
         check(
             "the submitted address is nowhere in the response",
