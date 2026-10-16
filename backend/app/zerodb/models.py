@@ -108,6 +108,52 @@ class SearchResults(_ZeroDBModel):
     model: str | None = None
 
 
+class VectorRecord(_ZeroDBModel):
+    """One stored vector, as `list_vectors`/`get_vector` return it (story 3.4).
+
+    Field names follow the live API exactly (`VectorResponse` in the live
+    OpenAPI schema, confirmed during this story): `vector_metadata`, not
+    `metadata` — different from `SearchHit`, which wraps a *search* response
+    where the live field really is `metadata`. Two different response shapes
+    for "a vector", so two different models; collapsing them would mean one
+    of the two field names is a guess rather than a verified one.
+    """
+
+    vector_id: str
+    namespace: str = "default"
+    document: str | None = None
+    vector_metadata: dict[str, Any] = Field(default_factory=dict)
+    source: str | None = None
+    created_at: str | None = None
+
+
+class VectorPage(_ZeroDBModel):
+    """A page of a namespace's vectors. Wraps `list_vectors`.
+
+    Mirrors `RowPage`'s shape for the same reason: a namespace can hold more
+    vectors than fit in one page (`stances` already runs to 200+), so every
+    caller must check `has_more` and walk with `offset` rather than assume a
+    first page is everything.
+    """
+
+    vectors: list[VectorRecord] = Field(default_factory=list)
+    total: int = 0
+    offset: int = 0
+    limit: int = 0
+    has_more: bool = False
+
+
+class VectorDeleteResult(_ZeroDBModel):
+    """The outcome of deleting one vector. Wraps `delete_vector`.
+
+    The live endpoint's response is just `{"message": ...}`
+    (`DeleteVectorResponse` in the live OpenAPI schema, confirmed during story
+    3.4) — there is nothing else to parse out of it.
+    """
+
+    message: str | None = None
+
+
 class VectorIndex(_ZeroDBModel):
     """A search index created over one vector namespace.
 
@@ -329,6 +375,9 @@ __all__ = [
     "Table",
     "Traversal",
     "TraversalNode",
+    "VectorDeleteResult",
     "VectorIndex",
+    "VectorPage",
+    "VectorRecord",
     "VectorStats",
 ]
