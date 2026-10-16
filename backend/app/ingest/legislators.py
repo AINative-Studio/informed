@@ -37,6 +37,18 @@ roster who served *either* Congress regardless of whether they are still
 seated, it should say so and extend this loader rather than have this story
 guess at that scope.
 
+**On the "535" in the acceptance criterion**: 535 is the full statutory size
+of Congress (435 House + 100 Senate), not a count this loader enforces or
+pads to. The live source, fetched during this story (2026-10-16), carried 539
+current records: 433 voting representatives (2 fewer than 435 — real,
+currently-vacant seats) + 100 senators + 6 non-voting delegates (DC, PR, GU,
+VI, AS, MP), who are legitimate current members of Congress the source itself
+lists alongside voting members. This loader ingests every record the source
+publishes rather than filtering to exactly 535 or inventing rows for vacant
+seats — a fixed count would drift out of date the moment a seat changes hands,
+which is precisely what a live, actively-maintained source is for. See the
+story's PR for the live count at ingestion time.
+
 Shape of one source record (confirmed live, 2026-10-16)
 =========================================================
 
