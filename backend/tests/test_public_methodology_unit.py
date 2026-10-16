@@ -293,9 +293,7 @@ def test_an_unknown_version_is_a_404_over_http(api: TestClient, zerodb: ZeroDBCl
     assert response.status_code == 404
 
 
-def test_versions_is_not_mistaken_for_a_version_id(
-    api: TestClient, zerodb: ZeroDBClient
-) -> None:
+def test_versions_is_not_mistaken_for_a_version_id(api: TestClient, zerodb: ZeroDBClient) -> None:
     """`/v1/methodology/versions` must route to the list, not to a lookup for a
     version literally named "versions".
 

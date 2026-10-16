@@ -8,6 +8,7 @@ Routes so far:
     GET /v1/topics/{id}/stances       — stance cards for one subtopic, randomized (4.1)
     POST /v1/profiles                 — save a tiered interest profile (4.1, building on 14.1)
     /v1/panel/*                       — the advisory panel's wording review workflow (3.3)
+    /v1/methodology[/*]               — the published methodology and its changelog (12.2)
 
 The remaining endpoints in prd.md's Core API table (`/v1/candidates/{id}/
 alignment`, `/v1/candidates/{id}/promise-record`, `/v1/agent/ask`,
@@ -33,6 +34,7 @@ from pydantic import BaseModel
 from app import __version__
 from app.ballot import router as ballot_router
 from app.ballot.router import zerodb_client
+from app.methodology import router as methodology_router
 from app.panel_review import router as panel_review_router
 from app.profiles import router as profiles_router
 from app.stances import router as stances_router
@@ -94,6 +96,7 @@ def create_app() -> FastAPI:
     app.include_router(stances_router)
     app.include_router(profiles_router)
     app.include_router(panel_review_router)
+    app.include_router(methodology_router)
 
     return app
 

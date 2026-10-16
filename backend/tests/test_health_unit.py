@@ -21,7 +21,8 @@ def test_routes_are_only_the_ones_built_so_far(client: TestClient) -> None:
     """Story 1.5 mounted `/v1/ballot`; story 4.1 added the onboarding trio;
     story 3.5 added `/v1/topics/suggest`; stories 4.2/4.4 add the
     tier-weights read and the profile load endpoint; story 3.3 adds the
-    `/v1/panel` review surface.
+    `/v1/panel` review surface; story 12.2 adds the public `/v1/methodology`
+    page and its changelog.
 
     Replaces story 1.1's "health is the only route" assertion, whose own
     docstring named 1.5 as the story that would change it, and that story's
@@ -53,7 +54,27 @@ def test_routes_are_only_the_ones_built_so_far(client: TestClient) -> None:
         "/v1/panel/reviews/{subject_table}/{subject_id}",
         "/v1/panel/published/topics",
         "/v1/panel/published/topics/{topic_id}/stances",
+        # Story 12.2: the published methodology page and its changelog. The
+        # only endpoints in this list that are PUBLIC — no credential of any
+        # kind — which is required rather than an oversight: prd.md's trust
+        # section calls for a methodology page, and one a journalist has to
+        # log in to read is not published. See `app.methodology.router`'s
+        # module docstring.
+        "/v1/methodology",
+        "/v1/methodology/versions",
+        "/v1/methodology/{version}",
     }
+
+    # `/v1/profiles/methodology` (4.2) and `/v1/methodology` (12.2) read the
+    # same ZeroDB table and are deliberately NOT merged. The first is the
+    # profile editor's internal read — today's tier weights and nothing else,
+    # so a component need not hard-code 3.0/1.5/0.5. The second is the
+    # published document: any version including superseded ones, its
+    # changelog_url, its canonical citation path, and an explicit account of
+    # which documented weight groups are not in force yet. Collapsing them
+    # would mean either putting history and changelog plumbing in the
+    # onboarding path or dropping it from the public page.
+    assert {"/v1/profiles/methodology", "/v1/methodology"} <= paths
 
     # The voter-facing taxonomy and stance reads are deliberately UNCHANGED by
     # story 3.3 and still serve everything stored; the gated equivalents are

@@ -148,9 +148,9 @@ def _superseded(zerodb: ZeroDBClient, old: str, new: str) -> None:
 @when("anyone requests the methodology with no authentication")
 def _request_current(methodology_api: TestClient, seen: dict[str, Any]) -> None:
     seen["response"] = methodology_api.get("/v1/methodology")
-    assert "authorization" not in {
-        key.lower() for key in seen["response"].request.headers
-    }, "this scenario is about a PUBLIC read; the request must carry no credentials"
+    assert "authorization" not in {key.lower() for key in seen["response"].request.headers}, (
+        "this scenario is about a PUBLIC read; the request must carry no credentials"
+    )
 
 
 @when(parsers.parse('anyone requests methodology version "{version}"'))
@@ -182,9 +182,7 @@ def _names_version(seen: dict[str, Any], version: str) -> None:
         "and nice_to_have {nice:g}"
     )
 )
-def _tier_weights_are(
-    seen: dict[str, Any], primary: float, secondary: float, nice: float
-) -> None:
+def _tier_weights_are(seen: dict[str, Any], primary: float, secondary: float, nice: float) -> None:
     tiers = _body(seen)["weights"]["tiers"]
     assert tiers == {"primary": primary, "secondary": secondary, "nice_to_have": nice}
 
