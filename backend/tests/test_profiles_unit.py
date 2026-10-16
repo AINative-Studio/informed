@@ -15,6 +15,8 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from app.bootstrap import TABLE_SCHEMAS
+from app.profiles import PROFILE_TABLES
 from app.profiles.crypto import ProfileKeyring, ProfileRootKey
 from app.profiles.models import (
     MAX_PRIMARY_INTERESTS,
@@ -53,9 +55,16 @@ def profile(**overrides: Any) -> dict[str, Any]:
 
 @pytest.fixture
 def client() -> ZeroDBClient:
-    return ZeroDBClient(
+    zdb = ZeroDBClient(
         transport=FakeZeroDBTransport(), project_id="proj-test", sleep=lambda _: None
     )
+    # The fake 404s on an unknown table, exactly as live ZeroDB does, so the
+    # tables bootstrap creates have to exist here too. `PROFILE_TABLES` is the
+    # single list both this fixture and `app.bootstrap` read, so a table added
+    # to one cannot be forgotten in the other.
+    for table in PROFILE_TABLES:
+        zdb.create_table(table, TABLE_SCHEMAS[table])
+    return zdb
 
 
 @pytest.fixture
@@ -116,9 +125,7 @@ def test_the_documented_payload_shape_validates() -> None:
 
 @pytest.mark.parametrize("count", [MIN_PRIMARY_INTERESTS, 3, MAX_PRIMARY_INTERESTS])
 def test_primary_counts_inside_the_limit_are_accepted(count: int) -> None:
-    InterestProfile.model_validate(
-        profile(interests=[interest(index) for index in range(count)])
-    )
+    InterestProfile.model_validate(profile(interests=[interest(index) for index in range(count)]))
 
 
 def test_no_primary_interest_is_rejected() -> None:
@@ -126,9 +133,7 @@ def test_no_primary_interest_is_rejected() -> None:
     so a stored profile with none would be unscoreable.
     """
     with pytest.raises(ValidationError, match="primary"):
-        InterestProfile.model_validate(
-            profile(interests=[interest(1, tier="secondary")])
-        )
+        InterestProfile.model_validate(profile(interests=[interest(1, tier="secondary")]))
 
 
 def test_too_many_primary_interests_are_rejected() -> None:
@@ -154,16 +159,12 @@ def test_too_many_secondary_interests_are_rejected() -> None:
 
 def test_nice_to_have_interests_are_unlimited() -> None:
     """prd.md's tier table: "Unlimited"."""
-    interests = [interest()] + [
-        interest(index + 1, tier="nice_to_have") for index in range(50)
-    ]
+    interests = [interest()] + [interest(index + 1, tier="nice_to_have") for index in range(50)]
     InterestProfile.model_validate(profile(interests=interests))
 
 
 def test_a_dealbreaker_on_a_primary_interest_is_allowed() -> None:
-    parsed = InterestProfile.model_validate(
-        profile(interests=[interest(dealbreaker=True)])
-    )
+    parsed = InterestProfile.model_validate(profile(interests=[interest(dealbreaker=True)]))
     assert parsed.interests[0].dealbreaker is True
 
 
@@ -212,9 +213,9 @@ def test_an_interest_carries_no_weight_field() -> None:
     never hard-coded" — so the profile must not carry one at all.
     """
     assert "weight" not in Interest.model_fields
-    assert not any(
-        "weight" in name for name in InterestProfile.model_fields
-    ), "a weight on the profile would freeze the methodology into stored data"
+    assert not any("weight" in name for name in InterestProfile.model_fields), (
+        "a weight on the profile would freeze the methodology into stored data"
+    )
 
 
 def test_a_free_text_note_is_optional_and_kept() -> None:
@@ -449,9 +450,7 @@ def test_export_of_an_absent_profile_is_none(service: VoterProfileService) -> No
     assert service.export("synthetic-user-never-saved") is None
 
 
-def test_anonymous_mode_writes_nothing(
-    service: VoterProfileService, client: ZeroDBClient
-) -> None:
+def test_anonymous_mode_writes_nothing(service: VoterProfileService, client: ZeroDBClient) -> None:
     """datamodel.md: "In anonymous mode no row is written"."""
     with pytest.raises(AnonymousModeError):
         service.save(None, profile())

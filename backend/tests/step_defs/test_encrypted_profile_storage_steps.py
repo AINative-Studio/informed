@@ -17,6 +17,8 @@ import pytest
 from pydantic import ValidationError
 from pytest_bdd import given, parsers, scenarios, then, when
 
+from app.bootstrap import TABLE_SCHEMAS
+from app.profiles import PROFILE_TABLES
 from app.profiles.crypto import ProfileCipher, ProfileKeyring, ProfileRootKey
 from app.profiles.models import Interest, InterestProfile, VoterProfileRow
 from app.profiles.service import AnonymousModeError, VoterProfileService
@@ -80,6 +82,8 @@ def profiles() -> ProfileContext:
 def profile_store(profiles: ProfileContext) -> None:
     transport = FakeZeroDBTransport()
     client = ZeroDBClient(transport=transport, project_id="proj-test", sleep=lambda _: None)
+    for table in PROFILE_TABLES:
+        client.create_table(table, TABLE_SCHEMAS[table])
     root = ProfileRootKey(TEST_ROOT_KEY)
     keyring = ProfileKeyring(client=client, root_key=root)
     profiles.client = client
@@ -127,9 +131,7 @@ def profile_with_n_primary(profiles: ProfileContext, count: int) -> None:
 @given(parsers.parse("a synthetic voter profile with {count:d} secondary interests"))
 def profile_with_n_secondary(profiles: ProfileContext, count: int) -> None:
     interests = [synthetic_interest(0)]
-    interests += [
-        synthetic_interest(index + 1, tier="secondary") for index in range(count)
-    ]
+    interests += [synthetic_interest(index + 1, tier="secondary") for index in range(count)]
     profiles.profile_payload = {"interests": interests, "evidence_mode": "blend"}
     _try_validate(profiles)
 
@@ -137,9 +139,7 @@ def profile_with_n_secondary(profiles: ProfileContext, count: int) -> None:
 @given(parsers.parse("a synthetic voter profile with {count:d} nice-to-have interests"))
 def profile_with_n_nice_to_have(profiles: ProfileContext, count: int) -> None:
     interests = [synthetic_interest(0)]
-    interests += [
-        synthetic_interest(index + 1, tier="nice_to_have") for index in range(count)
-    ]
+    interests += [synthetic_interest(index + 1, tier="nice_to_have") for index in range(count)]
     profiles.profile_payload = {"interests": interests, "evidence_mode": "blend"}
     _try_validate(profiles)
 

@@ -17,6 +17,8 @@ import os
 import pytest
 from cryptography.exceptions import InvalidTag
 
+from app.bootstrap import TABLE_SCHEMAS
+from app.profiles import PROFILE_TABLES
 from app.profiles.crypto import (
     DATA_KEY_BYTES,
     KEY_REF,
@@ -35,9 +37,13 @@ USER = "synthetic-user-1"
 
 @pytest.fixture
 def client() -> ZeroDBClient:
-    return ZeroDBClient(
+    zdb = ZeroDBClient(
         transport=FakeZeroDBTransport(), project_id="proj-test", sleep=lambda _: None
     )
+    # The fake 404s on an unknown table, as live ZeroDB does.
+    for table in PROFILE_TABLES:
+        zdb.create_table(table, TABLE_SCHEMAS[table])
+    return zdb
 
 
 @pytest.fixture
