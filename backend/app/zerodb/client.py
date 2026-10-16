@@ -584,6 +584,21 @@ class ZeroDBClient:
 
         Wraps `zerodb_graph_ontology_upsert`. Called once by story 1.3 with the
         entity types and predicates in datamodel.md.
+
+        **Confirmed live during this story: this is a REPLACE, not a merge.**
+        The call name says "upsert" and repeating it with the exact same full
+        payload is safe (it ends in the same state, not a duplicate), but a
+        call with a narrower `entity_types`/`predicates` than what is already
+        registered silently drops everything not included — there is no
+        merge-by-key behaviour the way `update_row` has. A live diagnostic
+        call with a two-entity-type, one-predicate payload during this story
+        replaced the real "informed" project's full 8-entity-type,
+        11-predicate ontology down to just those two before the next full
+        bootstrap run restored it. Every caller of this method MUST pass the
+        complete, current `entity_types`/`predicates` it wants registered —
+        never a partial update — exactly like `_bootstrap_ontology` already
+        does. See `graph_get_ontology` to read the current state first when
+        a caller needs to confirm what is registered before writing.
         """
         if not entity_types:
             raise ZeroDBValidationError("an ontology needs at least one entity type")
@@ -595,6 +610,33 @@ class ZeroDBClient:
         if constraints is not None:
             payload["constraints"] = constraints
         response = self._request("POST", "/public/memory/v2/graph/ontology", json=payload)
+        return self._parse(Ontology, response)
+
+    def graph_get_ontology(self) -> Ontology | None:
+        """Read the currently registered ontology, or None if never set.
+
+        Confirmed live during this story: `GET /public/memory/v2/graph/ontology`
+        (project id as a query parameter, like `create_vector_index`) returns
+        the full current `entity_types`/`predicates`. Used by
+        `_bootstrap_ontology` to check what was already registered BEFORE
+        writing, which is the only way to tell a genuine first registration
+        apart from a repeat call — `graph_upsert_ontology`'s own response
+        always echoes back exactly what was just sent, so checking the
+        write's response can never answer "was this already current".
+
+        Returns None for a project that has never registered an ontology,
+        tolerating `ZeroDBNotFoundError` the same way `get_schema_version`
+        tolerates a `schema_versions` table that does not exist yet — "no
+        ontology yet" is an ordinary answer, not an error.
+        """
+        try:
+            response = self._request(
+                "GET",
+                "/public/memory/v2/graph/ontology",
+                params={"project_id": self._project_id},
+            )
+        except ZeroDBNotFoundError:
+            return None
         return self._parse(Ontology, response)
 
     def graph_upsert_entity(

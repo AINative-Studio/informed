@@ -188,7 +188,7 @@ class FakeZeroDBTransport:
         segments = [segment for segment in path.split("/") if segment]
 
         if "graph" in segments:
-            return self._route_graph(segments[-1], body)
+            return self._route_graph(segments[-1], body, method)
         if segments[-2:] == ["vectors", "index"]:
             return self._route_vector_index(body, params)
         if segments[-2:] == ["vectors", "stats"]:
@@ -463,8 +463,20 @@ class FakeZeroDBTransport:
 
     # graph ----------------------------------------------------------------
 
-    def _route_graph(self, action: str, body: dict[str, Any]) -> ZeroDBResponse:
+    def _route_graph(self, action: str, body: dict[str, Any], method: str) -> ZeroDBResponse:
         if action == "ontology":
+            if method == "GET":
+                # Confirmed live during this story: GET returns the current
+                # registration, or 404 for a project that never registered
+                # one — mirrored here with `ontology` defaulting empty.
+                if not self.ontology:
+                    return _not_found("no ontology registered for this project")
+                return _ok(self.ontology)
+            # Confirmed live during this story: this is a REPLACE, not a
+            # merge — whatever is sent becomes the whole stored ontology,
+            # even if that drops entity types/predicates a prior call
+            # registered. See `ZeroDBClient.graph_upsert_ontology`'s
+            # docstring for the live incident this models.
             self.ontology = {
                 "entity_types": body.get("entity_types", []),
                 "predicates": body.get("predicates", {}),

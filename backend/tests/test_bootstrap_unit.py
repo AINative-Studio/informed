@@ -217,6 +217,59 @@ def test_second_run_never_calls_create_vector_index_again(
         )
 
 
+def test_first_ever_ontology_registration_is_not_already_current(
+    client: ZeroDBClient,
+) -> None:
+    """A project's first-ever bootstrap must NOT report the ontology as
+    already current — nothing existed before this call, so there is
+    nothing to have already had.
+
+    Confirmed live during this story: `graph_upsert_ontology`'s response
+    always echoes back exactly the `entity_types`/`predicates` just sent
+    (the fake's `_route_graph` models this faithfully). Checking "does the
+    response contain what I just sent" is therefore tautologically true on
+    every call, first-time or not, and never actually distinguishes a first
+    registration from a repeat one. This test fails against that logic and
+    only passes once `_bootstrap_ontology` reads the ontology's state
+    *before* writing to it, the same pattern already used for tables and
+    vector namespaces.
+    """
+    report = Bootstrapper(client, pace=lambda: None).run()
+    assert report.ontology_already_current is False
+
+
+def test_second_run_ontology_already_current_is_true(client: ZeroDBClient) -> None:
+    """A repeat run against a project that already has the full ontology
+    must report `ontology_already_current=True` — this is what lets
+    `BootstrapReport.is_noop` mean something real rather than being
+    accidentally correct only because tables/namespaces also stayed empty.
+    """
+    bootstrapper = Bootstrapper(client, pace=lambda: None)
+    bootstrapper.run()
+    second = bootstrapper.run()
+    assert second.ontology_already_current is True
+
+
+def test_ontology_upsert_is_a_replace_not_a_merge_so_bootstrap_must_send_everything(
+    client: ZeroDBClient, fake: FakeZeroDBTransport
+) -> None:
+    """Confirmed live during this story: `graph_upsert_ontology` REPLACES the
+    registered ontology with exactly what is sent — it does not merge. A
+    call with a narrower `entity_types`/`predicates` payload silently drops
+    everything not included (this is how a manual diagnostic call during
+    this story's live verification briefly wiped the real project's
+    ontology down to one entity pair before the next bootstrap run restored
+    it). The fake models this the same way. This bootstrap module is safe
+    only because it always sends the full, fixed `ONTOLOGY_ENTITY_TYPES` /
+    `ONTOLOGY_PREDICATES` sets on every call — this test pins that
+    assumption so a future edit that narrows the payload fails loudly
+    instead of silently truncating the live ontology.
+    """
+    Bootstrapper(client, pace=lambda: None).run()
+    assert set(fake.ontology["entity_types"]) == set(ONTOLOGY_ENTITY_TYPES)
+    assert set(fake.ontology["predicates"]) == set(ONTOLOGY_PREDICATES)
+
+
 # --- schema version -----------------------------------------------------------
 
 

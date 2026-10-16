@@ -35,13 +35,18 @@ What "idempotent" means for each primitive here:
 
 Rate limiting: the live "informed" project was observed to throttle at 60
 requests/minute (datamodel.md "Open questions"). A cold bootstrap makes
-roughly 31 calls (23 tables incl. `schema_versions` + 4 namespaces x 2 calls
-each [seed vector, then index] + 1 ontology + 1 schema-version write), close
-enough to that ceiling that this module paces every call through an
-injectable `pace` callback rather than relying on the client's retry-on-429
-as the only defense. The default pacer sleeps enough to keep calls at least
-`DEFAULT_MIN_INTERVAL_SECONDS` apart; tests inject a no-op or a recording
-pacer instead of waiting.
+roughly 32 calls (23 tables incl. `schema_versions` + 4 namespaces x 2 calls
+each [seed vector, then index] + 1 ontology read + 1 ontology write +
+1 schema-version write), close enough to that ceiling that this module paces
+every call through an injectable `pace` callback rather than relying on the
+client's retry-on-429 as the only defense. The default pacer sleeps enough to
+keep calls at least `DEFAULT_MIN_INTERVAL_SECONDS` apart; tests inject a
+no-op or a recording pacer instead of waiting.
+
+Rate limiting observed live during this story: a cold bootstrap against the
+real "informed" project completed in full (every table, namespace and the
+ontology) in about 39 seconds with zero 429s at the pacing below, so the
+60 req/min assumption was not contradicted and no pacing change was needed.
 """
 
 from __future__ import annotations
@@ -552,26 +557,38 @@ class Bootstrapper:
     def _bootstrap_ontology(self, report: BootstrapReport) -> None:
         """Register the ontology.
 
-        `graph_upsert_ontology` is a true upsert on ZeroDB's side (the client's
-        own docstring documents this), so calling it every run is safe: a
-        project that already has this exact ontology ends up in the same
-        state, not a duplicate. There is no `get_ontology` read on the client
-        to check first, so unlike tables and namespaces this step cannot skip
-        the call entirely on a repeat run — but it cannot create a second
-        ontology or a duplicate predicate either, which is what "idempotent"
-        requires here. `report.ontology_already_current` records whether the
-        registered definition already covered everything this bootstrap
-        wants, which is how tests distinguish "first registration" from
-        "re-affirmed, nothing new".
+        Calling `graph_upsert_ontology` every run is safe in the sense that
+        it never creates a second ontology or a duplicate predicate — but
+        **confirmed live during this story, it is a REPLACE, not a merge**
+        (see that method's docstring for the live incident this caused), so
+        unlike tables and namespaces this step cannot use "skip if it
+        already exists" as its idempotency guard; it always has to call
+        `graph_upsert_ontology` with the complete, fixed entity/predicate
+        sets to be safe, even on a repeat run.
+
+        What `report.ontology_already_current` means, and why it has to be
+        computed from a READ taken *before* this method writes anything:
+        `graph_upsert_ontology`'s own response always echoes back exactly
+        what was just sent, so a project with nothing registered yet and a
+        project that already had everything produce an identical-looking
+        response. Checking the write's response can therefore never tell
+        "first registration" apart from "re-affirmed, nothing new" — only a
+        read taken first can. That is exactly the bug this method had until
+        this story's live run surfaced it (the write-response check was
+        tautologically true on every call), fixed here the same way
+        `_previously_indexed_namespaces` already reads before writing.
         """
         self._pace()
-        result = self._client.graph_upsert_ontology(
+        previous = self._client.graph_get_ontology()
+        already_had_all = previous is not None and (
+            set(ONTOLOGY_ENTITY_TYPES) <= set(previous.entity_types)
+            and set(ONTOLOGY_PREDICATES) <= set(previous.predicates)
+        )
+        self._pace()
+        self._client.graph_upsert_ontology(
             entity_types=list(ONTOLOGY_ENTITY_TYPES),
             predicates=ONTOLOGY_PREDICATES,
         )
-        already_had_all = set(ONTOLOGY_ENTITY_TYPES) <= set(result.entity_types) and set(
-            ONTOLOGY_PREDICATES
-        ) <= set(result.predicates)
         report.ontology_registered = True
         report.ontology_already_current = already_had_all
 
