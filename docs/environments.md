@@ -303,6 +303,85 @@ PUT-not-POST idempotency mechanism, that no stored label or description names a
 political side, and that a live read through `StanceService` comes back in a
 varying order. Like the two seeds above, it leaves what it wrote in place.
 
+### `scripts/backfill_panel_review.py` — run it after both seeds
+
+The panel review workflow (story 3.3) gates unreviewed wording out of the
+`/v1/panel/published/*` reads. Those reads fail **closed**, so on a project
+whose ledger is empty they serve nothing at all. This script is what populates
+the ledger for wording that was published before the workflow existed:
+
+```sh
+set -a; . local.env; set +a
+python backend/scripts/backfill_panel_review.py
+```
+
+It writes one `panel_reviews` row per stored `issue_topics` and `stances` row —
+281 against the current corpus — each with `decision = grandfathered`. Expect
+roughly ten minutes: paced for the same 60 req/min ceiling, and each row is a
+find-then-write. It is idempotent, so a second run reports every row as already
+covered and writes nothing; a re-run after a real panel decision does not
+downgrade it.
+
+**`grandfathered` is not approval, and that is the point.** prd.md requires
+stance cards and the taxonomy to be reviewed by a cross-partisan advisory panel
+before each release, and lists the panel's own composition as an open question —
+so nothing in the live corpus has ever been reviewed. Marking it `approved`
+would put a false claim in the ledger whose whole value is that its claims are
+true; leaving it unmarked would blank the taxonomy picker and every stance card.
+`grandfathered` says what is true: **served, and still owed a review.**
+`reviewer_id` on every row is the literal `informed:story-3.3-backfill` rather
+than a person's name, and `GET /v1/panel/queue` reports all 281 rows as awaiting
+a real review until a named panel member decides on one.
+
+**Do not delete these rows.** They are what keeps the gated reads serving, and
+they are the record that this corpus predates the review workflow. Deleting them
+un-publishes the taxonomy for any caller on the gated paths.
+
+`backend/scripts/verify_panel_review_live.py` checks the whole workflow against
+the live project: that every live row carries a decision, that not one of them
+claims a panel approval, that the gated reads still serve the corpus, and then —
+on a **synthetic** card it creates and deletes — that unreviewed wording is
+withheld, that approving a proposal bumps `wording_version` while keeping the
+row's id, that a reviewer cannot approve their own proposal, and that the ledger
+is append-only. Unlike the three seed verifiers, this one **does** clean up: the
+grandfathering decisions over the real corpus stay, and the synthetic card plus
+every ledger row about it is deleted in a `finally`.
+
+**`/v1/panel/*` must not be routed from the public edge.** There is no
+authentication anywhere in this codebase yet, so `reviewer_id` is a body field
+that is recorded and not verified. A forged one on
+`POST /v1/panel/proposals/{id}/decision` lets a caller publish editorial wording
+to every voter. Until an auth story lands, keep this prefix off the public
+router — see `backend/app/panel_review/router.py`'s module docstring.
+
+### If ZeroDB calls 402 with `storage_limit_exceeded`
+
+Measured during story 3.3: the live `informed` project reports **1.7558 GB**
+stored against a **0.5 GB** plan limit, and the limit is enforced
+**non-deterministically**. A row insert was refused with
+`402 storage_limit_exceeded` partway through a run, and minutes later — with
+nothing deleted and nothing changed — the identical request shape succeeded, as
+did 281 more. Symptoms:
+
+- `POST .../rows` answers `402` with `{"error": "storage_limit_exceeded",
+  "current_storage_gb": 1.7558, "storage_limit_gb": 0.5, "action_required":
+  "Upgrade your plan to increase storage limit or delete existing data"}`.
+- Reads, in-place `PUT`s and `DELETE`s keep working throughout.
+- Retrying the same insert later often just works.
+
+What to do: **re-run the script.** Every bulk writer here is idempotent
+(`upsert` is find-then-write, and the review ledger's ids are content-addressed),
+so a run that died partway is repaired by running it again rather than by
+cleaning up. `ZeroDBClient` deliberately does **not** retry a 402 — it is not a
+throttle and retrying an over-quota write inside one request achieves nothing —
+so the failure is loud rather than silent.
+
+The 1.76 GB is almost certainly not row data: the whole project holds 832 rows
+across 8 non-empty tables, which is kilobytes. It is more likely vectors,
+indexes or per-project overhead, and
+`GET /projects/{id}/database/stats` answers 404 so there is no way to see the
+breakdown. Raised in datamodel.md's open questions for AINative.
+
 ### If ZeroDB calls 403 with `API_KEY_PROJECT_MISMATCH`
 
 A key's **name** on AINative's platform and the **project it is actually

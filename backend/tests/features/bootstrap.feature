@@ -11,7 +11,7 @@ Feature: Idempotent ZeroDB bootstrap (story 1.3)
 
   Scenario: Running bootstrap once creates all 22 datamodel.md tables plus the infrastructure tables
     When I run the bootstrap
-    Then exactly 24 tables exist
+    Then exactly 25 tables exist
     And the table "jurisdictions" exists
     And the table "people" exists
     And the table "roll_calls" exists
@@ -23,6 +23,9 @@ Feature: Idempotent ZeroDB bootstrap (story 1.3)
     # Story 14.1: wrapped per-user data keys, kept out of voter_profiles so
     # that shredding a key is independent of the profile row's lifecycle.
     And the table "voter_profile_keys" exists
+    # Story 3.3: the advisory panel's wording review ledger, kept out of
+    # issue_topics and stances so the seeders cannot wipe a review decision.
+    And the table "panel_reviews" exists
     And the table "schema_versions" exists
 
   Scenario: Running bootstrap once creates all 4 vector namespaces with HNSW indexes
@@ -57,7 +60,7 @@ Feature: Idempotent ZeroDB bootstrap (story 1.3)
   Scenario: Running bootstrap twice creates no duplicate tables
     Given the bootstrap has already run once
     When I run the bootstrap again
-    Then exactly 24 tables exist
+    Then exactly 25 tables exist
 
   Scenario: Running bootstrap twice creates no duplicate vector namespaces
     Given the bootstrap has already run once

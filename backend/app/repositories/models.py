@@ -75,6 +75,55 @@ VerdictValue = Literal["kept", "partial", "broken", "no_opportunity", "absent", 
 #: datamodel.md: "`qa_status` takes `pending`, `approved` or `rejected`".
 QaStatus = Literal["pending", "approved", "rejected"]
 
+#: What a cross-partisan advisory panel decided about one row's wording
+#: (story 3.3; prd.md: "stance cards and issue taxonomy reviewed by a
+#: cross-partisan advisory panel before each release").
+#:
+#: Five values. Two of them are decisions in the ordinary sense, and the other
+#: three each exist because a real state in this workflow has no honest
+#: spelling among the first two:
+#:
+#:   * `approved` — a named panel member read this wording and passed it. With
+#:     `grandfathered`, the only value that lets wording through
+#:     `PanelReviewService`'s gated read path.
+#:   * `rejected` — a named panel member read it and refused it, with a reason
+#:     (required; see `PanelReview._a_rejection_says_why`).
+#:   * `proposed` — an author has offered new wording and nobody has judged it
+#:     yet. It is in the ledger because a proposal must be *findable* by a
+#:     reviewer and *visible* in the public history prd.md promises, and it is
+#:     a `decision` value rather than a separate table because "what was
+#:     proposed" and "what was decided about it" belong in one ordered record
+#:     that cannot disagree with itself. It never passes the gate.
+#:   * `withdrawn` — a proposal its own author pulled before anyone reviewed
+#:     it. Recorded rather than deleted, because the ledger is append-only and
+#:     "this wording was floated and dropped" is part of that same public
+#:     record.
+#:   * `grandfathered` — **not** approval. Stories 3.1 and 3.2 seeded the live
+#:     taxonomy and stance corpus before this workflow existed, so those rows
+#:     have never been through a panel. Marking them `approved` would be a lie
+#:     about a review that did not happen; leaving them unmarked would make
+#:     every gated read empty and take the product down. This value says
+#:     exactly what is true: serving, and still owed a review. See
+#:     `app.panel_review.service.PanelReviewService.grandfather_existing_corpus`.
+#:
+#: There is deliberately **no `pending`**, which `proposed` is not a synonym
+#: for. `proposed` is a thing someone did; "pending" would be the absence of a
+#: decision, and the absence of a decision is already represented by the
+#: absence of a row. A ledger storing both would have to distinguish "no row"
+#: from "a row saying nothing", and they mean the same thing to the gate. What
+#: a reviewer queue needs — rows with no approval yet — is computed by
+#: `PanelReviewService.queue` from what is and is not in the ledger.
+ReviewDecision = Literal["approved", "rejected", "proposed", "withdrawn", "grandfathered"]
+
+#: The tables story 3.3's review ledger passes judgement on: the two carrying
+#: panel-reviewed editorial wording. A `Literal` rather than a bare string
+#: because `PanelReview.subject_table` is resolved to a real table by
+#: `PanelReviewService`, and a typo'd table name would store a decision that
+#: no gate ever reads — the row would then serve unreviewed wording while the
+#: ledger showed it approved, which is the one failure this whole story exists
+#: to prevent.
+ReviewSubjectTable = Literal["issue_topics", "stances"]
+
 #: The scale a jurisdiction legislates at. datamodel.md's `jurisdictions` row
 #: carries a `level` field and gives `us-federal`, `eu` and `uk` as its id
 #: examples, without enumerating the vocabulary; these are the levels those
@@ -750,6 +799,178 @@ class CandidatePosition(RowModel):
 
 
 # --- Governance and provenance --------------------------------------------
+
+
+class PanelReview(RowModel):
+    """One panel decision about one row's wording, keyed `pr:{sha256}` (3.3).
+
+    prd.md: "Stance cards and issue taxonomy reviewed by a cross-partisan
+    advisory panel before each release; wording changes are versioned and
+    public." This is the ledger that makes "reviewed" a fact the code can check
+    instead of a claim in a release note.
+
+    Why a separate table rather than a status field on the reviewed row
+    ===================================================================
+
+    The obvious alternative — add `review_status`, `reviewed_by`,
+    `reviewed_at` to `issue_topics` and `stances` — was rejected on four
+    counts, each of which is on its own close to decisive:
+
+      1. **The seeders would wipe it.** `app.seed_taxonomy.TaxonomySeeder` and
+         `app.seed_stances.StanceSeeder` are documented as the single source of
+         truth for their corpora and deliberately *restate* every row on every
+         run ("a hand-edited label is restored on the next seed"). A status
+         field on a stance row would be silently reset to the seeder's literal
+         on the next `scripts/seed_stances.py`, which is the precise failure
+         mode — unreviewed wording presenting as reviewed — this story exists
+         to prevent.
+      2. **A decision is history, not state.** prd.md promises wording changes
+         are "versioned and public"; a single `reviewed_by` column holds the
+         last reviewer and loses every earlier one, so "who passed the wording
+         this card shipped under" becomes unanswerable the moment a second
+         reviewer touches it. The third acceptance criterion is literally "the
+         review history is visible", and a field cannot hold a history.
+      3. **datamodel.md fixes those tables' fields.** `issue_topics` is
+         documented with exactly `parent_id, name, locale, taxonomy_version`
+         and `stances` with exactly `topic_id, label, description,
+         direction_code, wording_version`. Both models set `extra="forbid"`
+         and both have tests pinning the absence of extra fields (`stances`
+         pins it hard, because that is how "no stance is preselected" is
+         enforced structurally). Adding review columns means contradicting the
+         data model and loosening the guard that keeps a `default: true` out of
+         a stance row.
+      4. **It would mean writing to 281 already-live rows.** The live project
+         holds 80 `issue_topics` and 201 `stances` rows that four endpoints
+         (stories 3.5, 4.1, 4.2, 4.4) read on every request. A separate ledger
+         annotates them by id without touching a byte of them.
+
+    The cost of the separate table, stated plainly: reading a row's status is a
+    second read, and nothing in ZeroDB enforces that `subject_id` names a real
+    row. The first is cheap at these sizes (both corpora fit in one page, and
+    `PanelReviewService` reads the ledger once per request). The second is
+    datamodel.md rule 5's standing answer — "integrity lives in code" — and is
+    handled by `references` below, so the repository refuses a decision about a
+    row that does not exist.
+
+    Why the id is content-addressed
+    ===============================
+
+    `pr:{sha256}` of (subject_table, subject_id, version, reviewer_id,
+    decision, reason, proposed-wording) — the same scheme `provenance_log`
+    uses, and for the same reason: it makes the write idempotent without any
+    bookkeeping. Re-running the grandfathering backfill, or a reviewer
+    double-clicking approve, lands on a row that already exists rather than
+    appending a second identical decision. Two *different* decisions about the
+    same row hash differently and both persist, which is exactly right for a
+    ledger — see `app.panel_review.service.review_id`.
+
+    A sequential `{subject_id}:v{n}` id with `Repository.append_version` was
+    the alternative and is wrong here twice over: it would make a repeated
+    backfill append 281 duplicate rows per run, and `is_current` is the wrong
+    model for a ledger whose whole value is that every entry stays readable.
+    Which decision is in force is derived by `PanelReviewService` from
+    `decided_at` plus the subject's current version, not from a flag.
+
+    Fields
+    ======
+
+    `subject_version` is the `wording_version` (for a stance) or
+    `taxonomy_version` (for a topic) that the reviewer actually read. It is the
+    load-bearing field of the whole gate: an approval of version 1 says nothing
+    about version 2, so bumping a version re-opens the question automatically
+    rather than carrying an old approval forward. `PanelReviewService` refuses
+    a decision naming a version the row is not at, so a reviewer cannot approve
+    wording that has already moved under them.
+
+    `reviewer_id` is a plain string and an explicit authentication stand-in,
+    exactly as `user_id` is in `app.profiles.router` (see that module's
+    docstring): no auth layer exists anywhere in this codebase yet, and
+    inventing one here would be a different story. It is recorded rather than
+    verified, and the honest consequence is that this ledger proves *what was
+    claimed*, not *who claimed it*, until real authentication arrives. That is
+    still strictly more than nothing — it is the difference between a release
+    note saying "reviewed" and a row naming a reviewer, a version and a time —
+    and it is flagged in this story's PR as the open question it is.
+
+    **Panel composition is deliberately not modelled.** prd.md lists "who sits
+    on the cross-partisan advisory panel, and how members are chosen" as an
+    open question, and it is a governance decision rather than an engineering
+    one. There is no `panel_members` table, no roster check and no quorum rule:
+    this story builds the *workflow*, and a later story adds the roster once
+    the business answers who is on it. What is enforced is the one rule that
+    holds whatever the roster turns out to be — a reviewer may not approve
+    their own proposal (`PanelReviewService` checks it, not this model, because
+    it needs the proposal's author).
+
+    `proposed_label`/`proposed_description`/`proposed_name` carry the *new*
+    wording a proposal asks for, so the live row keeps its approved wording
+    until the change is approved. `previous_label`/`previous_description`/
+    `previous_name` carry what it replaced, which is what makes "the history
+    shows what changed" answerable from the ledger alone rather than by
+    diffing against a seeder constant that may itself have moved.
+    """
+
+    table_name: ClassVar[str] = "panel_reviews"
+    #: `subject_id` is NOT declared here even though it names a real row: the
+    #: generic reference check maps one field to one fixed table, and this
+    #: field's table is whichever `subject_table` names. `PanelReviewService`
+    #: resolves it explicitly before every write — the same split
+    #: `ProvenanceLog` documents for its own `entity_table`/`entity_id` pair.
+    references: ClassVar[dict[str, str]] = {}
+
+    subject_table: ReviewSubjectTable
+    subject_id: str = Field(min_length=1)
+    subject_version: int = Field(ge=1)
+    decision: ReviewDecision
+    reviewer_id: str = Field(min_length=1)
+    decided_at: str
+    #: Why a reviewer refused the wording. Required for `rejected` (see the
+    #: validator): a rejection without a reason is unactionable — the author
+    #: cannot write a better version from it — and prd.md's "public" promise
+    #: about wording changes is empty if the record does not say what was wrong.
+    reason: str | None = None
+    #: The proposal this decision judges, when it judges one rather than the
+    #: live row. None for a plain approval of wording already stored.
+    proposal_id: str | None = None
+    proposed_label: str | None = None
+    proposed_description: str | None = None
+    proposed_name: str | None = None
+    previous_label: str | None = None
+    previous_description: str | None = None
+    previous_name: str | None = None
+
+    @model_validator(mode="after")
+    def _a_rejection_says_why(self) -> PanelReview:
+        """A rejected wording must carry its reason; see `reason`."""
+        if self.decision == "rejected" and not (self.reason or "").strip():
+            raise ValueError(
+                f"panel review of {self.subject_id!r} rejects the wording but gives no "
+                "reason; a rejection the author cannot act on is not a review"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _a_topic_is_not_judged_on_stance_wording(self) -> PanelReview:
+        """Keep each subject table's wording fields to its own.
+
+        A decision about an `issue_topics` row carrying `proposed_label` (a
+        `stances` field) means the caller resolved the wrong table or the wrong
+        row, and the stored decision would then be read as being about wording
+        it never judged. Cheap to reject, invisible downstream.
+        """
+        if self.subject_table == "issue_topics" and (
+            self.proposed_label is not None or self.proposed_description is not None
+        ):
+            raise ValueError(
+                f"panel review of issue topic {self.subject_id!r} carries stance wording; "
+                "a topic has a name, not a label and description"
+            )
+        if self.subject_table == "stances" and self.proposed_name is not None:
+            raise ValueError(
+                f"panel review of stance {self.subject_id!r} carries a topic name; "
+                "a stance has a label and description, not a name"
+            )
+        return self
 
 
 class ProvenanceLog(RowModel):

@@ -74,7 +74,7 @@ logger = logging.getLogger(__name__)
 #: Current schema version this module bootstraps. Bump when a table, field,
 #: namespace or ontology predicate changes shape; the bootstrap script does
 #: not infer this from the tables it creates.
-SCHEMA_VERSION = "1.3.0"
+SCHEMA_VERSION = "1.4.0"
 
 #: The row id `schema_versions` is written and read under. One row, always
 #: this id: the table is a meta-table about the schema itself, not a history
@@ -358,6 +358,42 @@ TABLE_SCHEMAS: dict[str, dict[str, str]] = {
         "key_ref": "string",
         "created_at": "string",
     },
+    # Story 3.3: the cross-partisan advisory panel's review ledger over the
+    # wording in `issue_topics` and `stances`.
+    #
+    # Infrastructure rather than one of datamodel.md's 22 for the same reason
+    # `voter_profile_keys` is: datamodel.md describes no table for it, and both
+    # of the tables it judges are fixed there at their documented field lists.
+    # prd.md, not datamodel.md, is what requires it — "stance cards and issue
+    # taxonomy reviewed by a cross-partisan advisory panel before each release;
+    # wording changes are versioned and public" — and a documented rule that
+    # cannot be implemented is the same situation story 14.1 was in.
+    #
+    # A separate table rather than status columns on the reviewed rows, which
+    # is argued at length in `app.repositories.models.PanelReview`: the
+    # seeders restate every row on each run and would wipe a status field, a
+    # decision is history rather than state, and 281 live rows are read by
+    # four endpoints that must not be touched to add a review workflow.
+    #
+    # Nothing here is voter data: the rows name editorial wording and the
+    # reviewer who judged it, never a voter, a profile or a score.
+    "panel_reviews": {
+        "id": "string",
+        "subject_table": "string",
+        "subject_id": "string",
+        "subject_version": "number",
+        "decision": "string",
+        "reviewer_id": "string",
+        "decided_at": "string",
+        "reason": "string",
+        "proposal_id": "string",
+        "proposed_label": "string",
+        "proposed_description": "string",
+        "proposed_name": "string",
+        "previous_label": "string",
+        "previous_description": "string",
+        "previous_name": "string",
+    },
     # --- Bootstrap's own meta-table -----------------------------------------
     "schema_versions": {
         "id": "string",
@@ -375,11 +411,13 @@ TABLE_SCHEMAS: dict[str, dict[str, str]] = {
 #: rather than by miscount.
 DATAMODEL_TABLE_COUNT = 22
 
-#: `schema_versions` (story 1.3's own bookkeeping) and `voter_profile_keys`
-#: (story 14.1's wrapped data keys). Neither holds product data; both exist so
-#: a documented rule — idempotent bootstrap, and "key shredded on delete" —
-#: can actually be implemented.
-INFRASTRUCTURE_TABLES = ("schema_versions", "voter_profile_keys")
+#: `schema_versions` (story 1.3's own bookkeeping), `voter_profile_keys`
+#: (story 14.1's wrapped data keys) and `panel_reviews` (story 3.3's wording
+#: review ledger). None holds product data in datamodel.md's sense; all three
+#: exist so a documented rule — idempotent bootstrap, "key shredded on
+#: delete", "reviewed by a cross-partisan advisory panel before each release" —
+#: can actually be implemented rather than asserted in a release note.
+INFRASTRUCTURE_TABLES = ("schema_versions", "voter_profile_keys", "panel_reviews")
 
 assert len(TABLE_SCHEMAS) == DATAMODEL_TABLE_COUNT + len(INFRASTRUCTURE_TABLES), (
     f"expected {DATAMODEL_TABLE_COUNT} datamodel.md tables plus "
