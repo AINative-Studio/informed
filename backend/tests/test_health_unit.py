@@ -22,7 +22,9 @@ def test_routes_are_only_the_ones_built_so_far(client: TestClient) -> None:
     story 3.5 added `/v1/topics/suggest`; stories 4.2/4.4 add the
     tier-weights read and the profile load endpoint; story 3.3 adds the
     `/v1/panel` review surface; story 12.2 adds the public `/v1/methodology`
-    page and its changelog; story 15.1 adds the follow/unfollow endpoints.
+    page and its changelog; story 15.1 adds the follow/unfollow endpoints;
+    story 12.4 adds the public correction form and the reporter's status
+    lookup.
 
     Replaces story 1.1's "health is the only route" assertion, whose own
     docstring named 1.5 as the story that would change it, and that story's
@@ -67,7 +69,29 @@ def test_routes_are_only_the_ones_built_so_far(client: TestClient) -> None:
         "/v1/methodology",
         "/v1/methodology/versions",
         "/v1/methodology/{version}",
+        # Story 12.4: the public correction form and the reporter's own status
+        # lookup. `POST /v1/corrections` is the first uncredentialed WRITE in
+        # this API — prd.md's "public correction form on every claim" cannot be
+        # behind a login, since the people most likely to spot an error about a
+        # candidate are the least likely to hold an account.
+        #
+        # Note what is NOT here: there is no `PATCH`/`PUT` on a correction, so
+        # nothing in this list lets a caller change a report's status.
+        # `CorrectionService.set_status` is a service method reached by
+        # `scripts/triage_correction.py`, deliberately unmounted until an auth
+        # story lands — see `app.corrections.service`'s module docstring, which
+        # is explicit that an unauthenticated status write would let anyone
+        # mark an inconvenient correction `rejected`.
+        "/v1/corrections",
+        "/v1/corrections/{tracking_token}",
     }
+
+    # Story 12.4's deliberate omission, asserted rather than only described:
+    # no mounted route can change a correction's status. The kind of gap a
+    # later story closes on purpose, and must not close by accident.
+    schema = client.get("/openapi.json").json()["paths"]
+    assert set(schema["/v1/corrections"]) == {"post"}
+    assert set(schema["/v1/corrections/{tracking_token}"]) == {"get"}
 
     # `/v1/profiles/methodology` (4.2) and `/v1/methodology` (12.2) read the
     # same ZeroDB table and are deliberately NOT merged. The first is the
@@ -88,10 +112,10 @@ def test_routes_are_only_the_ones_built_so_far(client: TestClient) -> None:
     assert "/v1/topics" in paths
     assert "/v1/topics/{topic_id}/stances" in paths
 
-    # The remaining Core API endpoints are genuinely absent, not merely untested.
+    # The remaining Core API endpoints are genuinely absent, not merely
+    # untested. `/v1/corrections` left this list in story 12.4.
     for not_yet in (
         "/v1/candidates/some-id/alignment",
         "/v1/agent/ask",
-        "/v1/corrections",
     ):
         assert client.get(not_yet).status_code == 404

@@ -306,6 +306,14 @@ TABLE_SCHEMAS: dict[str, dict[str, str]] = {
         "status": "string",
         "sla_due_at": "string",
         "resolved_at": "string",
+        # Story 12.4 adds these two to datamodel.md's documented field list,
+        # and `app/corrections/models.py` argues both: `created_at` is what
+        # `sla_due_at` is defined relative to (without it, "was this triaged
+        # late" is unanswerable after the fact and the SLA is unauditable),
+        # and `tracking_token_hash` is how a reporter with no account checks
+        # their own status — a sha256 digest, never a token.
+        "created_at": "string",
+        "tracking_token_hash": "string",
     },
     "audit_runs": {
         "id": "string",

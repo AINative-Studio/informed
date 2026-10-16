@@ -115,9 +115,7 @@ def _iso(moment: datetime) -> str:
     return moment.isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
-def _submit(
-    api: TestClient, seen: dict[str, Any], payload: dict[str, Any]
-) -> None:
+def _submit(api: TestClient, seen: dict[str, Any], payload: dict[str, Any]) -> None:
     """POST a correction and remember the id and token it hands back."""
     seen["response"] = api.post("/v1/corrections", json=payload)
     assert "authorization" not in {key.lower() for key in seen["response"].request.headers}, (
@@ -183,17 +181,17 @@ def _table_exists(zerodb: ZeroDBClient) -> None:
     assert any(table.table_name == TABLE_NAME for table in tables)
 
 
-@given(parsers.parse("a correction submitted {hours:g} hours ago and never triaged"))
-def _submitted_hours_ago(
-    service: CorrectionService, seen: dict[str, Any], hours: float
-) -> None:
-    _plant(service, seen, created_hours_ago=hours)
+#: Accepts both "1 hour ago" and "73 hours ago" so the Gherkin reads as
+#: English. `parsers.parse`'s `{n:g}` does not match an optional plural, and a
+#: scenario that had to say "1.0 hours" to satisfy a parser is a scenario
+#: written for the test framework rather than for a reader.
+@given(parsers.re(r"a correction submitted (?P<hours>[\d.]+) hours? ago and never triaged"))
+def _submitted_hours_ago(service: CorrectionService, seen: dict[str, Any], hours: str) -> None:
+    _plant(service, seen, created_hours_ago=float(hours))
 
 
 @given(parsers.parse("a correction submitted {days:g} days ago and never triaged"))
-def _submitted_days_ago(
-    service: CorrectionService, seen: dict[str, Any], days: float
-) -> None:
+def _submitted_days_ago(service: CorrectionService, seen: dict[str, Any], days: float) -> None:
     _plant(
         service,
         seen,
@@ -281,9 +279,7 @@ def _ops_reopens(service: CorrectionService, seen: dict[str, Any]) -> None:
 
 
 @when(parsers.parse('the ops team tries to set the status to "{status}"'))
-def _ops_sets_bad_status(
-    service: CorrectionService, seen: dict[str, Any], status: str
-) -> None:
+def _ops_sets_bad_status(service: CorrectionService, seen: dict[str, Any], status: str) -> None:
     try:
         service.set_status(seen["correction_id"], status=status)
     except (ValueError, UnknownCorrectionError) as exc:
@@ -296,13 +292,9 @@ def _ops_sets_bad_status(
 
 
 @when(
-    parsers.parse(
-        'anyone submits a correction about stance "{target_id}" with no authentication'
-    )
+    parsers.parse('anyone submits a correction about stance "{target_id}" with no authentication')
 )
-def _submit_about_stance(
-    corrections_api: TestClient, seen: dict[str, Any], target_id: str
-) -> None:
+def _submit_about_stance(corrections_api: TestClient, seen: dict[str, Any], target_id: str) -> None:
     _submit(
         corrections_api,
         seen,
@@ -311,9 +303,7 @@ def _submit_about_stance(
 
 
 @when(parsers.parse('anyone submits a correction against target table "{table}"'))
-def _submit_bad_table(
-    corrections_api: TestClient, seen: dict[str, Any], table: str
-) -> None:
+def _submit_bad_table(corrections_api: TestClient, seen: dict[str, Any], table: str) -> None:
     _submit(
         corrections_api,
         seen,
@@ -340,9 +330,7 @@ def _submit_no_email(corrections_api: TestClient, seen: dict[str, Any]) -> None:
 
 
 @when(parsers.parse('anyone submits a correction with contact email "{email}"'))
-def _submit_with_email(
-    corrections_api: TestClient, seen: dict[str, Any], email: str
-) -> None:
+def _submit_with_email(corrections_api: TestClient, seen: dict[str, Any], email: str) -> None:
     _submit(
         corrections_api,
         seen,
@@ -366,9 +354,7 @@ def _first_reporter_checks(corrections_api: TestClient, seen: dict[str, Any]) ->
 
 
 @when(parsers.parse('someone checks the status with tracking token "{token}"'))
-def _someone_checks(
-    corrections_api: TestClient, seen: dict[str, Any], token: str
-) -> None:
+def _someone_checks(corrections_api: TestClient, seen: dict[str, Any], token: str) -> None:
     seen["response"] = corrections_api.get(f"/v1/corrections/{token}")
 
 
@@ -398,9 +384,7 @@ def _status_is(seen: dict[str, Any], status: int) -> None:
 
 @then(parsers.parse('the correction is stored with status "{status}"'))
 @then(parsers.parse('the correction is stored with status "{status}"'))
-def _stored_with_status(
-    zerodb: ZeroDBClient, seen: dict[str, Any], status: str
-) -> None:
+def _stored_with_status(zerodb: ZeroDBClient, seen: dict[str, Any], status: str) -> None:
     assert _stored(zerodb, seen).status == status
 
 
@@ -410,9 +394,7 @@ def _id_prefix(seen: dict[str, Any], prefix: str) -> None:
 
 
 @then(parsers.parse('the stored correction targets table "{table}" and id "{target_id}"'))
-def _stored_target(
-    zerodb: ZeroDBClient, seen: dict[str, Any], table: str, target_id: str
-) -> None:
+def _stored_target(zerodb: ZeroDBClient, seen: dict[str, Any], table: str, target_id: str) -> None:
     stored = _stored(zerodb, seen)
     assert stored.target_table == table
     assert stored.target_id == target_id
@@ -440,9 +422,7 @@ def _stored_email(zerodb: ZeroDBClient, seen: dict[str, Any], email: str) -> Non
 
 
 @then(parsers.parse("the stored correction is due for triage {hours:d} hours after it was created"))
-def _sla_is_hours_after(
-    zerodb: ZeroDBClient, seen: dict[str, Any], hours: int
-) -> None:
+def _sla_is_hours_after(zerodb: ZeroDBClient, seen: dict[str, Any], hours: int) -> None:
     stored = _stored(zerodb, seen)
     created = datetime.fromisoformat(stored.created_at.replace("Z", "+00:00"))
     due = datetime.fromisoformat(stored.sla_due_at.replace("Z", "+00:00"))
