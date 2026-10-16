@@ -145,7 +145,7 @@ class _StubTransport(httpx.BaseTransport):
 def _patch_get(monkeypatch: pytest.MonkeyPatch, stub: _StubTransport, *, module: str) -> None:
     def fake_get(url: str, **kwargs: Any) -> httpx.Response:
         with httpx.Client(transport=stub) as client:
-            return client.get(url, params=kwargs.get("params"))
+            return client.get(url, params=kwargs.get("params"), headers=kwargs.get("headers"))
 
     monkeypatch.setattr(f"{module}.httpx.get", fake_get)
 
@@ -161,6 +161,21 @@ def test_fetch_campaign_page_returns_the_body_and_content_type(
     assert page.html == "<html>hi</html>"
     assert page.content_type == "text/html; charset=utf-8"
     assert page.url == "https://example.test/"
+
+
+def test_fetch_campaign_page_sends_a_browser_user_agent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Confirmed necessary live: two of three real sites 403 without one.
+
+    See `DEFAULT_USER_AGENT`'s docstring for the full live finding.
+    """
+    stub = _StubTransport()
+    _patch_get(monkeypatch, stub, module="app.ingest.campaign_sites")
+
+    fetch_campaign_page("https://example.test/")
+
+    sent = stub.requests[0].headers.get("user-agent", "")
+    assert "python-httpx" not in sent
+    assert "Mozilla" in sent
 
 
 def test_fetch_campaign_page_raises_on_a_non_200(monkeypatch: pytest.MonkeyPatch) -> None:
