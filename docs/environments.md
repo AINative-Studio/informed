@@ -210,3 +210,44 @@ as part of closing out story 1.6; see the PR for the result.
 | Three ZeroDB projects exist | **Pending** — documented above as a follow-up; this session's ZeroDB access is a shared org-wide account without a clear path to scope new projects into Informed's workspace. Pattern, naming (`informed-dev`/`informed-staging`/`informed-prod`), and env-var contract are fully specified so provisioning is a mechanical step once workspace access is confirmed. |
 | Keys stored in the secret manager | **Documented** — GitHub Actions encrypted secrets, one GitHub Environment per deployment target (`dev`/`staging`/`prod`), plus gitignored local env files for local dev. Actual key minting depends on the projects above existing. |
 | No keys appear in the repo | **Done** — `.env.example` has placeholders only; `local.env`/`.env`/`*.local.env`/per-env override files are gitignored; a repo-wide scan for live-looking key patterns found nothing in tracked or staged files before this PR was opened. |
+
+## Deployment targets: none provisioned yet (noted by story 1.5)
+
+Story 1.5's second acceptance criterion is "deployed to staging", and it could
+**not** be met, because there is no staging environment to deploy to. Checked
+while closing out story 1.5, in this repo and its CI config:
+
+- `.github/workflows/` contains `ci.yml` and nothing else — no deploy job, no
+  `environment:` declaration, no release workflow.
+- There is no `Dockerfile`, `docker-compose.yml`, `fly.toml`, `railway.json`,
+  `vercel.json`, Procfile, Helm chart or Terraform anywhere in the tree. The
+  backend has no container or process definition; the frontend has a Vite build
+  and a local `vite preview`, used only by the BDD runner.
+- The three ZeroDB projects a staging deploy would need are themselves still
+  **Pending** (the row above), so even a hand-rolled deploy would have no
+  staging data layer to point at.
+
+Story 1.5 deliberately did **not** invent one. Standing up a hosting target,
+choosing a platform, and wiring deploy credentials is infrastructure work with
+its own decisions (where it runs, who pays, what the domain is, how secrets
+reach it) and its own security review. Bolting a guessed-at pipeline onto a
+walking-skeleton story would commit the project to all of that as a side
+effect, and a pipeline that deploys to nothing is worse than none: it reports
+green.
+
+**Follow-up, tracked, not satisfied by story 1.5:**
+
+- [ ] Choose and provision a hosting target for the FastAPI backend and the
+      React build (per environment).
+- [ ] Add a deploy workflow with a GitHub Environment per target, reading the
+      per-environment ZeroDB secrets named above.
+- [ ] Provision the three ZeroDB projects (the row above) so staging has its
+      own isolated data layer.
+- [ ] Then re-check story 1.5's "deployed to staging" criterion against a real
+      staging URL, and record it here.
+
+Until those exist, "deployed to staging" cannot be claimed for any story, and
+no story should claim it. What story 1.5 *did* prove, against the live
+"informed" ZeroDB project rather than a fake, is the full React → FastAPI →
+ZeroDB path: see `backend/scripts/verify_ballot_live.py` and story 1.5's PR for
+the run output.
