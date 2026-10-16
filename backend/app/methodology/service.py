@@ -23,6 +23,8 @@ and useless for this one.
 
 from __future__ import annotations
 
+import logging
+
 from app.methodology.models import (
     MethodologyVersionsResponse,
     PublishedMethodology,
@@ -41,6 +43,11 @@ from app.zerodb.errors import ZeroDBNotFoundError
 #: so this is many years of headroom, and `versions()` warns rather than
 #: silently truncating if a page ever comes back full.
 PAGE_SIZE = 500
+
+#: Nothing voter-derived is reachable from this module, so this logger cannot
+#: leak political-opinion data the way one in `app.profiles` could. It carries
+#: row counts and table names only — never a row's contents.
+logger = logging.getLogger(__name__)
 
 
 class PublicMethodologyService:
@@ -91,6 +98,20 @@ class PublicMethodologyService:
         of someone loading a page.
         """
         page = self._client.query_rows(TABLE_NAME, limit=PAGE_SIZE)
+        if page.has_more or len(page.rows) >= PAGE_SIZE:
+            # A silently truncated changelog is the worst failure this endpoint
+            # has: it would read as a complete history while omitting versions,
+            # on a page whose entire purpose is that the history is complete.
+            # `methodology_versions` should never approach PAGE_SIZE, so this
+            # firing means something other than a methodology publication is
+            # writing to the table. Logged rather than raised — serving a
+            # partial changelog beats serving none — and `verify_public_
+            # methodology_live.py` reports the live row count on every run.
+            logger.warning(
+                "methodology_versions returned a full page of %d row(s); the published "
+                "changelog may be omitting versions",
+                len(page.rows),
+            )
         published = [_publish(MethodologyVersion.model_validate(row.row_data)) for row in page.rows]
         # Sorted by `published_at`, NOT by the id as a string: datamodel.md's
         # pattern is `{year}.{sequence}`, so the tenth methodology of 2026 is

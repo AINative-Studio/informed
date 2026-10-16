@@ -200,6 +200,50 @@ def test_versions_sort_by_published_at_not_by_id_string(
     assert [entry.version for entry in service.versions()] == ["2026.10", "2026.9"]
 
 
+def test_a_truncated_changelog_read_is_logged_rather_than_served_silently(
+    zerodb: ZeroDBClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A silently truncated changelog is this endpoint's worst failure mode.
+
+    It would read as a complete history while omitting versions, on the one
+    page whose entire purpose is that the history is complete. Driven with a
+    tiny page size rather than 500 real rows: the behaviour under test is
+    "notice the page was full", not ZeroDB's paging.
+
+    Logged rather than raised — a partial changelog beats no changelog — and
+    the log line carries only a count, never a row's contents.
+    """
+    import app.methodology.service as service_module
+
+    for index in range(3):
+        version = f"2026.{index + 1}"
+        zerodb.upsert_row(
+            TABLE_NAME,
+            version,
+            {
+                "id": version,
+                "published_at": f"2026-0{index + 1}-01T00:00:00Z",
+                "weights": {"tiers": dict(DEFAULT_TIER_WEIGHTS)},
+                "changelog_url": f"https://informed.example/methodology/{version}",
+                "is_current": index == 2,
+            },
+        )
+
+    with (
+        pytest.MonkeyPatch.context() as patch,
+        caplog.at_level("WARNING", logger=service_module.__name__),
+    ):
+        patch.setattr(service_module, "PAGE_SIZE", 2)
+        listed = PublicMethodologyService(zerodb).versions()
+
+    assert len(listed) == 2, "the point of the fixture is that the page came back full"
+    assert "may be omitting versions" in caplog.text
+    # The warning names a count, not a row. Nothing in this table is voter
+    # data, but logging row contents by default is not a habit to form in a
+    # repo whose other tables hold political-opinion data.
+    assert "changelog_url" not in caplog.text
+
+
 def test_versions_on_an_empty_table_is_an_empty_list_not_a_seed(
     service: PublicMethodologyService, zerodb: ZeroDBClient
 ) -> None:
