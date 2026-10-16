@@ -20,7 +20,9 @@ Three layers are tested here, in the order they fail:
 
 from __future__ import annotations
 
+import textwrap
 import types
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -29,10 +31,13 @@ from app.bootstrap import Bootstrapper
 from app.repositories import MissingProvenanceError, ProvenanceContext, Repository
 from app.repositories.models import Person, ProvenanceLog, RollCall, RowModel
 from app.repositories.provenance import (
+    ProvenanceViolation,
+    check_source,
     content_hash_for,
     models_requiring_provenance,
     provenance_id,
     write_provenance,
+    write_provenance_for_row,
 )
 from app.zerodb import ZeroDBClient
 from app.zerodb.testing import FakeZeroDBTransport
@@ -366,3 +371,125 @@ def test_models_requiring_provenance_is_derived_not_hardcoded() -> None:
     )
     discovered = models_requiring_provenance(namespace=namespace)
     assert discovered == (FutureSourcedRow,)
+
+
+# =========================================================================
+# 4. The static check's boundaries, stated as tests
+# =========================================================================
+
+PROBE = Path("probe.py")
+
+
+def _check(source: str) -> list[ProvenanceViolation]:
+    return check_source(textwrap.dedent(source), module=PROBE)
+
+
+def test_the_check_ignores_a_repository_for_an_unsourced_model() -> None:
+    assert _check("Repository(client=c, model=Person)") == []
+
+
+def test_the_check_ignores_an_unrelated_call_named_repository_on_an_object() -> None:
+    """`self.repository(...)` is not a `Repository(...)` construction, and a
+    check that flagged it would make the error message untrustworthy.
+    """
+    assert _check("self.repository(model=RollCall)") == []
+
+
+def test_the_check_reports_a_sourced_repository_built_with_no_provenance() -> None:
+    violations = _check("Repository(client=c, model=RollCall)")
+    assert len(violations) == 1
+    assert violations[0].table == "roll_calls"
+    assert violations[0].line == 1
+
+
+def test_the_check_accepts_one_built_with_provenance() -> None:
+    assert _check("Repository(client=c, model=RollCall, provenance=ctx)") == []
+
+
+def test_the_check_declines_to_judge_a_splatted_construction() -> None:
+    """`Repository(**kwargs)` cannot be resolved without running the module, so
+    it is left to the runtime refusal rather than reported as a certainty. A
+    static check that guessed here would cry wolf on legitimate code, and a
+    check nobody trusts is a check nobody keeps.
+    """
+    assert _check("Repository(**kwargs)") == []
+    assert _check("Repository(client=c, model=RollCall, **extra)") == []
+
+
+def test_the_check_ignores_a_model_passed_as_an_expression() -> None:
+    """A documented limit, not an oversight: `model=registry[name]` is not a
+    bare name, so the static layer passes it over and the runtime refusal is
+    what covers it. Pinned so a reader knows which layer owns this case.
+    """
+    assert _check("Repository(client=c, model=registry[name])") == []
+
+
+def test_the_check_reports_a_direct_insert_into_a_sourced_table() -> None:
+    violations = _check("client.insert_row('roll_calls', row)")
+    assert len(violations) == 1
+    assert "bypassing the repository" in violations[0].detail
+
+
+def test_the_check_reports_a_direct_upsert_into_a_sourced_table() -> None:
+    assert _check("client.upsert_row(table_name='roll_calls', row_id=i, row_data=r)")
+
+
+def test_the_check_ignores_a_direct_write_into_an_unsourced_table() -> None:
+    assert _check("client.insert_row('people', row)") == []
+
+
+def test_the_check_ignores_a_direct_write_whose_table_is_computed() -> None:
+    """A computed table name cannot be resolved without executing the module —
+    and the generic helper in `provenance.py` itself writes
+    `insert_row(PROVENANCE_TABLE, ...)`, so guessing here would flag the code
+    implementing the rule.
+    """
+    assert _check("client.insert_row(table, row)") == []
+    assert _check("client.insert_row(PROVENANCE_TABLE, row)") == []
+    assert _check("client.insert_row(42, row)") == []
+    assert _check("client.insert_row(table_name=SOME_CONST, row_data=r)") == []
+
+
+def test_the_check_ignores_a_direct_write_with_no_arguments_at_all() -> None:
+    assert _check("client.insert_row()") == []
+
+
+def test_write_provenance_for_a_row_with_no_id_is_refused(client: ZeroDBClient) -> None:
+    """Unreachable through the repository, which settles the id first. Guarded
+    because a provenance entry whose entity_id is empty points at nothing,
+    which is worse than no entry: it looks like the rule was satisfied.
+    """
+    with pytest.raises(MissingProvenanceError):
+        write_provenance_for_row(
+            client,
+            model=RollCall,
+            row_data={"source_url": "https://example.org/x", "id": None},
+            context=ProvenanceContext(adapter_version=ADAPTER),
+        )
+
+
+def test_a_provenance_context_needs_an_adapter_version() -> None:
+    """An empty one would record "something fetched this, at some time", which
+    is the unattributed entry the refusal exists to prevent.
+    """
+    with pytest.raises(ValueError, match="adapter_version"):
+        ProvenanceContext(adapter_version="")
+
+
+def test_on_write_is_notified_only_for_a_genuine_insert(
+    client: ZeroDBClient, fake: FakeZeroDBTransport
+) -> None:
+    """What `LoadReport.provenance_written` depends on: a report built from
+    this counts fetches newly recorded, not rows touched.
+    """
+    recorded: list[str] = []
+    repo = Repository(
+        client=client,
+        model=RollCall,
+        provenance=ProvenanceContext(
+            adapter_version=ADAPTER, on_write=lambda entry: recorded.append(str(entry.id))
+        ),
+    )
+    repo.upsert(_roll_call_row())
+    repo.upsert(_roll_call_row())  # identical content — nothing new recorded
+    assert recorded == [f"prov:{'a' * 64}"]
