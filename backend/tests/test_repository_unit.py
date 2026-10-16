@@ -29,7 +29,17 @@ from app.repositories.models import (
 from app.zerodb import ZeroDBClient
 from app.zerodb.testing import FakeZeroDBTransport
 
-TABLES = ("people", "districts", "roll_calls", "member_votes", "verdicts", "promises", "stances")
+TABLES = (
+    "people",
+    "districts",
+    "roll_calls",
+    "member_votes",
+    "verdicts",
+    "candidate_positions",
+    "promises",
+    "stances",
+    "bills",
+)
 
 
 @pytest.fixture
@@ -453,9 +463,7 @@ def test_a_composite_version_key_is_supported(
     """`candidate_positions` is current per (person, stance), not per person."""
     people.upsert(person_row())
     client.upsert_row("stances", "en-US:rx:v1:lower", {"topic_id": "en-US:rx:v1"})
-    positions: Repository[CandidatePosition] = Repository(
-        client=client, model=CandidatePosition
-    )
+    positions: Repository[CandidatePosition] = Repository(client=client, model=CandidatePosition)
     row = {
         "person_id": "person:B000944",
         "stance_id": "en-US:rx:v1:lower",
@@ -541,7 +549,7 @@ def test_a_superseded_rows_other_fields_survive_the_flag_flip(
 
 
 def test_get_returns_none_for_an_absent_id(people: Repository[Person]) -> None:
-    """"Absent" is an ordinary answer, not an exception, for a reference check."""
+    """Absent is an ordinary answer, not an exception, for a reference check."""
     assert people.get("person:NOBODY") is None
 
 
