@@ -72,6 +72,9 @@ blob-report/
 reports/
 cucumber-report.*
 
+# Scratch dirs written by the story 1.7 pending-idiom test
+.bdd-idiom-*/
+
 # Editors and OS
 .DS_Store
 Thumbs.db
