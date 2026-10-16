@@ -86,6 +86,14 @@ class RowModel(BaseModel):
             that disagrees — which is how two ingest adapters are stopped from
             minting two ids for the same record.
 
+        strip_id_prefix: frozenset[str]
+            Natural-key fields whose entity prefix is dropped when composing
+            the id. `member_votes` lists `person_id`, because datamodel.md
+            documents `{roll_call_id}:{bioguide}`; `candidate_positions` does
+            NOT, because datamodel.md documents `{person_id}:...` with the
+            prefix intact. Opt-in per field so each table's id matches its
+            documented pattern rather than one global guess.
+
         references: dict[str, str]
             Field name to the table whose id that field holds. Checked before
             every write. A field that is None is skipped: an optional reference
@@ -106,6 +114,7 @@ class RowModel(BaseModel):
 
     table_name: ClassVar[str]
     natural_key: ClassVar[tuple[str, ...]] = ()
+    strip_id_prefix: ClassVar[frozenset[str]] = frozenset()
     references: ClassVar[dict[str, str]] = {}
     version_key: ClassVar[tuple[str, ...] | None] = None
 
@@ -115,11 +124,19 @@ class RowModel(BaseModel):
     def build_id(cls, values: dict[str, Any]) -> str | None:
         """The deterministic id for this record, or None if it cannot be built.
 
-        Joins the natural-key fields with ":" after stripping Informed's own id
-        prefixes, which is what produces datamodel.md's documented patterns:
-        `member_votes` is `{roll_call_id}:{bioguide}` — the bare bioguide, not
-        the `person:` prefixed id — so `us-house:119-2:452:B000944` rather than
-        `us-house:119-2:452:person:B000944`.
+        Joins the natural-key fields with ":", stripping an entity prefix only
+        from the fields the model lists in `strip_id_prefix`. **Per table, not
+        global**, because datamodel.md's two documented patterns disagree:
+
+          * `member_votes` is `{roll_call_id}:{bioguide}` — the bare bioguide,
+            so `us-house:119-2:452:B000944`;
+          * `candidate_positions` is `{person_id}:{stance_id}:{method_ver}` —
+            the prefixed person id, so `person:B000944:...`.
+
+        Stripping everywhere produced `B000944:en-US:...` for the second, an id
+        no consumer rebuilding it from the row's own `person_id` would ever
+        find. Making it opt-in per field keeps each table's id exactly as
+        datamodel.md documents it.
 
         Returns None when the model has no natural key, or when a key field is
         missing: a model-validation error naming the missing field is a better
@@ -133,7 +150,8 @@ class RowModel(BaseModel):
             value = values.get(field_name)
             if value is None:
                 return None
-            parts.append(_id_suffix(str(value)))
+            text = str(value)
+            parts.append(_id_suffix(text) if field_name in cls.strip_id_prefix else text)
         return ":".join(parts)
 
     def row_data(self) -> dict[str, Any]:
@@ -149,13 +167,17 @@ class RowModel(BaseModel):
 
 
 def _id_suffix(value: str) -> str:
-    """Strip Informed's entity prefix from an id used inside a compound id.
+    """Strip Informed's entity prefix from one id value.
 
-    `person:B000944` contributes `B000944`, matching datamodel.md's
-    `{roll_call_id}:{bioguide}` pattern. Ids that are not prefixed in that way
-    (an OCD-ID, a roll-call id, which contain colons of their own meaning) are
-    returned whole: only a leading `person:`/`prm:`-style prefix is removed, and
-    only from the last segment-bearing prefix, never from the middle of an id.
+    `person:B000944` becomes `B000944`, matching datamodel.md's
+    `{roll_call_id}:{bioguide}` pattern for `member_votes`. Applied **only** to
+    the fields a model names in `strip_id_prefix` — see `build_id` for why that
+    is per table rather than global.
+
+    Ids that are not entity-prefixed (an OCD-ID, a roll-call id, whose colons
+    separate meaningful segments) are returned whole: only a leading
+    `person:`/`prm:`-style prefix is removed, and only from the front, never
+    from the middle of an id.
     """
     prefix, separator, suffix = value.partition(":")
     if separator and prefix in _ID_PREFIXES:
@@ -280,6 +302,8 @@ class MemberVote(RowModel):
 
     table_name: ClassVar[str] = "member_votes"
     natural_key: ClassVar[tuple[str, ...]] = ("roll_call_id", "person_id")
+    #: datamodel.md documents `{roll_call_id}:{bioguide}` — the bare bioguide.
+    strip_id_prefix: ClassVar[frozenset[str]] = frozenset({"person_id"})
     references: ClassVar[dict[str, str]] = {
         "roll_call_id": "roll_calls",
         "person_id": "people",
@@ -347,6 +371,9 @@ class CandidatePosition(RowModel):
 
     table_name: ClassVar[str] = "candidate_positions"
     natural_key: ClassVar[tuple[str, ...]] = ("person_id", "stance_id", "methodology_version")
+    #: No `strip_id_prefix`: datamodel.md documents `{person_id}:...` with the
+    #: `person:` prefix intact here, unlike `member_votes`' `{bioguide}`.
+    strip_id_prefix: ClassVar[frozenset[str]] = frozenset()
     references: ClassVar[dict[str, str]] = {
         "person_id": "people",
         "stance_id": "stances",

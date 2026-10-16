@@ -218,7 +218,44 @@ def test_version_numbering_survives_the_current_row_being_deleted(
     third = verdicts.append_version(verdict_row(verdict="partial"))
 
     ids = [row["row_data"]["id"] for row in fake.rows["verdicts"].values()]
-    assert third.id == "prm:0001:v3", f"numbering restarted: got {third.id}"
+    # v2 was the row deleted, so v2 is free and the highest remaining is v1.
+    # Reusing a deleted version number is correct: uniqueness among STORED rows
+    # is the invariant, and numbering from a count or from the deleted row's
+    # successor would either collide or leave permanent gaps. What must never
+    # happen is the v1 collision this test was written for.
+    assert third.id == "prm:0001:v2", f"unexpected version: {third.id}"
+    assert len(ids) == len(set(ids)), f"duplicate id minted: {sorted(ids)}"
+    assert sorted(ids) == ["prm:0001:v1", "prm:0001:v2"]
+
+
+def test_deleting_a_middle_version_does_not_collide_with_the_newest(
+    client: ZeroDBClient,
+    fake: FakeZeroDBTransport,
+    people: Repository[Person],
+    verdicts: Repository[Verdict],
+) -> None:
+    """The highest stored version wins, not the count and not the newest gap.
+
+    With v1, v2, v3 stored and v2 removed, a count-based or gap-filling scheme
+    would produce v3 — colliding with the v3 that is still there. Taking the
+    maximum gives v4.
+    """
+    people.upsert(person_row())
+    client.upsert_row("promises", "prm:0001", {"candidacy_id": "synthetic"})
+    for verdict in ("kept", "broken", "partial"):
+        verdicts.append_version(verdict_row(verdict=verdict))
+
+    middle = next(
+        internal
+        for internal, row in fake.rows["verdicts"].items()
+        if row["row_data"]["id"] == "prm:0001:v2"
+    )
+    del fake.rows["verdicts"][middle]
+
+    fourth = verdicts.append_version(verdict_row(verdict="absent"))
+
+    ids = [row["row_data"]["id"] for row in fake.rows["verdicts"].values()]
+    assert fourth.id == "prm:0001:v4", f"unexpected version: {fourth.id}"
     assert len(ids) == len(set(ids)), f"duplicate id minted: {sorted(ids)}"
 
 

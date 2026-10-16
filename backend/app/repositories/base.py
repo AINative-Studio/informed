@@ -58,9 +58,18 @@ question rather than worked around with a lock this process cannot enforce
 across workers.
 
 The new row is written BEFORE the old flag is cleared, deliberately. Of the two
-possible torn states, "two rows claim to be current" is recoverable by the audit
-(the higher version wins); "no row is current" would make a candidate's verdict
-disappear from the UI until someone noticed.
+possible torn states, "two rows claim to be current" is recoverable (the higher
+version wins, and the next `append_version` for that key clears every stale
+flag); "no row is current" would make a candidate's verdict disappear from the
+UI until someone noticed.
+
+Both torn states are also *survivable* for version numbering, which is a
+property that had to be built rather than assumed: the next version comes from
+the highest `:v{n}` across all stored rows for the key, never from whichever row
+happens to be flagged current. Deriving it from the flag meant that deleting a
+verdict — an ordinary correction, no crash required — restarted numbering at v1
+while v1 was still stored, minting a duplicate id that `get_row` could not even
+see. See `_next_version_number`.
 """
 
 from __future__ import annotations
@@ -86,6 +95,12 @@ logger = logging.getLogger(__name__)
 #: `member_votes` reaches ~600k rows per Congress (datamodel.md), so a caller
 #: that wants more must page explicitly rather than be handed a silent subset.
 DEFAULT_PAGE_SIZE = 100
+
+#: Versions read for one version key when numbering the next one. A promise
+#: gains a verdict when its evidence changes and a position is recomputed per
+#: methodology, so real keys hold a handful; this is headroom, not a budget.
+#: Exceeding it is logged as an error because the consequence is a duplicate id.
+_MAX_VERSIONS_PER_KEY = 500
 
 
 class Repository[ModelT: RowModel]:
@@ -221,18 +236,24 @@ class Repository[ModelT: RowModel]:
              this method's to assign, so no caller can mint a second current
              row).
           2. Resolves the references, as `upsert` does.
-          3. Reads the current row for this version key to learn the next
-             version number and which row to supersede.
+          3. Reads **every stored version** for this version key — not just
+             the current one — to learn the highest version number and which
+             flags need clearing. Reading only the current row was wrong twice
+             over: with nothing marked current it restarted numbering onto a
+             live id, and with two rows marked current it only ever cleared
+             one.
           4. **Inserts** the new row with `is_current = True` and the id
              `{key}:v{n}` — `insert_row`, not `upsert_row`, because appending is
              the whole point: ZeroDB's append-always behaviour is the desired
              semantics here rather than something to work around.
-          5. Clears `is_current` on the superseded row, if there was one,
-             through `ZeroDBClient.update_row` — which read-merge-writes, so the
+          5. Clears `is_current` on **every** previously-current row, through
+             `ZeroDBClient.update_row` — which read-merge-writes, so the
              superseded verdict's own fields survive. A naive
              `PUT {"is_current": false}` would replace the row wholesale and
              destroy the history this table exists to keep (confirmed live in
-             story 1.2).
+             story 1.2). Clearing all of them, rather than only the newest, is
+             what makes this append repair a table that already had two
+             current rows instead of leaving one stale flag set for good.
 
         Steps 4 and 5 are two requests and are not atomic; see the module
         docstring for why the new row is written first.
@@ -258,21 +279,35 @@ class Repository[ModelT: RowModel]:
             self._check_references(draft, cache={})
 
         key_values = self._version_key_values(draft, version_key)
-        previous = self._current_row(key_values)
         prefix = self._version_id_prefix(draft, key_values)
-        next_version = self._next_version_number(previous, prefix=prefix)
+
+        # Every stored version for this key, read ONCE and used for both
+        # decisions below. Reading the `is_current` row alone was a bug twice
+        # over: it cannot see history that is still stored when nothing is
+        # marked current, and it cannot see a second current row that needs
+        # clearing.
+        existing = self._versions_for(key_values)
+        next_version = self._next_version_number(existing, prefix=prefix)
 
         row_id = f"{prefix}:v{next_version}"
         payload = {**draft.row_data(), "id": row_id, "is_current": True}
         instance = self._validated(payload, versioned=True)
         written = self._client.insert_row(self.table_name, instance.row_data())
 
-        if previous is not None:
-            previous_id = previous.row_data.get("id")
-            if previous_id:
-                # Read-merge-write: `update_row` merges, so every other field of
-                # the superseded row survives the flag flip.
-                self._client.update_row(self.table_name, str(previous_id), {"is_current": False})
+        # Clear EVERY previously-current row, not just the newest. Starting
+        # from a table that already had two current rows — a torn write, or a
+        # direct write that bypassed this layer — clearing one would leave one
+        # behind for good, and `current()` could return it. Clearing all of
+        # them makes this append the repair the module docstring promises.
+        for stale in existing:
+            if stale.row_data.get("is_current") is not True:
+                continue
+            stale_id = stale.row_data.get("id")
+            if not stale_id or stale_id == row_id:
+                continue
+            # Read-merge-write: `update_row` merges, so every other field of
+            # the superseded row survives the flag flip.
+            self._client.update_row(self.table_name, str(stale_id), {"is_current": False})
 
         return self._parse_row(written)
 
@@ -488,23 +523,25 @@ class Repository[ModelT: RowModel]:
     def _current_row(self, key_values: dict[str, Any]) -> Row | None:
         """The `is_current` row for one version key, or None.
 
-        Reads with the flag in the filter rather than scanning versions: the
-        flag is the index into history, and a promise can accumulate many
-        verdicts over a cycle.
+        Read path only — `current()` uses this. `append_version` deliberately
+        does NOT: it reads every version via `_versions_for`, because the flag
+        cannot answer "what is the highest version stored" (nothing may be
+        marked current while history still exists) nor "which flags need
+        clearing" (a second current row is hidden behind the first).
         """
         page = self._client.query_rows(
             self.table_name,
             filter={**key_values, "is_current": True},
-            limit=2,
+            limit=_MAX_VERSIONS_PER_KEY,
         )
         if not page.rows:
             return None
         if len(page.rows) > 1:
             # datamodel.md's integrity check ("exactly one is_current = true
             # row") has been violated — by a torn write, or by a direct write
-            # that bypassed this layer. Log it and supersede the newest, so the
-            # next append repairs rather than compounds the damage; the nightly
-            # audit is what reports it.
+            # that bypassed this layer. The newest is returned as the best
+            # available answer and the nightly audit is what reports it; the
+            # next `append_version` for this key clears every stale flag.
             logger.error(
                 "%s has %d current rows for %s; expected exactly one",
                 self.table_name,
@@ -513,26 +550,65 @@ class Repository[ModelT: RowModel]:
             )
         return max(page.rows, key=lambda row: _version_number(row.row_data.get("id")))
 
-    @staticmethod
-    def _next_version_number(previous: Row | None, *, prefix: str) -> int:
-        """The next `v{n}` for `prefix`, counted from the superseded row's id.
+    def _versions_for(self, key_values: dict[str, Any]) -> list[Row]:
+        """Every stored version for one version key, current or not.
 
-        Derived from stored state rather than from a count of rows: a counted
-        version would collide after a row was ever removed, and the id is the
-        one place the version is recorded.
+        Reads on the version key alone, deliberately *without* `is_current` in
+        the filter. Filtering on the flag was the shared cause of two bugs:
+        history that is still stored is invisible when nothing is marked
+        current (so numbering restarted onto a live id), and a second current
+        row is invisible when another one outranks it (so it was never
+        cleared). The flag is derived state; the rows are the truth.
 
-        Only counts on from the superseded row when that row shares this
-        prefix. `candidate_positions` supersedes across methodology versions —
-        the current row for (person, stance) may be under the previous
-        methodology's id — and continuing its numbering would put a v2 under an
-        id whose v1 does not exist.
+        Paged like every other read. The limit is generous relative to how many
+        versions one promise or position realistically accumulates over a
+        cycle, and a key that somehow exceeded it would under-count the maximum
+        version — so the overflow is logged rather than passed over, because
+        the consequence would be a duplicate id.
         """
-        if previous is None:
-            return 1
-        previous_id = previous.row_data.get("id")
-        if not isinstance(previous_id, str) or not previous_id.startswith(f"{prefix}:v"):
-            return 1
-        return _version_number(previous_id) + 1
+        page = self._client.query_rows(
+            self.table_name, filter=key_values, limit=_MAX_VERSIONS_PER_KEY
+        )
+        if page.has_more or len(page.rows) >= _MAX_VERSIONS_PER_KEY:
+            logger.error(
+                "%s has at least %d versions for %s; version numbering may be "
+                "under-counting and could mint a duplicate id",
+                self.table_name,
+                len(page.rows),
+                sorted(key_values),
+            )
+        return page.rows
+
+    @staticmethod
+    def _next_version_number(existing: Sequence[Row], *, prefix: str) -> int:
+        """One past the highest `v{n}` already stored under `prefix`.
+
+        The **maximum across all stored versions**, not a count and not the
+        current row's number:
+
+          * a count would collide the moment a row was removed;
+          * the current row's number was the original bug — with no row marked
+            current (a deleted verdict, a torn write, an audit repair) it
+            restarted at v1 while v1 was still stored, minting a duplicate id
+            that `get_row` cannot even see, because `get_row` stops at the
+            first match.
+
+        Rows under a different prefix are ignored. `candidate_positions`
+        supersedes across methodology versions — the current row for
+        (person, stance) may carry the previous methodology's id — and
+        continuing its numbering would put a v2 under an id whose v1 does not
+        exist.
+        """
+        highest = max(
+            (
+                _version_number(row.row_data.get("id"))
+                for row in existing
+                if isinstance(row.row_data.get("id"), str)
+                and str(row.row_data["id"]).startswith(f"{prefix}:v")
+            ),
+            default=0,
+        )
+        return highest + 1
 
     def _parse_row(self, row: Row) -> ModelT:
         """Validate a stored row into the model.
