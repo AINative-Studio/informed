@@ -143,7 +143,7 @@ Decrypted payload (validated by the Pydantic `InterestProfile` model):
 
 ## Vector namespaces
 
-Four namespaces hold 768-dimension embeddings from ZeroDB's free BGE-base model via `zerodb_embed_and_store`. Each vector's metadata carries the NoSQL row id it was built from, so search hits resolve straight to records.
+Four namespaces hold 1024-dimension embeddings from ZeroDB's live `bge-m3` model via `zerodb_embed_and_store` (confirmed against the live API during story 1.2; this corrects an earlier 768-dimension assumption based on BGE-base). Each vector's metadata carries the NoSQL row id it was built from, so search hits resolve straight to records.
 
 | Namespace | Document text | Metadata | Used by |
 | --- | --- | --- | --- |
@@ -217,6 +217,8 @@ The user tables and the public-record tables are kept apart by design. No table,
 
 **Open questions**
 
-- [ ] Confirm `zerodb_query_rows` filter operators beyond `$contains` and `$lt` (e.g. `$in`, `$gte`, array contains) — the topic and date queries depend on them.
-- [ ] Confirm per-table row limits and pagination ceilings for `member_votes` at ~600k rows per Congress.
+- [x] Confirm `zerodb_query_rows` filter operators beyond `$contains` and `$lt` (e.g. `$in`, `$gte`, array contains) — the topic and date queries depend on them. **Resolved with a caveat (story 1.2):** server-side `filter` on ZeroDB's `/query` endpoint appeared to silently drop matching rows in live testing — a filter that an unfiltered read showed should match returned nothing. The typed ZeroDB client (`backend/app/zerodb/`) works around this today by also filtering client-side within each returned page. **Escalated to AINative** — if the server-side bug is fixed, the client-side workaround should be removed so filtering doesn't silently fail past the first page at scale (~600k rows per Congress).
+- [ ] Confirm per-table row limits and pagination ceilings for `member_votes` at ~600k rows per Congress. **Partially blocked (story 16.1):** the live load test couldn't run — this session's ZeroDB MCP connection (`mcp__ainative-zerodb__*`) authenticates to a different account than the "informed" project's own credentials, so MCP tools 404 on every table/row operation for this project. See `docs/spikes/16.1-zerodb-query-limits.md` for the diagnostic trail and a ready-to-run test procedure once that connection is fixed.
 - [ ] Key management for `voter_profiles`: AINative KMS, or a cloud KMS?
+- [ ] **New (story 1.2):** ZeroDB has no upsert-by-natural-key — `POST /rows` always appends, so the repository layer (story 1.4) must implement idempotent upsert itself (query-by-id, then `PUT`/insert) rather than relying on the API to dedupe. `PUT`/`DELETE` also require ZeroDB's own internal row UUID, not Informed's natural-key id, and `PUT` replaces a row wholesale (a naive partial update will drop the row's `id` field) — the repository layer needs to read-merge-write, not patch.
+- [ ] **New (story 1.2):** Live rate limit observed at 60 req/min on the standard tier. Bootstrap (story 1.3) creates 22 tables + 4 vector namespaces + 1 ontology (27 operations) — close enough to this ceiling that the bootstrap script must pace/throttle its calls explicitly rather than assume headroom.
