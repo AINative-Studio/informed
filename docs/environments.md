@@ -265,6 +265,44 @@ tree against the live project — counts, parent links, locale and version, the
 PUT-not-POST idempotency mechanism, and that no stored label presupposes a
 political stance. Like `verify_seed_live.py`, it leaves what it wrote in place.
 
+### `scripts/seed_stances.py` — a third permanent seed, after the taxonomy
+
+The balanced stance cards (story 3.2) are not written by the bootstrap either.
+Run them **after** `scripts/seed_taxonomy.py`, which is a hard prerequisite:
+
+```sh
+set -a; . local.env; set +a
+python backend/scripts/seed_taxonomy.py   # if it has not been run here
+python backend/scripts/seed_stances.py
+```
+
+It writes 201 `stances` rows — three or four cards for each of the taxonomy's
+60 subtopics, all at `wording_version = 1` — idempotently. Expect several
+minutes: the writes are paced for the same 60 req/min ceiling, which is why
+this is a third separate command rather than another bootstrap step.
+
+`Stance.topic_id` is a declared reference, so each card's write resolves its
+subtopic out of `issue_topics` before storing it. Against a project with no
+taxonomy the first card is refused and the script exits **2** with a message
+naming the missing seed — deliberately, because a stance pointing at a topic
+that does not exist is unusable and 201 orphans is worse than stopping at one.
+
+**Do not delete these rows.** They are the menu of positions a voter can hold:
+a voter's encrypted profile stores `stance_id`s from this corpus (see
+datamodel.md's voter-profile document), as do `candidate_positions` and every
+promise classified under a stance, so deleting one orphans a saved profile and
+every score computed from it. If one is deleted, re-run the script.
+
+The corpus lives in `backend/app/seed_stances.py` — one module, like the
+taxonomy, so an advisory-panel wording change touches nothing else — and
+`backend/scripts/verify_stance_cards_live.py` checks the stored cards against
+the live project: at least three per subtopic, direction codes spanning both
+sides of each subtopic's axis with no repeat, `wording_version` 1 throughout,
+no `default`/`preselected`/`display_order` key in the raw stored rows, the
+PUT-not-POST idempotency mechanism, that no stored label or description names a
+political side, and that a live read through `StanceService` comes back in a
+varying order. Like the two seeds above, it leaves what it wrote in place.
+
 ### If ZeroDB calls 403 with `API_KEY_PROJECT_MISMATCH`
 
 A key's **name** on AINative's platform and the **project it is actually
