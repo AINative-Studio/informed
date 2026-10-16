@@ -13,6 +13,16 @@ Feature: A voter's address returns their federal representatives
     * ingesting the actual sitting Congress (story 2.2);
     * races, candidacies and alignment scores (epics 2 and 4).
 
+  This file is kept as the skeleton proof rather than renamed or folded into
+  story 2.4's `ballot_lookup.feature`, and the split is deliberate. What these
+  scenarios prove is that the React -> FastAPI -> ZeroDB path carries a
+  delegation at all — the claim story 1.5 existed to make, and the one that
+  should fail first and loudest if the repository layer, the client or the
+  transport breaks. `ballot_lookup.feature` proves what story 2.4 added on top:
+  the race grouping, the incumbent flag, and the latency budget. Merging them
+  would mean a broken race grouping and a broken ZeroDB path reported as the
+  same failure.
+
   Background:
     Given the district "ocd-division/country:us/state:ca/cd:19" exists in ZeroDB
     And its representative and California's two senators are stored in ZeroDB

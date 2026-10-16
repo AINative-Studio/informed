@@ -671,7 +671,7 @@ def test_term_currency_at_each_boundary(
 
 
 def test_service_pages_through_people_rather_than_reading_one_page(
-    client: ZeroDBClient,
+    client: ZeroDBClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The delegation must not be limited to `people`'s first page.
 
@@ -679,12 +679,22 @@ def test_service_pages_through_people_rather_than_reading_one_page(
     service that read one page would find the district but none of its
     representatives — the same one-page bug story 1.4 found live in the client's
     filter fallback, which looked fine against a small fixture.
-    """
-    from app.ballot.service import PEOPLE_PAGE_SIZE
 
+    Story 2.4 raised `PEOPLE_PAGE_SIZE` to 2,000 so one lookup is one request
+    (the whole table fits in a page, which is what brings the live p95 inside
+    800 ms). That makes "more rows than a page" 2,005 rows to seed, which costs
+    this one test more than the whole rest of the suite — so the page size is
+    patched down instead. The behaviour under test is the paging *loop*, which
+    is the same loop at either size, and it must keep working: nothing promises
+    the live API will honour an arbitrarily large `limit` forever.
+    """
+    import app.ballot.service as service_module
+
+    page_size = 20
+    monkeypatch.setattr(service_module, "PEOPLE_PAGE_SIZE", page_size)
     seed_district(client)
     people: Repository[Person] = Repository(client=client, model=Person)
-    for index in range(PEOPLE_PAGE_SIZE + 5):
+    for index in range(page_size + 5):
         people.upsert(
             person(
                 f"person:ZZFILL{index:04d}",
@@ -704,18 +714,21 @@ def test_service_pages_through_people_rather_than_reading_one_page(
 def test_service_logs_an_error_rather_than_silently_truncating(
     client: ZeroDBClient, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Hitting the scan cap must be loud.
+    """Hitting the read cap must be loud.
 
     A voter quietly missing a senator is indistinguishable from a voter who has
-    none, so the cap logs an error naming the read model that should replace the
-    scan. The cap is lowered here rather than seeding 5,000 rows.
+    none, so the cap logs an error naming the read model that should replace
+    reading the whole table. Both constants are lowered here rather than seeding
+    20,000 rows.
     """
     import app.ballot.service as service_module
 
-    monkeypatch.setattr(service_module, "MAX_PEOPLE_SCANNED", service_module.PEOPLE_PAGE_SIZE)
+    page_size = 20
+    monkeypatch.setattr(service_module, "PEOPLE_PAGE_SIZE", page_size)
+    monkeypatch.setattr(service_module, "MAX_PEOPLE_SCANNED", page_size)
     seed_district(client)
     people: Repository[Person] = Repository(client=client, model=Person)
-    for index in range(service_module.PEOPLE_PAGE_SIZE):
+    for index in range(page_size):
         people.upsert(
             person(
                 f"person:ZZFILL{index:04d}",
@@ -727,7 +740,7 @@ def test_service_logs_an_error_rather_than_silently_truncating(
     with caplog.at_level("ERROR"):
         service_for(client).ballot_for(ADDRESS)
 
-    assert "stopped scanning" in caplog.text
+    assert "stopped reading" in caplog.text
     assert "candidate_cards" in caplog.text
 
 

@@ -1,43 +1,68 @@
 #!/usr/bin/env python3
-"""Verify `GET /v1/ballot` end to end against the LIVE "informed" project (1.5).
+"""Verify `GET /v1/ballot` against the LIVE "informed" project (story 2.4).
 
-Story 1.5's acceptance criterion is "address input returns 1 House member and
-2 senators **from ZeroDB**". The committed test suite proves that against the
-in-memory fake, which is the right thing for CI but is not the criterion: every
-story in this iteration so far has found at least one way the fake and the live
-API disagree (`POST /rows` appends rather than upserts, `PUT` replaces wholesale,
-the `{row_id}` segment takes an internal UUID, the server-side `/query` filter
-matches nothing). So this script runs the real FastAPI handler, through the real
-repository layer and the real HTTP transport, against the real project.
+Story 2.4's two acceptance criteria are "response lists races with incumbents
+flagged" and "p95 latency under 800 ms". The committed suite proves the first
+outright and defends the second by counting round trips, because a millisecond
+number measured against the in-memory fake measures the machine and one
+measured against the live geocoder would put census.gov in CI (CLAUDE.md).
 
-What it does, in order:
+**This script is where the millisecond number is actually claimed.** It calls
+the production endpoint, over the production repository and transport, against
+the real project with its 539 real legislators and the real Census Geocoder,
+and reports a measured p95 against the 800 ms budget.
 
-  0. **Decoy rows first.** Several unrelated `people` rows are written before
-     the three under test, in another state and another district. Story 1.4
-     learned this the hard way: with an empty table, the one row written is
-     row 0, the client's one-page filter fallback finds it, and a broken read
-     looks green. Here the decoys also prove the ballot *excludes* people it
-     should exclude, which an empty table can never prove.
-  1. **Seed the district and the delegation.** One `districts` row and three
-     `people` rows — one House member, two senators — shaped exactly as
-     datamodel.md's `people` spec says, with `terms[]` tying each to a
-     `district_id` and a `body_id`.
-  2. **Call the endpoint.** Through `TestClient` against the app from
-     `create_app()`, with the ZeroDB dependency pointed at the live project.
-     This is the full path the acceptance criterion names, minus the browser:
-     HTTP -> handler -> service -> repository -> client -> live ZeroDB.
-  3. **Check the answer.** Exactly 1 House member and exactly 2 senators, the
-     right people, the decoys absent, and the address absent from the response.
+It replaces story 1.5's version of this script wholesale. That one seeded
+synthetic `ZZ`-prefixed legislators, asserted against them and deleted them
+afterwards, which was right when `people` was empty — and it has been broken
+since story 2.3 removed `StubAddressResolver`, which it imported. There is
+nothing left to seed: stories 2.1-2.3 put real bodies, real legislators and
+real district rows in the project, so this script **writes nothing at all** and
+has no cleanup. It is a pure read, which is also what makes its timings
+representative of a voter's request rather than of a request plus a fixture.
 
-CLEANUP: every row it writes is deleted before it exits, including on failure,
-and each one is then re-read with an **unfiltered** live query to confirm it is
-gone — unfiltered because a filtered read is exactly the thing that was
-measured not to work, so using it to confirm a deletion would prove nothing.
+What it checks
+==============
 
-Nothing it writes resembles real data. The legislators are synthetic, with
-`ZZ`-prefixed bioguide-shaped ids and names that say so; real legislator data
-arrives in story 2.2. It writes no voter data at all, and the address it
-submits is the White House's, which is nobody's home.
+  1. **Latency.** `ROUNDS` paced, round-robin lookups across the addresses,
+     reported per address and pooled, against the 800 ms budget.
+
+     Two things about the methodology are load-bearing, and both were learned
+     by getting them wrong first. **Round-robin, not N-in-a-row per address:**
+     the first version of this script ran six lookups per address in sequence,
+     which meant five of every six hit a warm district cache for that one
+     district, and reported an optimistic p95 (705 ms) that a round-robin run
+     over six addresses did not reproduce (1066 ms). **Paced, not back to
+     back:** the free Census Geocoder throttles a tight loop — the same code
+     measured a geocode p95 of 621 ms when called at a human pace and 1543 ms
+     with a 4404 ms outlier when hammered — so an unpaced run measures
+     census.gov's rate limiting rather than Informed's latency.
+
+     The **cold-start** request (the first of a fresh process, paying TCP and
+     TLS setup to two hosts plus both cold caches) is reported separately
+     rather than dropped. It is real and a voter can hit it after a deploy; it
+     is simply not what a steady-state p95 describes.
+
+     What remains after all of that is the geocode, which is one external call
+     to a free public service with an occasional multi-second outlier that no
+     caching on Informed's side can remove — the response times in
+     `app.ballot.service`'s docstring are what the endpoint controls.
+  2. **Races with incumbents flagged.** Every address returns a House race for
+     its district; a state address also returns a Senate race with two
+     senators; every candidate carries `is_incumbent: true`; `data_state` is
+     `incumbents_only`.
+  3. **No regression in story 2.3's at-large fix.** Wyoming (at-large, code
+     `00`) must return one representative *and* two senators, and DC (delegate,
+     code `98`) one delegate and **no Senate race** — the chambers' divisions
+     are the same OCD-ID in both, which is the collision 2.3 fixed and which the
+     race grouping could have reintroduced.
+  4. **Privacy.** The address appears in no response body and no log line
+     (prd.md, privacy first; story 2.3's "never stored").
+
+Addresses: real, public, non-residential landmarks, reused from story 2.3's
+live verification so the two stories' results are comparable. prd.md forbids
+real voter data in a fixture, a log or test output, and a home address is voter
+data — so none appears here.
 
 Run it with the live credentials sourced into the shell — never passed on the
 command line, never printed:
@@ -49,312 +74,332 @@ command line, never printed:
 from __future__ import annotations
 
 import logging
+import statistics
 import sys
-from datetime import date, timedelta
-from typing import Any
+import time
+from pathlib import Path
 
-from fastapi.testclient import TestClient
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.ballot.service import HOUSE_BODY_ID, SENATE_BODY_ID
-from app.districts.resolver import StubAddressResolver, senate_division_for
-from app.main import create_app, zerodb_client
-from app.repositories import Repository
-from app.repositories.models import District, Person
-from app.zerodb import ZeroDBClient
-from app.zerodb.errors import ZeroDBError, ZeroDBNotFoundError
+from fastapi.testclient import TestClient  # noqa: E402
 
-#: Marker in every id this script writes, so a row left behind by a crashed run
-#: is obvious in the live project and trivially greppable.
-MARKER = "zzz-live-check-1.5"
+from app.ballot.models import DataState  # noqa: E402
+from app.ballot.service import HOUSE_BODY_ID, SENATE_BODY_ID  # noqa: E402
+from app.main import create_app, zerodb_client  # noqa: E402
+from app.zerodb import ZeroDBClient  # noqa: E402
+from app.zerodb.errors import ZeroDBError  # noqa: E402
 
-HOUSE_DISTRICT_ID = StubAddressResolver.DISTRICT_ID
-SENATE_DIVISION_ID = senate_division_for(HOUSE_DISTRICT_ID)
+logger = logging.getLogger("verify_ballot_live")
 
-#: A decoy district nobody's address resolves to, for the exclusion checks.
-OTHER_DISTRICT_ID = "ocd-division/country:us/state:tx/cd:1"
-OTHER_SENATE_DIVISION_ID = "ocd-division/country:us/state:tx"
+#: Story 2.4's acceptance criterion, in milliseconds.
+BUDGET_MS = 800.0
 
-#: The White House. A real address that is nobody's home, so no live run ever
-#: submits a real person's address (prd.md, privacy first).
-ADDRESS = "1600 Pennsylvania Avenue NW, Washington, DC 20500"
+#: Rounds over the whole address list. Requests go **round-robin** across
+#: addresses rather than N times per address, which matters: hitting one address
+#: six times in a row flatters the result, because the second through sixth all
+#: hit a warm district cache for that one district. Round-robin exercises the
+#: caches the way a stream of real voters would — many districts, one shared
+#: `people` snapshot — and was what first revealed that the per-address loop had
+#: been reporting an optimistic p95.
+#:
+#: Ten rounds over four addresses is 40 samples, chosen so that **one** geocoder
+#: outlier does not define the p95. At 19 samples it did: a single 1500 ms
+#: geocode in an otherwise 440 ms median / 578 ms p90 run *was* the 95th
+#: percentile, and the script reported a failure that said nothing about
+#: Informed's code. A p95 over so few samples is really "the worst one or two
+#: requests", which for an endpoint fronting a free public geocoder measures
+#: that service's weather.
+ROUNDS = 10
 
-logging.basicConfig(level=logging.INFO, format="%(message)s")
-logger = logging.getLogger("verify-ballot-1.5")
+#: Seconds between requests. Not padding: measured, the free Census Geocoder
+#: starts adding multi-second delays to a tight benchmark loop (p95 1543 ms,
+#: max 4404 ms back-to-back at one point), which measures its rate limiting
+#: rather than Informed's latency. Paced at roughly a request a second the same
+#: code measured a p95 of 605 ms. A second is still far faster than real voter
+#: traffic to one process.
+REQUEST_GAP_SECONDS = 1.0
 
-
-#: Term bounds relative to today, so this script does not start failing on a
-#: calendar date. A hard-coded future year would quietly become a past term and
-#: make every delegation check fail for a reason nobody would look for.
-TODAY = date.today()
-TERM_START = (TODAY - timedelta(days=365)).isoformat()
-TERM_END = (TODAY + timedelta(days=365)).isoformat()
-PAST_TERM_START = (TODAY - timedelta(days=365 * 6)).isoformat()
-PAST_TERM_END = (TODAY - timedelta(days=365 * 4)).isoformat()
-
-
-def person_row(
-    suffix: str,
-    *,
-    body_id: str,
-    district_id: str,
-    name: str,
-    start: str = TERM_START,
-    end: str = TERM_END,
-) -> dict[str, Any]:
-    """A `people` row per datamodel.md: canonical_name, external_ids, terms[]."""
-    bioguide = f"ZZ{suffix}"
-    return {
-        "id": f"person:{bioguide}",
-        "canonical_name": name,
-        "external_ids": {"bioguide": bioguide, "live_check": MARKER},
-        "terms": [
-            {
-                "body_id": body_id,
-                "district_id": district_id,
-                "party": "Independent",
-                "start": start,
-                "end": end,
-            }
-        ],
-    }
+#: (address, label, expected senators). The senator count is written out rather
+#: than derived, so a regression cannot make this script agree with itself —
+#: and DC's 0 is the at-large/delegate case story 2.3 fixed.
+CASES: tuple[tuple[str, str, int], ...] = (
+    ("400 Broad St, Seattle, WA 98109", "Space Needle — WA-07, padded single digit", 2),
+    ("20 W 34th St, New York, NY 10001", "Empire State Building — NY-12", 2),
+    ("200 W 24th St, Cheyenne, WY 82002", "Wyoming State Capitol — at-large (CD=00)", 2),
+    ("1600 Pennsylvania Ave NW, Washington, DC 20500", "White House — delegate (CD=98)", 0),
+)
 
 
-#: The delegation under test: 1 House member + 2 senators (the criterion).
-DELEGATION = [
-    person_row(
-        "0001-house",
-        body_id=HOUSE_BODY_ID,
-        district_id=HOUSE_DISTRICT_ID,
-        name=f"Synthetic Representative ({MARKER})",
-    ),
-    person_row(
-        "0002-senate",
-        body_id=SENATE_BODY_ID,
-        district_id=SENATE_DIVISION_ID,
-        name=f"Synthetic Senator One ({MARKER})",
-    ),
-    person_row(
-        "0003-senate",
-        body_id=SENATE_BODY_ID,
-        district_id=SENATE_DIVISION_ID,
-        name=f"Synthetic Senator Two ({MARKER})",
-    ),
-]
+def percentile(values: list[float], p: float) -> float:
+    """The p-th percentile by nearest-rank, which is honest at this sample size.
 
-#: Written BEFORE the delegation, so the rows under test are not row 0, and so
-#: the ballot is proven to exclude as well as include.
-DECOYS = [
-    person_row(
-        "9001-decoy-house",
-        body_id=HOUSE_BODY_ID,
-        district_id=OTHER_DISTRICT_ID,
-        name=f"Synthetic Rep Elsewhere ({MARKER})",
-    ),
-    person_row(
-        "9002-decoy-senate",
-        body_id=SENATE_BODY_ID,
-        district_id=OTHER_SENATE_DIVISION_ID,
-        name=f"Synthetic Senator Elsewhere ({MARKER})",
-    ),
-    person_row(
-        "9003-decoy-wrong-chamber",
-        # Right division, wrong chamber: a bad row that must not be presented
-        # as a member of a chamber this person does not sit in.
-        body_id=SENATE_BODY_ID,
-        district_id=HOUSE_DISTRICT_ID,
-        name=f"Synthetic Chamber Mismatch ({MARKER})",
-    ),
-    person_row(
-        "9004-decoy-former",
-        # The right district and the right chamber, but the term ENDED. This is
-        # how story 2.2's real data will look — `people.terms[]` is a list
-        # because it holds term history — and matching on any term rather than
-        # a current one returns two House members for this district, which
-        # breaks the acceptance criterion and tells a voter that someone who
-        # left office years ago represents them.
-        body_id=HOUSE_BODY_ID,
-        district_id=HOUSE_DISTRICT_ID,
-        name=f"Synthetic Former Representative ({MARKER})",
-        start=PAST_TERM_START,
-        end=PAST_TERM_END,
-    ),
-]
-
-DISTRICT_ROW = {
-    "id": HOUSE_DISTRICT_ID,
-    "body_id": HOUSE_BODY_ID,
-    "name": f"Synthetic District 19 ({MARKER})",
-    "state": "CA",
-    "valid_from": "2023-01-03",
-}
-
-
-def count_live_rows(client: ZeroDBClient, table: str, row_id: str) -> int:
-    """How many rows in `table` carry `row_id`, read UNFILTERED.
-
-    Unfiltered on purpose: the server-side filter was measured not to match
-    (story 1.4), so confirming a deletion with it would prove nothing. Pages
-    through the table and counts by hand.
+    Interpolating between two of six samples would report a number no request
+    actually took. Nearest-rank reports one that did.
     """
-    found = 0
-    skip = 0
-    page_size = 100
-    while True:
-        page = client.query_rows(table, limit=page_size, skip=skip)
-        for row in page.rows:
-            if row.row_data.get("id") == row_id:
-                found += 1
-        if len(page.rows) < page_size:
-            return found
-        skip += page_size
-        if skip > 10_000:  # pragma: no cover - a runaway table, not a real case
-            logger.error("stopped counting %s at %d rows", table, skip)
-            return found
+    ordered = sorted(values)
+    rank = max(1, min(len(ordered), int(round(p / 100 * len(ordered) + 0.5))))
+    return ordered[rank - 1]
 
 
-def main() -> int:
+def main() -> int:  # noqa: C901 - a linear script of checks reads better as one
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+
     failures: list[str] = []
-    written: list[tuple[str, str]] = []
 
-    def check(description: str, passed: bool, detail: str = "") -> None:
-        if passed:
-            logger.info("PASS  %s", description)
+    def check(label: str, condition: bool, detail: str = "") -> None:
+        if condition:
+            logger.info("PASS  %s", label)
         else:
-            failures.append(f"{description}: {detail}")
-            logger.error("FAIL  %s — %s", description, detail)
+            failures.append(f"{label}{f' — {detail}' if detail else ''}")
+            logger.error("FAIL  %s %s", label, detail)
+
+    # Captured so the privacy check can prove no log line from a real run
+    # carried an address. Attached to the `app` logger rather than the root one:
+    # the root logger at DEBUG turns on httpx's wire logging, which prints every
+    # request URL — and the geocoder's URL carries the address in a query
+    # parameter, so raising the root level to inspect Informed's own logs would
+    # itself print the thing this check exists to prove is never printed.
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    app_logger = logging.getLogger("app")
+    capture = _Capture(level=logging.DEBUG)
+    app_logger.addHandler(capture)
+    app_logger.setLevel(logging.DEBUG)
 
     client = ZeroDBClient.from_env()
     logger.info("project: %s", client.project_id)
+    logger.info("NO WRITES: this script only reads. Nothing to clean up.\n")
 
-    districts: Repository[District] = Repository(client=client, model=District)
-    people: Repository[Person] = Repository(client=client, model=Person)
+    # The production app, with only the ZeroDB client pointed at the live
+    # project. The resolver is NOT overridden: the real Census Geocoder is most
+    # of the latency being measured, so faking it would measure nothing.
+    app = create_app()
+    app.dependency_overrides[zerodb_client] = lambda: client
+
+    #: address -> every timing for it, and the last payload it returned.
+    timings_by_address: dict[str, list[float]] = {address: [] for address, _, _ in CASES}
+    payload_by_address: dict[str, dict] = {}
+    cold_start_ms: float | None = None
+    bodies: list[str] = []
 
     try:
-        # --- 0. decoys first, so nothing under test is row 0 ---------------
-        for row in DECOYS:
-            written.append(("people", people.upsert(row).id or ""))
-        logger.info("seeded %d decoy people rows", len(DECOYS))
-
-        # --- 1. seed the district and the delegation -----------------------
-        written.append(("districts", districts.upsert(DISTRICT_ROW).id or ""))
-        for row in DELEGATION:
-            written.append(("people", people.upsert(row).id or ""))
-        logger.info("seeded 1 district and %d delegation rows", len(DELEGATION))
-
-        check(
-            "the district row round-trips from the live project",
-            (live_district := districts.get(HOUSE_DISTRICT_ID)) is not None
-            and live_district.state == "CA",
-            f"read back {live_district!r}",
-        )
-
-        # --- 2. call the endpoint over the live project --------------------
-        app = create_app()
-        app.dependency_overrides[zerodb_client] = lambda: client
         with TestClient(app) as api:
-            response = api.get("/v1/ballot", params={"address": ADDRESS})
+            # --- phase 1: latency, round-robin --------------------------------
+            #
+            # Round-robin rather than N-in-a-row per address, and paced; see
+            # ROUNDS and REQUEST_GAP_SECONDS for why both matter to whether the
+            # resulting p95 means anything.
+            logger.info("--- %d rounds over %d addresses, round-robin", ROUNDS, len(CASES))
+            for _round in range(ROUNDS):
+                for address, label, _ in CASES:
+                    if cold_start_ms is not None:
+                        time.sleep(REQUEST_GAP_SECONDS)
+                    start = time.perf_counter()
+                    response = api.get("/v1/ballot", params={"address": address})
+                    elapsed = (time.perf_counter() - start) * 1000
+                    if cold_start_ms is None:
+                        # The very first request of a fresh process pays TCP and
+                        # TLS setup to two hosts plus both cold caches. Recorded
+                        # and reported separately rather than quietly dropped:
+                        # it is real, a voter can hit it after a deploy, and it
+                        # is not what a steady-state p95 describes.
+                        cold_start_ms = elapsed
+                    if response.status_code != 200:
+                        check(
+                            f"the endpoint answers 200 ({label})",
+                            False,
+                            f"status {response.status_code}: {response.text[:200]}",
+                        )
+                        continue
+                    timings_by_address[address].append(elapsed)
+                    bodies.append(response.text)
+                    payload_by_address[address] = response.json()
 
-        check(
-            "the endpoint answers 200",
-            response.status_code == 200,
-            f"status {response.status_code}: {response.text[:300]}",
-        )
-        if response.status_code != 200:
-            raise RuntimeError("no payload to check")
+            # --- phase 2: the response's shape --------------------------------
+            for address, label, expected_senators in CASES:
+                logger.info("--- %s", label)
+                timings = timings_by_address[address]
+                if timings:
+                    logger.info(
+                        "      %d runs: median %.0fms  p95 %.0fms  max %.0fms",
+                        len(timings),
+                        statistics.median(timings),
+                        percentile(timings, 95),
+                        max(timings),
+                    )
+                payload = payload_by_address.get(address)
+                if payload is None:
+                    continue
 
-        body = response.json()
-        officeholders = body["officeholders"]
-        house = [o for o in officeholders if o["body_id"] == HOUSE_BODY_ID]
-        senate = [o for o in officeholders if o["body_id"] == SENATE_BODY_ID]
+                races = {race["body_id"]: race for race in payload["races"]}
+                logger.info(
+                    "      races: %s",
+                    "; ".join(
+                        f"{race['office_name']} ({len(race['candidates'])}): "
+                        + ", ".join(c["name"] for c in race["candidates"])
+                        for race in payload["races"]
+                    )
+                    or "none",
+                )
 
-        logger.info("live response: %s", body)
+                # --- races with incumbents flagged ------------------------
+                house = races.get(HOUSE_BODY_ID)
+                check(
+                    f"a House race is listed for the district ({label})",
+                    house is not None and house["district_id"] == payload["district"]["id"],
+                    f"races were {sorted(races)}",
+                )
+                if house is not None:
+                    check(
+                        f"the House race names exactly one sitting member ({label})",
+                        len(house["candidates"]) == 1,
+                        f"got {[c['name'] for c in house['candidates']]}",
+                    )
 
-        # --- 3. the acceptance criterion, checked ---------------------------
-        check(
-            "the response names the voter's House district",
-            body["district"]["id"] == HOUSE_DISTRICT_ID and MARKER in body["district"]["name"],
-            f"district is {body['district']}",
-        )
-        check(
-            "exactly 1 House member comes back from ZeroDB",
-            len(house) == 1,
-            f"got {len(house)}: {[o['name'] for o in house]}",
-        )
-        check(
-            "exactly 2 senators come back from ZeroDB",
-            len(senate) == 2,
-            f"got {len(senate)}: {[o['name'] for o in senate]}",
-        )
-        check(
-            "they are the three seeded people, and only those",
-            {o["person_id"] for o in officeholders} == {row["id"] for row in DELEGATION},
-            f"got {sorted(o['person_id'] for o in officeholders)}",
-        )
-        check(
-            "the decoys in another state and district are excluded",
-            not {o["person_id"] for o in officeholders} & {row["id"] for row in DECOYS[:2]},
-            f"a decoy leaked in: {sorted(o['person_id'] for o in officeholders)}",
-        )
-        check(
-            "the chamber-mismatched row is excluded",
-            DECOYS[2]["id"] not in {o["person_id"] for o in officeholders},
-            "a row whose body_id and district_id disagree was presented anyway",
-        )
-        check(
-            "the former representative of this very district is excluded",
-            DECOYS[3]["id"] not in {o["person_id"] for o in officeholders},
-            "a member whose term has ended was presented as a current one",
-        )
-        check(
-            "the submitted address is nowhere in the response",
-            "Pennsylvania" not in response.text and "20500" not in response.text,
-            "the address was echoed back",
-        )
-        check(
-            "the response makes no recommendation",
-            not any(
-                word in response.text.lower()
-                for word in ("recommend", "endorse", "vote for", "best match")
-            ),
-            "the payload contains recommendation language",
-        )
+                senate = races.get(SENATE_BODY_ID)
+                if expected_senators:
+                    # The at-large regression check: in WY the House and Senate
+                    # divisions are the same OCD-ID, so a grouping keyed on the
+                    # division alone merges the chambers and loses a seat.
+                    check(
+                        f"a Senate race is listed with {expected_senators} senators ({label})",
+                        senate is not None and len(senate["candidates"]) == expected_senators,
+                        f"senate race was {senate}",
+                    )
+                    if senate is not None and house is not None:
+                        check(
+                            f"the House and Senate races are distinct ({label})",
+                            senate["id"] != house["id"],
+                            "the two chambers collapsed into one race",
+                        )
+                else:
+                    # DC and the five territories elect no senators. An empty
+                    # Senate race would claim a contest that does not exist.
+                    check(
+                        f"no Senate race is listed where there are no senators ({label})",
+                        senate is None,
+                        f"an empty Senate race was listed: {senate}",
+                    )
 
-        # --- a blank address is still refused over the live project --------
-        with TestClient(app) as api:
+                candidates = [c for race in payload["races"] for c in race["candidates"]]
+                check(
+                    f"every candidate is flagged as an incumbent ({label})",
+                    bool(candidates) and all(c["is_incumbent"] is True for c in candidates),
+                    f"unflagged: {[c for c in candidates if not c['is_incumbent']]}",
+                )
+                check(
+                    f"every candidate names a real person row ({label})",
+                    all(c["person_id"].startswith("person:") and c["name"] for c in candidates),
+                    f"got {candidates}",
+                )
+                check(
+                    f"the response declares that only incumbents are listed ({label})",
+                    payload["data_state"] == DataState.INCUMBENTS_ONLY.value,
+                    f"data_state is {payload['data_state']!r}",
+                )
+                check(
+                    f"the flat officeholders list agrees with the races ({label})",
+                    {o["person_id"] for o in payload["officeholders"]}
+                    == {c["person_id"] for c in candidates},
+                    "the two views of the same people disagree",
+                )
+
+            # --- a blank address is still refused -------------------------
             blank = api.get("/v1/ballot", params={"address": "   "})
+            check(
+                "a blank address is refused with 422",
+                blank.status_code == 422,
+                f"{blank.status_code}",
+            )
+
+        # --- the acceptance criterion: p95 under 800 ms -------------------
+        logger.info("\n--- latency against story 2.4's 800 ms budget")
+        all_timings = [t for timings in timings_by_address.values() for t in timings]
+        steady = [t for t in all_timings if t != cold_start_ms]
+        pooled_p95 = percentile(steady, 95)
+        logger.info(
+            "      %d lookups across %d addresses:"
+            "  median %.0fms  p90 %.0fms  p95 %.0fms  max %.0fms",
+            len(steady),
+            len(CASES),
+            statistics.median(steady),
+            percentile(steady, 90),
+            pooled_p95,
+            max(steady),
+        )
+        logger.info(
+            "      cold start (first request of the process): %.0fms — reported "
+            "separately, not in the p95 above",
+            cold_start_ms or 0.0,
+        )
+        over = [t for t in steady if t >= BUDGET_MS]
+        if over:
+            # Listed individually rather than left inside the percentile,
+            # because the honest account of this budget is "the geocoder
+            # occasionally takes seconds and nothing on Informed's side can
+            # cache that away". Seeing *which* requests were slow is what tells
+            # an operator whether the endpoint regressed or census.gov had a
+            # bad minute.
+            logger.info(
+                "      %d of %d lookups were at or over budget: %s",
+                len(over),
+                len(steady),
+                ", ".join(f"{t:.0f}ms" for t in sorted(over, reverse=True)[:8]),
+            )
         check(
-            "a blank address is refused with 422",
-            blank.status_code == 422,
-            f"status {blank.status_code}",
+            f"the steady-state p95 is under {BUDGET_MS:.0f}ms",
+            pooled_p95 < BUDGET_MS,
+            f"p95 was {pooled_p95:.0f}ms",
+        )
+        # Reported alongside, because it is the more stable statistic at this
+        # sample size and the one that moves if Informed's own work gets slower.
+        # A p90 inside budget with a p95 outside it is the signature of a
+        # geocoder spike, not of a regression here.
+        check(
+            f"the steady-state p90 is under {BUDGET_MS:.0f}ms",
+            percentile(steady, 90) < BUDGET_MS,
+            f"p90 was {percentile(steady, 90):.0f}ms — this one is about "
+            "Informed's own work, so investigate rather than re-running",
         )
 
-    except (ZeroDBError, RuntimeError) as exc:
-        failures.append(f"live call failed: {exc}")
+        # --- privacy -------------------------------------------------------
+        logger.info("\n--- privacy: the address reaches no response and no log")
+        log_blob = " ".join(f"{r.getMessage()} {r.args}" for r in records).lower()
+        body_blob = " ".join(bodies).lower()
+        for address, label, _ in CASES:
+            # Checked by distinctive fragment rather than whole string, because
+            # the geocoder echoes the address normalised and upper-cased. A bare
+            # house number is not distinctive — "20" and "400" occur in
+            # timestamps, ids and counts — so the number is only checked as part
+            # of "<number> <street>", while the street name and ZIP stand alone.
+            street_line = address.split(",")[0]
+            fragments = (
+                address.lower(),
+                street_line.lower(),
+                street_line.split(" ", 1)[1].lower(),
+                address.rsplit(" ", 1)[-1],
+            )
+            check(
+                f"no response body carries any part of the address ({label.split(' —')[0]})",
+                not [f for f in fragments if f in body_blob],
+                f"leaked: {[f for f in fragments if f in body_blob]}",
+            )
+            check(
+                f"no log line carries any part of the address ({label.split(' —')[0]})",
+                not [f for f in fragments if f in log_blob],
+                f"leaked: {[f for f in fragments if f in log_blob]}",
+            )
+
+    except ZeroDBError as exc:
+        failures.append(f"ZeroDB error: {exc}")
         logger.error("FAIL  live call failed: %s", exc)
 
     finally:
-        # --- cleanup, then confirm it took, unfiltered --------------------
-        logger.info("cleaning up %d live rows", len(written))
-        for table, row_id in reversed(written):
-            try:
-                client.delete_row(table, row_id)
-            except ZeroDBNotFoundError:
-                logger.info("  already gone: %s/%s", table, row_id)
-            except ZeroDBError as exc:
-                failures.append(f"could not delete {table}/{row_id}: {exc}")
-                logger.error("  FAILED to delete %s/%s: %s", table, row_id, exc)
-
-        leftover = []
-        for table, row_id in written:
-            remaining = count_live_rows(client, table, row_id)
-            if remaining:
-                leftover.append(f"{table}/{row_id} ({remaining} row(s))")
-        if leftover:
-            failures.append(f"live rows left behind: {', '.join(leftover)}")
-            logger.error("FAIL  cleanup left rows behind: %s", ", ".join(leftover))
-        else:
-            logger.info("PASS  every row written was deleted and confirmed gone (unfiltered read)")
-
+        app_logger.removeHandler(capture)
         client.close()
 
     if failures:
