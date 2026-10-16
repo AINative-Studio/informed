@@ -30,6 +30,7 @@ import {
   SENATE_BODY_ID,
   fetchBallot,
 } from './api/ballot';
+import { ProfileSaveError, followPerson, unfollowPerson } from './api/profiles';
 
 export function BallotPage() {
   const inputId = useId();
@@ -145,12 +146,83 @@ function Chamber({
             <li key={person.person_id}>
               {person.name}
               {person.party ? <span> ({person.party})</span> : null}
+              {' '}
+              <FollowButton person={person} />
             </li>
           ))}
         </ul>
       )}
     </>
   );
+}
+
+/**
+ * Follow/unfollow toggle for one officeholder (story 15.1).
+ *
+ * Minimal and functional, not polished — ui-prd.md's full design spec is a
+ * later story's job. Deliberately just a button with a readable label
+ * ("Follow Rep. X" / "Unfollow Rep. X"), not an icon-only control, so the
+ * accessible name and the visible text are the same thing.
+ *
+ * Follow state is local to this button (not re-derived from a loaded
+ * profile): story 15.1's scope is "follow an incumbent", and reading back
+ * who is already followed to seed this screen's initial state is
+ * `loadProfile`'s job for a future story to wire in here, not invented now.
+ */
+function FollowButton({ person }: { person: Officeholder }) {
+  const userId = ensureDemoUserId();
+  const [isFollowing, setIsFollowing] = useState(false);
+  const [isPending, setIsPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function onToggle() {
+    setError(null);
+    setIsPending(true);
+    try {
+      if (isFollowing) {
+        await unfollowPerson(userId, person.person_id);
+        setIsFollowing(false);
+      } else {
+        await followPerson(userId, person.person_id);
+        setIsFollowing(true);
+      }
+    } catch (caught) {
+      setError(
+        caught instanceof ProfileSaveError
+          ? caught.message
+          : 'We could not update who you follow just now. Please try again.',
+      );
+    } finally {
+      setIsPending(false);
+    }
+  }
+
+  return (
+    <>
+      <button type="button" onClick={onToggle} disabled={isPending}>
+        {isFollowing ? `Unfollow ${person.name}` : `Follow ${person.name}`}
+      </button>
+      {error ? <span role="alert">{error}</span> : null}
+    </>
+  );
+}
+
+/**
+ * A per-browser id for the pre-auth demo path. Not a real account.
+ *
+ * Same key (and therefore the same id) `QuickOnboarding` and `ProfileEditor`
+ * already each define their own copy of — see those components' own
+ * `ensureDemoUserId` — so a follow made from the ballot view attaches to the
+ * same profile a voter saves their interests to, rather than a fourth,
+ * disconnected identity.
+ */
+function ensureDemoUserId(): string {
+  const key = 'informed:demo-user-id';
+  const existing = window.localStorage.getItem(key);
+  if (existing) return existing;
+  const generated = `demo-${Math.random().toString(36).slice(2)}-${Date.now()}`;
+  window.localStorage.setItem(key, generated);
+  return generated;
 }
 
 /** A voter-facing message for whatever the query threw. */
