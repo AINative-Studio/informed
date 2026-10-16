@@ -228,6 +228,23 @@ class UnknownProposalError(PanelReviewError):
     """No proposal is stored under that id."""
 
 
+class MissingReasonError(PanelReviewError):
+    """A rejection with no reason.
+
+    `PanelReview._a_rejection_says_why` is the backstop and the real rule — it
+    stops such a row reaching storage by any path. This exception exists
+    because the model's refusal arrives at a caller wrapped in the repository's
+    generic `RowValidationError` ("panel_reviews row is invalid: 1 problem(s)
+    in the row"), which tells an HTTP client nothing and, worse, is not
+    something the router can distinguish from a programming error — so the
+    endpoint answered 500 for what is plainly a bad request.
+
+    Raised here, before the write, the refusal keeps the model's own wording
+    and the router can map it to 422. The model check stays: this is the
+    friendly path, not the enforcement.
+    """
+
+
 @dataclass(frozen=True)
 class ReviewStatus:
     """What the ledger currently says about one row's wording.
@@ -1075,6 +1092,17 @@ class PanelReviewService:
             would get wrong here, since several decisions about one row at one
             version are all simultaneously true history.
         """
+        # Validate before pacing: there is no reason to sleep on the way to a
+        # refusal, and the same ordering `Repository.upsert` uses (validate,
+        # then spend a round trip).
+        if decision == "rejected" and not (reason or "").strip():
+            # The same rule `PanelReview` enforces, checked here so the caller
+            # gets a refusal it can act on rather than the repository's generic
+            # "row is invalid". See `MissingReasonError`.
+            raise MissingReasonError(
+                f"the review of {subject_id!r} rejects the wording but gives no reason; "
+                "a rejection the author cannot act on is not a review"
+            )
         self._pace()
         fields = proposed or {}
         row_id = review_id(
@@ -1340,6 +1368,7 @@ __all__ = [
     "PUBLISHABLE_DECISIONS",
     "EmptyProposalError",
     "GrandfatherReport",
+    "MissingReasonError",
     "PanelReviewError",
     "PanelReviewService",
     "QueueEntry",

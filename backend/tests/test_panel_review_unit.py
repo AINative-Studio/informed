@@ -25,6 +25,7 @@ from app.panel_review.service import (
     BACKFILL_REVIEWER_ID,
     PUBLISHABLE_DECISIONS,
     EmptyProposalError,
+    MissingReasonError,
     PanelReviewService,
     ReviewStatus,
     SelfReviewError,
@@ -720,6 +721,78 @@ def test_a_topic_proposal_carrying_stance_wording_is_refused(
 
 
 # --- the stored row's own rules -------------------------------------------
+
+
+def test_the_service_refuses_a_reasonless_rejection_before_the_write(
+    panel: PanelReviewService,
+) -> None:
+    """A domain refusal, not the repository's generic validation error.
+
+    `PanelReview`'s own validator is the enforcement and catches this on every
+    path — but it reaches a caller wrapped as `RowValidationError`
+    ("panel_reviews row is invalid: 1 problem(s) in the row"), which a router
+    cannot tell apart from a programming error. Found by the HTTP contract
+    tests, where the endpoint answered **500** for what is plainly a bad
+    request. The service now refuses first, so the message survives and the
+    router maps it to 422.
+    """
+    with pytest.raises(MissingReasonError):
+        panel.record_decision(
+            subject_table="stances",
+            subject_id=ANCHOR_STANCE,
+            subject_version=1,
+            reviewer_id=REVIEWER_A,
+            decision="rejected",
+        )
+    with pytest.raises(MissingReasonError):
+        panel.record_decision(
+            subject_table="stances",
+            subject_id=ANCHOR_STANCE,
+            subject_version=1,
+            reviewer_id=REVIEWER_A,
+            decision="rejected",
+            reason="   ",
+        )
+    # Nothing was written: the refusal happens before the ledger is touched.
+    assert panel.history_for(subject_table="stances", subject_id=ANCHOR_STANCE) == []
+
+
+def test_refusing_a_reasonless_rejection_does_not_pay_for_pacing() -> None:
+    """Validate before pacing: no reason to sleep on the way to a refusal."""
+    transport = FakeZeroDBTransport()
+    zerodb = ZeroDBClient(
+        transport=transport, project_id="proj-test", backoff_base=0.0, sleep=lambda _: None
+    )
+    for table in ("issue_topics", "stances", "panel_reviews"):
+        zerodb.create_table(table, {"id": "string"})
+    TaxonomySeeder(zerodb, pace=lambda: None).run()
+    StanceSeeder(zerodb, pace=lambda: None).run()
+
+    paced = 0
+
+    def count_pace() -> None:
+        nonlocal paced
+        paced += 1
+
+    service = PanelReviewService(zerodb, pace=count_pace)
+    with pytest.raises(MissingReasonError):
+        service.record_decision(
+            subject_table="stances",
+            subject_id=ANCHOR_STANCE,
+            subject_version=1,
+            reviewer_id=REVIEWER_A,
+            decision="rejected",
+        )
+    assert paced == 0, "the pacer ran on the way to a refusal"
+
+    service.record_decision(
+        subject_table="stances",
+        subject_id=ANCHOR_STANCE,
+        subject_version=1,
+        reviewer_id=REVIEWER_A,
+        decision="approved",
+    )
+    assert paced == 1, "the pacer did not run for a real write"
 
 
 def test_a_rejection_must_carry_a_reason() -> None:

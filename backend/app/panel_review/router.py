@@ -73,6 +73,7 @@ from app.panel_review.models import (
 from app.panel_review.service import (
     BACKFILL_REVIEWER_ID,
     EmptyProposalError,
+    MissingReasonError,
     PanelReviewService,
     ReviewStatus,
     SelfReviewError,
@@ -299,8 +300,10 @@ def post_review_decision(
         # is a conflict with stored state, and a client should re-read and
         # re-decide rather than correct its request.
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-    except ValueError as exc:
-        # The model's own rule: a rejection must say why.
+    except (MissingReasonError, ValueError) as exc:
+        # A rejection must say why. `MissingReasonError` is the service's own
+        # refusal; the bare `ValueError` is `PanelReview`'s model validator,
+        # kept as a backstop in case a rule is added there and not here.
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
@@ -405,7 +408,7 @@ def post_proposal_decision(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except VersionMismatchError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-    except ValueError as exc:
+    except (MissingReasonError, ValueError) as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
