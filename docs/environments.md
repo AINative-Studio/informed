@@ -153,6 +153,45 @@ GitHub. That migration does not change the env var contract in
 6. Before committing anything, run a quick local secret scan (see below) —
    CI should also run one, but don't rely on that alone.
 
+### If ZeroDB calls 403 with `API_KEY_PROJECT_MISMATCH`
+
+A key's **name** on AINative's platform and the **project it is actually
+bound to** are independent — nothing stops a key named `informed-developer`
+from having been minted against a totally unrelated project (this happened
+during story 1.3/1.6 cleanup: a key named `informed-developer` was bound to
+an unrelated project called "Ocean Production", not to the `informed`
+project at all). Symptoms:
+
+- `GET /api/v1/projects/{informed_id}` can still return `200` with the
+  correct project details — that lookup does not appear to enforce
+  key-to-project scoping.
+- Every data-plane call (`.../database/tables`, `.../rows`, etc.) 403s with
+  `{"error_code": "API_KEY_PROJECT_MISMATCH"}`, regardless of retries.
+- The key still works fine against *other* projects, so it isn't revoked
+  or expired — it's just scoped to the wrong one.
+
+**Fix:** mint a new key explicitly scoped to the right project id, rather
+than trusting a key's name:
+
+```bash
+curl -X POST "https://api.ainative.studio/api/v1/api-keys" \
+  -H "Authorization: Bearer $EXISTING_WORKING_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"informed-app-key","project_id":"<the real project id>"}'
+```
+
+The response's `project_id`/`project_name` fields confirm the actual
+binding — check those, not the key's own `name`, before trusting it.
+Verify with a data-plane call (not just `GET /projects/{id}`) before
+relying on it:
+
+```bash
+curl -H "Authorization: Bearer $NEW_KEY" \
+  "https://api.ainative.studio/api/v1/projects/<project_id>/database/tables"
+```
+
+A `200` with an empty or real table list confirms correct scoping.
+
 ### Quick local secret scan
 
 Run this before pushing if you've touched anything env-related:
