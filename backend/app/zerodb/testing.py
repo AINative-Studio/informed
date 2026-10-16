@@ -219,6 +219,12 @@ class FakeZeroDBTransport:
             return self._route_vector_index(body, params)
         if segments[-2:] == ["vectors", "stats"]:
             return self._route_vector_stats(params)
+        if "vectors" in segments and segments[-1] != "vectors":
+            # .../database/vectors/{vector_id} — story 3.4's get/delete-by-id.
+            return self._route_vector_by_id(method, segments[-1], params)
+        if segments[-1] == "vectors" and "database" in segments:
+            # .../database/vectors — story 3.4's list, paged by namespace.
+            return self._route_list_vectors(params)
         if "embeddings" in segments:
             return self._route_embeddings(segments[-1], body)
         if "tables" in segments:
@@ -467,6 +473,78 @@ class FakeZeroDBTransport:
         }
         self.vector_indexes.setdefault(namespace, []).append(index)
         return ZeroDBResponse(status_code=201, json_body=index, text=json_module.dumps(index))
+
+    def _route_list_vectors(self, params: dict[str, Any]) -> ZeroDBResponse:
+        """GET /projects/{project_id}/database/vectors — confirmed live during
+        story 3.4. Answers `PaginatedVectorsResponse`'s exact shape: `vectors`
+        each carrying `vector_metadata` (not `metadata` — see
+        `app.zerodb.models.VectorRecord`'s docstring for why the live API uses
+        a different key here than it does for search), paged by `offset`/
+        `limit`, optionally filtered to one namespace.
+        """
+        namespace_filter = params.get("namespace")
+        if namespace_filter is not None:
+            pool = [(namespace_filter, vector) for vector in self.vectors.get(namespace_filter, [])]
+        else:
+            pool = [
+                (namespace, vector)
+                for namespace, vectors in self.vectors.items()
+                for vector in vectors
+            ]
+
+        offset = int(params.get("offset", 0) or 0)
+        limit = int(params.get("limit", 100) or 100)
+        page = pool[offset : offset + limit]
+        return _ok(
+            {
+                "total": len(pool),
+                "offset": offset,
+                "limit": limit,
+                "has_more": offset + len(page) < len(pool),
+                "vectors": [
+                    {
+                        "vector_id": vector["vector_id"],
+                        "namespace": namespace,
+                        "document": vector.get("document"),
+                        "vector_metadata": dict(vector.get("metadata") or {}),
+                        "source": None,
+                        "created_at": "2026-10-16T00:00:00Z",
+                    }
+                    for namespace, vector in page
+                ],
+            }
+        )
+
+    def _route_vector_by_id(
+        self, method: str, vector_id: str, params: dict[str, Any]
+    ) -> ZeroDBResponse:
+        """GET/DELETE /projects/{project_id}/database/vectors/{vector_id}.
+
+        Confirmed live during story 3.4: both take an optional `namespace`
+        query filter, and `DELETE` answers `{"message": ...}`
+        (`VectorDeleteResult`) rather than echoing the deleted vector.
+        """
+        namespace_filter = params.get("namespace")
+        for namespace, vectors in self.vectors.items():
+            if namespace_filter is not None and namespace != namespace_filter:
+                continue
+            for index, vector in enumerate(vectors):
+                if vector["vector_id"] != vector_id:
+                    continue
+                if method == "DELETE":
+                    vectors.pop(index)
+                    return _ok({"message": f"Vector {vector_id} deleted successfully"})
+                return _ok(
+                    {
+                        "vector_id": vector["vector_id"],
+                        "namespace": namespace,
+                        "document": vector.get("document"),
+                        "vector_metadata": dict(vector.get("metadata") or {}),
+                        "source": None,
+                        "created_at": "2026-10-16T00:00:00Z",
+                    }
+                )
+        return _not_found(f"Vector '{vector_id}' not found")
 
     def _route_vector_stats(self, params: dict[str, Any]) -> ZeroDBResponse:
         """GET /projects/{project_id}/database/vectors/stats — confirmed live.

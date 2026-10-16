@@ -90,7 +90,9 @@ from app.zerodb.models import (
     StoredFile,
     Table,
     Traversal,
+    VectorDeleteResult,
     VectorIndex,
+    VectorPage,
     VectorStats,
 )
 from app.zerodb.settings import ZeroDBSettings
@@ -573,6 +575,64 @@ class ZeroDBClient:
             params={"project_id": self._project_id},
         )
         return self._parse(VectorIndex, response)
+
+    def list_vectors(
+        self,
+        *,
+        namespace: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> VectorPage:
+        """List vectors in this project, a page at a time.
+
+        Wraps `GET /projects/{project_id}/database/vectors`
+        (confirmed live during story 3.4; no corresponding MCP tool is known
+        to exist yet, so this is one of the primitives the MCP swap will need
+        to add). `detailed` is deliberately never sent as true: this client
+        only ever needs a vector's id, namespace, document and metadata to
+        decide whether to rebuild it, never its raw embedding, and fetching
+        the embedding for every vector in a namespace would be pure waste.
+
+        This is how story 3.4's embedding pipeline checks what is already
+        stored before deciding to skip, rebuild or freshly embed a row — the
+        same role `query_rows` plays for NoSQL tables, but for vectors, which
+        have no equivalent of `get_row`-by-natural-key: a vector's only
+        identity is `metadata`, which this client must read back and match
+        itself.
+        """
+        params: dict[str, Any] = {"limit": limit, "offset": offset}
+        if namespace is not None:
+            params["namespace"] = namespace
+        response = self._request(
+            "GET", f"/projects/{self._project_id}/database/vectors", params=params
+        )
+        return self._parse(VectorPage, response)
+
+    def delete_vector(self, *, vector_id: str, namespace: str | None = None) -> VectorDeleteResult:
+        """Delete one vector by its id.
+
+        Wraps `DELETE /projects/{project_id}/database/vectors/{vector_id}`
+        (confirmed live during story 3.4). `namespace` is accepted by the live
+        endpoint as an optional filter and is passed through when given, which
+        guards against deleting a same-id vector that happens to live in a
+        different namespace — vector ids are not scoped to a namespace the way
+        Informed's NoSQL ids are scoped to a table.
+
+        This is the "rebuild" half of "embeddings are rebuilt when a version
+        changes, never patched in place" (datamodel.md): there is no update
+        endpoint for a vector's embedding, so a version bump is this call
+        followed by `embed_and_store`, never a single update call.
+        """
+        self._require(vector_id, "vector_id")
+        params: dict[str, Any] = {}
+        if namespace is not None:
+            params["namespace"] = namespace
+        response = self._request(
+            "DELETE",
+            f"/projects/{self._project_id}/database/vectors/{vector_id}",
+            params=params,
+        )
+        return self._parse(VectorDeleteResult, response)
 
     def get_vector_stats(self, *, namespace: str | None = None) -> VectorStats:
         """Per-namespace vector counts for this project.
