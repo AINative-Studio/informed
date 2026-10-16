@@ -89,3 +89,23 @@ Feature: A voter's address resolves to their congressional district
     And a sitting representative whose term district id came from story 2.2
     When the voter's address is resolved
     Then the resolved district id equals that representative's term district id
+
+  # For an at-large seat the geocoder has no district number, so the House and
+  # Senate divisions are the *same* OCD-ID. Any delegation lookup keyed on the
+  # division alone keeps one chamber and silently drops the other — and with the
+  # senators considered second it is the representative who disappears. Measured
+  # against the live project before this was fixed: every voter in WY, VT, DE,
+  # AK, ND, SD, DC and the five territories was shown no representative.
+  Scenario: An at-large state's representative is not lost to its senators
+    Given the Census Geocoder returns congressional district "00" in "WY"
+    And that state's at-large representative and two senators are stored
+    When the voter's address is submitted to the ballot endpoint
+    Then the ballot names exactly 1 House member
+    And the ballot names exactly 2 senators
+
+  Scenario: A delegate's district returns the delegate and no senators
+    Given the Census Geocoder returns congressional district "98" in "DC"
+    And that district's non-voting delegate is stored
+    When the voter's address is submitted to the ballot endpoint
+    Then the ballot names exactly 1 House member
+    And the ballot names exactly 0 senators

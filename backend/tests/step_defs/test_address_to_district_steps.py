@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +30,7 @@ from app.districts.resolver import (
 )
 from app.main import create_app, zerodb_client
 from app.repositories import Repository
-from app.repositories.models import District
+from app.repositories.models import District, Person
 from app.zerodb import ZeroDBClient
 from app.zerodb.testing import FakeZeroDBTransport
 from tests.support.reference_data import REFERENCE_TABLES, seed_reference_data
@@ -163,6 +164,53 @@ def district_exists(ctx: ResolveContext, zdb: ZeroDBClient, district_id: str) ->
     ctx.zerodb = zdb
 
 
+def _store_member(zdb: ZeroDBClient, person_id: str, body_id: str, district_id: str) -> None:
+    """One synthetic member with a term current today.
+
+    Bounds are relative to today so no scenario starts failing on a calendar
+    date, and the ids are `ZZ`-prefixed synthetic ones: prd.md forbids real
+    voter data in fixtures, and these rows exist only to be counted.
+    """
+    today = date.today()
+    Repository(client=zdb, model=Person).upsert(
+        {
+            "id": person_id,
+            "canonical_name": f"Synthetic {body_id}",
+            "terms": [
+                {
+                    "body_id": body_id,
+                    "district_id": district_id,
+                    "party": "Independent",
+                    "start": (today - timedelta(days=365)).isoformat(),
+                    "end": (today + timedelta(days=365)).isoformat(),
+                }
+            ],
+        }
+    )
+
+
+@given("that state's at-large representative and two senators are stored")
+def at_large_delegation_stored(ctx: ResolveContext, zdb: ZeroDBClient) -> None:
+    """An at-large seat: the House and Senate divisions are the same string.
+
+    Which is exactly what makes this scenario worth having — a lookup keyed on
+    the division alone cannot hold both chambers at once.
+    """
+    division = "ocd-division/country:us/state:wy"
+    _store_member(zdb, "person:ZZWYREP", "us-house", division)
+    _store_member(zdb, "person:ZZWYSEN1", "us-senate", division)
+    _store_member(zdb, "person:ZZWYSEN2", "us-senate", division)
+    ctx.zerodb = zdb
+
+
+@given("that district's non-voting delegate is stored")
+def delegate_stored(ctx: ResolveContext, zdb: ZeroDBClient) -> None:
+    """DC's delegate holds a House term in the state-only division, and there
+    are no senators to mask the collision."""
+    _store_member(zdb, "person:ZZDCDEL", "us-house", "ocd-division/country:us/state:dc")
+    ctx.zerodb = zdb
+
+
 @given("a sitting representative whose term district id came from story 2.2")
 def representative_from_2_2(ctx: ResolveContext) -> None:
     """The exact `terms[].district_id` story 2.2's loader builds for WA-07.
@@ -199,6 +247,17 @@ def resolve_empty(ctx: ResolveContext) -> None:
     with pytest.raises(AddressResolutionError) as excinfo:
         _resolver(ctx).resolve("   ")
     ctx.error = excinfo.value
+
+
+@when("the voter's address is submitted to the ballot endpoint")
+def submit_for_delegation(ctx: ResolveContext, zdb: ZeroDBClient) -> None:
+    """Through the real `BallotService`, which creates the districts row itself.
+
+    No district is seeded by these scenarios on purpose: the at-large row is
+    created from the geocoder's own answer on this very call, which is the path
+    a real first-time voter in Wyoming walks.
+    """
+    ctx.response = BallotService(client=zdb, resolver=_resolver(ctx)).ballot_for(ADDRESS)
 
 
 @when("the voter submits that address to the ballot endpoint")
@@ -311,6 +370,22 @@ def resolution_omits_address(ctx: ResolveContext) -> None:
         "senate_district_id",
         "state",
     }
+
+
+@then(parsers.parse("the ballot names exactly {count:d} House member"))
+@then(parsers.parse("the ballot names exactly {count:d} House members"))
+def ballot_house_count(ctx: ResolveContext, count: int) -> None:
+    assert ctx.response is not None
+    house = [o for o in ctx.response.officeholders if o.body_id == "us-house"]
+    assert len(house) == count, f"got {[o.name for o in house]}"
+
+
+@then(parsers.parse("the ballot names exactly {count:d} senator"))
+@then(parsers.parse("the ballot names exactly {count:d} senators"))
+def ballot_senate_count(ctx: ResolveContext, count: int) -> None:
+    assert ctx.response is not None
+    senate = [o for o in ctx.response.officeholders if o.body_id == "us-senate"]
+    assert len(senate) == count, f"got {[o.name for o in senate]}"
 
 
 @then("the resolved district id equals that representative's term district id")

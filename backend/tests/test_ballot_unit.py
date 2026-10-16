@@ -237,6 +237,85 @@ def test_service_returns_one_house_member_and_two_senators(client: ZeroDBClient)
     assert ballot.district.id == HOUSE_DISTRICT
 
 
+def test_service_returns_the_representative_of_an_at_large_state(
+    client: ZeroDBClient,
+) -> None:
+    """An at-large state's one representative must not be lost to its senators.
+
+    The case story 1.5 could not reach and story 2.3 creates. In Wyoming,
+    Vermont, Delaware, Alaska and the two Dakotas the House seat is at-large, so
+    the geocoder codes it `00` and `ocd_id_for` returns the **state-only**
+    division — which means `district_id` and `senate_district_id` are the same
+    string. Any lookup keyed on the district id alone silently keeps whichever
+    chamber it saw last and drops the other, and with the senators written
+    second it is the representative who disappears: a Wyoming voter is shown two
+    senators and told they have no representative.
+
+    Not a hypothetical. Confirmed against the live project, where every voter in
+    those six states plus DC and the five territories — roughly five million
+    people — got an empty House seat.
+    """
+    seed_body(client)
+    at_large = "ocd-division/country:us/state:wy"
+    Repository(client=client, model=District).upsert(
+        {
+            "id": at_large,
+            "body_id": "us-house",
+            "name": "Congressional District (at Large)",
+            "state": "WY",
+            "valid_from": "2023-01-03",
+        }
+    )
+    people: Repository[Person] = Repository(client=client, model=Person)
+    people.upsert(person("person:ZZATLARGE", "us-house", at_large, name="Rep. At Large"))
+    people.upsert(person("person:ZZWYSEN1", "us-senate", at_large, name="Sen. Wyo One"))
+    people.upsert(person("person:ZZWYSEN2", "us-senate", at_large, name="Sen. Wyo Two"))
+
+    resolver = FixedDistrictResolver(at_large, name="Congressional District (at Large)")
+    ballot = BallotService(client=client, resolver=resolver).ballot_for(ADDRESS)
+
+    assert [o.name for o in ballot.officeholders if o.body_id == HOUSE_BODY_ID] == ["Rep. At Large"]
+    assert [o.name for o in ballot.officeholders if o.body_id == SENATE_BODY_ID] == [
+        "Sen. Wyo One",
+        "Sen. Wyo Two",
+    ]
+
+
+def test_service_returns_the_delegate_of_a_district_with_no_senators(
+    client: ZeroDBClient,
+) -> None:
+    """DC's delegate is the same collision with no senators to hide it.
+
+    DC, Puerto Rico and the four other territories have a non-voting delegate or
+    resident commissioner (geocoder code `98`) and no senators at all, so the
+    state-only division carries a House term and nothing else. The delegate is a
+    real sitting member of Congress that story 2.2 loaded, and a DC voter asking
+    who represents them must be told — an empty answer would read as "Informed
+    has no data for you".
+    """
+    seed_body(client)
+    dc = "ocd-division/country:us/state:dc"
+    Repository(client=client, model=District).upsert(
+        {
+            "id": dc,
+            "body_id": "us-house",
+            "name": "Delegate District (at Large)",
+            "state": "DC",
+            "valid_from": "2023-01-03",
+        }
+    )
+    Repository(client=client, model=Person).upsert(
+        person("person:ZZDELEGATE", "us-house", dc, name="Del. Synthetic")
+    )
+
+    resolver = FixedDistrictResolver(dc, name="Delegate District (at Large)")
+    ballot = BallotService(client=client, resolver=resolver).ballot_for(ADDRESS)
+
+    assert [(o.name, o.body_id) for o in ballot.officeholders] == [
+        ("Del. Synthetic", HOUSE_BODY_ID)
+    ]
+
+
 def test_service_ignores_a_person_from_another_district(client: ZeroDBClient) -> None:
     """The whole point of filtering on `terms[]` rather than returning the table.
 
