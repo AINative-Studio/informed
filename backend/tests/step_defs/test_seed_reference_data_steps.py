@@ -195,7 +195,9 @@ def body_seats(zerodb: ZeroDBClient, row_id: str, seats: int) -> None:
 # --- the report -------------------------------------------------------------
 
 
-@then(parsers.parse("the seed reports {jurisdictions:d} jurisdiction and {bodies:d} bodies written"))
+@then(
+    parsers.parse("the seed reports {jurisdictions:d} jurisdiction and {bodies:d} bodies written")
+)
 def seed_report_counts(result: dict[str, Any], jurisdictions: int, bodies: int) -> None:
     seed: SeedReport = result["report"].seed
     assert len(seed.jurisdictions_written) == jurisdictions

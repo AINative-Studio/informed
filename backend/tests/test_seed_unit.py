@@ -15,8 +15,8 @@ from app.repositories.models import Body, Jurisdiction
 from app.seed import (
     FEDERAL_BODIES,
     US_FEDERAL,
-    SeedReport,
     Seeder,
+    SeedReport,
     seeded_row_ids,
 )
 from app.zerodb import ZeroDBClient
@@ -144,7 +144,12 @@ def test_a_jurisdiction_or_body_needs_an_explicit_id(client: ZeroDBClient) -> No
     jurisdictions: Repository[Jurisdiction] = Repository(client=client, model=Jurisdiction)
     with pytest.raises(RowValidationError, match="needs an id"):
         jurisdictions.upsert(
-            {"name": "United States", "country_code": "US", "level": "federal"}
+            {
+                "name": "United States",
+                "country_code": "US",
+                "level": "federal",
+                "adapter_name": "us-federal",
+            }
         )
 
 

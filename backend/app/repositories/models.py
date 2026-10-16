@@ -19,8 +19,12 @@ query reading `canonical_name` — a silent data-loss bug that no runtime error
 would ever surface. Forbidding unknown fields here is the only place that typo
 can be caught.
 
-**Only five tables of the 22 are modelled here**, on purpose. Story 1.4's job is
-the generic repository machinery, and these five exercise all of it:
+**Only some of the 22 tables are modelled here**, on purpose: a table gets its
+model in the story that first reads or writes it. Story 1.4 modelled the five
+that exercise all of the generic repository machinery, and story 2.1 added
+`jurisdictions` and `bodies` because it seeds them.
+
+Story 1.4's five and what each one proves:
 `districts` (no references at all), `people` (an embedded `terms[]` list),
 `roll_calls` (an optional reference), `member_votes` (two required references
 and a compound natural key — the clearest reference-validation case in
@@ -67,6 +71,25 @@ VerdictValue = Literal["kept", "partial", "broken", "no_opportunity", "absent", 
 
 #: datamodel.md: "`qa_status` takes `pending`, `approved` or `rejected`".
 QaStatus = Literal["pending", "approved", "rejected"]
+
+#: The scale a jurisdiction legislates at. datamodel.md's `jurisdictions` row
+#: carries a `level` field and gives `us-federal`, `eu` and `uk` as its id
+#: examples, without enumerating the vocabulary; these are the levels those
+#: three examples need (`eu` is supranational, `uk` national, `us-federal`
+#: federal) plus the two sub-national levels epic 17's non-US jurisdictions
+#: will reach for. A `Literal` rather than a bare string for the same reason
+#: every other vocabulary here is one: a jurisdiction stored at level
+#: "fedral" raises nowhere — it just stops appearing in the query that asks
+#: for federal ones.
+JurisdictionLevel = Literal["supranational", "national", "federal", "state", "local"]
+
+#: Which house of a bicameral legislature a body is, or `unicameral` for one
+#: that has no counterpart. Normalised rather than named per country ("House"
+#: vs "Commons" vs "Bundestag") so that a query for "the lower chamber" is one
+#: query across every jurisdiction — prd.md's `JurisdictionAdapter` promise
+#: that adding a country is an adapter, not a rewrite. The country's own name
+#: for the chamber lives in `Body.name`.
+Chamber = Literal["lower", "upper", "unicameral"]
 
 
 class RowModel(BaseModel):
@@ -194,14 +217,86 @@ _ID_PREFIXES = frozenset({"person", "prm", "src", "stm", "cor", "aud", "prov", "
 # --- Reference and people -------------------------------------------------
 
 
+class Jurisdiction(RowModel):
+    """A polity whose legislature Informed tracks, keyed by a slug.
+
+    datamodel.md: id pattern `us-federal`, `eu`, `uk`; fields name,
+    country_code, level, adapter_name, active.
+
+    The id is supplied rather than derived. There is no composable natural key
+    — `us-federal` is not a function of "United States" and "federal" (the UK
+    is `uk`, not `uk-national`) — so the slug IS the natural key, and the
+    repository requires the caller to pass it, exactly as it does for `people`
+    and `districts`.
+
+    `adapter_name` names the `JurisdictionAdapter` implementation that ingests
+    this jurisdiction (prd.md: "each jurisdiction plugs in through a
+    `JurisdictionAdapter` interface — adding a country is an adapter plus a
+    taxonomy localization, not a rewrite"). That interface is **story 17.1**;
+    until it exists this is a recorded intent, deliberately a plain string
+    rather than an import or a registry lookup, so nothing here pretends the
+    adapter is implemented. The resolution from this string to a class belongs
+    in 17.1, which is where a name with no adapter behind it should start
+    failing loudly.
+
+    `active` gates datamodel.md's documented main query ("All active"): a
+    jurisdiction that has been retired stays in the table — rows referencing
+    it keep resolving — but drops out of ingest and out of the ballot.
+    """
+
+    table_name: ClassVar[str] = "jurisdictions"
+
+    name: str
+    country_code: str = Field(min_length=2, max_length=2)
+    level: JurisdictionLevel
+    adapter_name: str
+    active: bool = True
+
+
+class Body(RowModel):
+    """A legislative chamber, keyed by a slug: `us-house`, `us-senate`.
+
+    datamodel.md: id pattern `us-house`, `us-senate`; fields jurisdiction_id,
+    name, chamber, seats. Like `Jurisdiction`, the slug is the natural key and
+    is supplied by the caller.
+
+    `jurisdiction_id` is a declared reference, so the repository refuses a
+    chamber whose jurisdiction is not stored (datamodel.md rule 5). That is
+    what forces the seed to write `us-federal` before either chamber, and the
+    ordering is asserted rather than assumed — see
+    `tests/features/seed_reference_data.feature`.
+
+    `seats` is bounded below because 0 seats is not a chamber, and a negative
+    count would silently distort any later "share of the chamber" arithmetic
+    rather than erroring.
+    """
+
+    table_name: ClassVar[str] = "bodies"
+    references: ClassVar[dict[str, str]] = {"jurisdiction_id": "jurisdictions"}
+
+    jurisdiction_id: str
+    name: str
+    chamber: Chamber
+    seats: int = Field(ge=1)
+
+
 class District(RowModel):
     """A legislative district, keyed by its OCD-ID.
 
-    Modelled here as the simplest case: no references at all, so it proves the
+    Modelled as the simplest case: no declared references, so it proves the
     repository skips reference checking entirely rather than making a pointless
-    round trip (datamodel.md's districts reference `bodies`, but `bodies` is not
-    modelled in this story, so the reference is carried as a plain field and
-    will be declared when `Body` lands).
+    round trip.
+
+    `body_id` holds a `bodies` id and is deliberately **not** declared as a
+    reference yet, even though story 2.1 added the `Body` model it would point
+    at. Declaring it is **story 2.3's** call, not this story's: 2.3 is what
+    writes real district rows, and turning the check on changes what story
+    1.5's walking-skeleton fixtures and live verification have to seed (a
+    `bodies` row before every `districts` row). Making that change from a story
+    whose own acceptance criterion says nothing about districts would be
+    scope creep into another story's tests, so the field stays plain and the
+    seeded `us-house`/`us-senate` rows are simply waiting for 2.3 to point at
+    them.
     """
 
     table_name: ClassVar[str] = "districts"
@@ -404,8 +499,12 @@ class CandidatePosition(RowModel):
 
 
 __all__ = [
+    "Body",
     "CandidatePosition",
+    "Chamber",
     "District",
+    "Jurisdiction",
+    "JurisdictionLevel",
     "MemberVote",
     "Person",
     "QaStatus",
