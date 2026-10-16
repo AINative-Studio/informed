@@ -84,11 +84,13 @@ Feature: The ballot lookup endpoint returns races with incumbents flagged
     When the voter submits the address "1600 Pennsylvania Ave, Washington, DC"
     Then the geocoder was called exactly 1 time
     And the people table was read at most 2 times
+    And the districts table was read at most 2 times
 
-  Scenario: A second lookup in the same district does not re-read the people table
+  Scenario: A second lookup in the same district re-reads neither reference table
     When the voter submits the address "1600 Pennsylvania Ave, Washington, DC"
     And the voter submits the address "1600 Pennsylvania Ave, Washington, DC" again
     Then the people table was read at most 2 times
+    And the districts table was read at most 2 times
     And both lookups returned the same races
 
   Scenario: The latency budget is declared in the response schema

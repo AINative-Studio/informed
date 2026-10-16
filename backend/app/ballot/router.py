@@ -23,20 +23,28 @@ The status codes, and why each:
 Neither error message contains the address (prd.md, privacy first), and nothing
 here logs the query string.
 
-The one piece of state in this module (story 2.4)
-=================================================
+The shared state in this module, and why (story 2.4)
+====================================================
 
-`_PEOPLE_SNAPSHOT` is a module-level `PeopleSnapshot`, deliberately, and it is
-the only shared state in the ballot path. A per-request cache would cache
-nothing — each request would read `people` once and throw the rows away — and
-reading `people` on every request put the live p95 at 978 ms against a budget of
-800 (see `app.ballot.service` for the measurements). Sharing one snapshot across
-requests is what makes the second and subsequent lookups a median 456 ms.
+Two module-level caches, deliberately, and they are the only shared state in
+the ballot path. Request-scoped ones would cache nothing — each request would
+read, use the rows and throw them away — and reading both tables on every
+request put the live p95 well outside the 800 ms budget:
 
-It holds **public reference data about legislators** and no voter data of any
-kind: its key is nothing at all, so there is no address, profile or request
-detail in it. See `PeopleSnapshot` for why that is structural rather than
-careful.
+    reading `people` every request       p95  978 ms
+    + reading `districts` every request  p95  907 ms   (with people cached)
+    both cached                          p95  ~460 ms
+
+See `app.ballot.service` for the full set of measurements, including the
+parallelisation that was measured and rejected.
+
+Both hold **public reference data** — legislators and congressional districts —
+and no voter data of any kind. `_PEOPLE_SNAPSHOT` has no key at all;
+`_DISTRICT_CACHE` is keyed by OCD-ID, a division of roughly 760,000 people that
+identifies nobody. Neither is keyed on the address, which prd.md's privacy rule
+and story 2.3's "never stored" criterion both forbid and which
+`CensusAddressResolver`'s docstring rules out by name. See `PeopleSnapshot` and
+`DistrictCache` for why those guarantees are structural rather than careful.
 """
 
 from __future__ import annotations
@@ -46,16 +54,18 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.ballot.models import BallotResponse
-from app.ballot.service import BallotService, PeopleSnapshot
+from app.ballot.service import BallotService, DistrictCache, PeopleSnapshot
 from app.districts.resolver import AddressResolutionError, DistrictNotFoundError
 from app.zerodb import ZeroDBClient
 
 router = APIRouter(prefix="/v1", tags=["ballot"])
 
 #: Shared by every request in this process, which is the whole point — see the
-#: module docstring. Not request-scoped: a snapshot that lived one request would
-#: cost one full read per request, which is the latency this story fixes.
+#: module docstring. Not request-scoped: caches that lived one request would
+#: cost one read of each table per request, which is the latency this story
+#: fixes.
 _PEOPLE_SNAPSHOT = PeopleSnapshot()
+_DISTRICT_CACHE = DistrictCache()
 
 
 def zerodb_client() -> ZeroDBClient:
@@ -79,12 +89,18 @@ def people_snapshot() -> PeopleSnapshot:
     return _PEOPLE_SNAPSHOT
 
 
+def district_cache() -> DistrictCache:
+    """The process's `districts` cache, for the same reasons."""
+    return _DISTRICT_CACHE
+
+
 def ballot_service(
     client: Annotated[ZeroDBClient, Depends(zerodb_client)],
     snapshot: Annotated[PeopleSnapshot, Depends(people_snapshot)],
+    districts: Annotated[DistrictCache, Depends(district_cache)],
 ) -> BallotService:
     """A service wired to this request's client, the default resolver and the
-    shared `people` snapshot.
+    two shared reference-data caches.
 
     The default resolver is `CensusAddressResolver` (story 2.3), which replaced
     story 1.5's stub behind the same `AddressResolver` protocol — one changed
@@ -93,7 +109,7 @@ def ballot_service(
     surface, and so prd.md's `JurisdictionAdapter` has one place to vary it per
     country later.
     """
-    return BallotService(client=client, snapshot=snapshot)
+    return BallotService(client=client, snapshot=snapshot, districts=districts)
 
 
 @router.get(
@@ -153,4 +169,11 @@ def get_ballot(
         ) from exc
 
 
-__all__ = ["ballot_service", "get_ballot", "people_snapshot", "router", "zerodb_client"]
+__all__ = [
+    "ballot_service",
+    "district_cache",
+    "get_ballot",
+    "people_snapshot",
+    "router",
+    "zerodb_client",
+]

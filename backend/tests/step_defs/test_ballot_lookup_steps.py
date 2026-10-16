@@ -30,7 +30,7 @@ from pytest_bdd import given, parsers, scenarios, then, when
 
 from app.ballot.models import BallotResponse
 from app.ballot.router import ballot_service
-from app.ballot.service import BallotService, PeopleSnapshot
+from app.ballot.service import BallotService, DistrictCache, PeopleSnapshot
 from app.districts.resolver import ResolvedDistrict
 from app.main import create_app, zerodb_client
 from app.repositories import Repository
@@ -127,10 +127,25 @@ def snapshot() -> PeopleSnapshot:
 
 
 @pytest.fixture
+def districts_cache() -> DistrictCache:
+    """One districts cache shared by every lookup in a scenario, as in production.
+
+    Same reason as `snapshot`: the router holds one per process, so a scenario
+    asserting "the second lookup read nothing again" has to share it too.
+    """
+    return DistrictCache()
+
+
+@pytest.fixture
 def service(
-    zdb: ZeroDBClient, resolver: CountingResolver, snapshot: PeopleSnapshot
+    zdb: ZeroDBClient,
+    resolver: CountingResolver,
+    snapshot: PeopleSnapshot,
+    districts_cache: DistrictCache,
 ) -> BallotService:
-    return BallotService(client=zdb, resolver=resolver, snapshot=snapshot)
+    return BallotService(
+        client=zdb, resolver=resolver, snapshot=snapshot, districts=districts_cache
+    )
 
 
 @pytest.fixture
@@ -245,10 +260,11 @@ def delegate_district_exists(
 def submit_address(
     api: TestClient, context: Any, transport: FakeZeroDBTransport, address: str
 ) -> None:
-    # Recorded before the lookup, so the read count a Then asserts on is the
-    # lookup's own and not the fixture's: seeding upserts rows, and an upsert
+    # Recorded before the lookup, so the read counts a Then asserts on are the
+    # lookups' own and not the fixture's: seeding upserts rows, and an upsert
     # reads before it writes.
     context.people_reads_before = people_reads(transport)
+    context.district_reads_before = district_reads(transport)
     context.response = api.get("/v1/ballot", params={"address": address})
 
 
@@ -259,35 +275,53 @@ def submit_address_again(api: TestClient, context: Any, address: str) -> None:
 
 
 @when("the voter submits an address in the at-large state")
-def submit_at_large(context: Any, zdb: ZeroDBClient, snapshot: PeopleSnapshot) -> None:
+def submit_at_large(
+    context: Any,
+    zdb: ZeroDBClient,
+    snapshot: PeopleSnapshot,
+    districts_cache: DistrictCache,
+) -> None:
     context.response = BallotService(
         client=zdb,
         resolver=CountingResolver(
             "ocd-division/country:us/state:wy", name="Congressional District (at Large)"
         ),
         snapshot=snapshot,
+        districts=districts_cache,
     ).ballot_for(SYNTHETIC_ADDRESS)
 
 
 @when("the voter submits an address in the delegate district")
-def submit_delegate(context: Any, zdb: ZeroDBClient, snapshot: PeopleSnapshot) -> None:
+def submit_delegate(
+    context: Any,
+    zdb: ZeroDBClient,
+    snapshot: PeopleSnapshot,
+    districts_cache: DistrictCache,
+) -> None:
     context.response = BallotService(
         client=zdb,
         resolver=CountingResolver(
             "ocd-division/country:us/state:dc", name="Delegate District (at Large)"
         ),
         snapshot=snapshot,
+        districts=districts_cache,
     ).ballot_for(SYNTHETIC_ADDRESS)
 
 
 @when("the voter submits an address in that empty district")
-def submit_empty_district(context: Any, zdb: ZeroDBClient, snapshot: PeopleSnapshot) -> None:
+def submit_empty_district(
+    context: Any,
+    zdb: ZeroDBClient,
+    snapshot: PeopleSnapshot,
+    districts_cache: DistrictCache,
+) -> None:
     context.response = BallotService(
         client=zdb,
         resolver=CountingResolver(
             "ocd-division/country:us/state:wy", name="Congressional District (at Large)"
         ),
         snapshot=snapshot,
+        districts=districts_cache,
     ).ballot_for(SYNTHETIC_ADDRESS)
 
 
@@ -412,6 +446,36 @@ def people_read_count(transport: FakeZeroDBTransport, context: Any, count: int) 
         f"`people` was read {reads} times across the lookups; one lookup must "
         "not page the table and a second must not re-read it. See "
         "BallotService.PEOPLE_PAGE_SIZE and PeopleSnapshot."
+    )
+
+
+def district_reads(transport: FakeZeroDBTransport) -> int:
+    """Every round trip the `districts` read takes, from the fake's call log.
+
+    Both `/query` and `/rows` are counted, because the live read is **two**
+    round trips: the filtered query returns nothing (story 1.4's broken
+    server-side filter) and the client-side fallback then reads the table in
+    full. Counting only the query would hide half of the ~160-290 ms this
+    story's `DistrictCache` removes.
+    """
+    return len(
+        [
+            call
+            for call in transport.calls
+            if "/tables/districts/query" in call.path or "/tables/districts/rows" in call.path
+        ]
+    )
+
+
+@then(parsers.parse("the districts table was read at most {count:d} times"))
+def district_read_count(transport: FakeZeroDBTransport, context: Any, count: int) -> None:
+    """Reads attributable to the lookups, not to the fixture that seeded them."""
+    reads = district_reads(transport) - context.district_reads_before
+    assert reads <= count, (
+        f"`districts` was read {reads} times across the lookups. One lookup "
+        "costs two round trips (filtered query, then the client-side fallback's "
+        "full read); a second lookup in the same district must cost none. See "
+        "DistrictCache."
     )
 
 

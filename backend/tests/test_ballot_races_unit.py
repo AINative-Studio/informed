@@ -9,10 +9,16 @@ returned in and the cost of returning it.
 What is deliberately *not* here: a wall-clock assertion. A millisecond number
 measured against the in-memory fake would measure this machine, and one
 measured against the live geocoder would make CI depend on census.gov
-(CLAUDE.md forbids it). So the budget is defended here by the two things that
-actually consume it — the number of geocodes and the number of reads of
-`people` — and the millisecond p95 is measured by
-`scripts/verify_ballot_live.py` against the live project.
+(CLAUDE.md forbids it). So the budget is defended here by the three things that
+actually consume it — the geocode, the read of `people` and the read of
+`districts` — counted as round trips, which mean the same thing on any machine.
+The millisecond p95 is measured by `scripts/verify_ballot_live.py` against the
+live project, which is the only place it can honestly be claimed.
+
+The `districts` half of that was found by running that script, not by reading
+the code: with `people` cached the live p95 was still 907 ms, and the request
+log showed every lookup also reading `districts` in two round trips. Hence
+`test_a_second_lookup_in_the_same_district_does_not_re_read_the_district`.
 """
 
 from __future__ import annotations
@@ -30,6 +36,7 @@ from app.ballot.service import (
     PEOPLE_PAGE_SIZE,
     SENATE_BODY_ID,
     BallotService,
+    DistrictCache,
     PeopleSnapshot,
 )
 from app.main import create_app, zerodb_client
@@ -118,6 +125,7 @@ def seed_full_delegation(client: ZeroDBClient) -> None:
 def service_for(client: ZeroDBClient, **kwargs: Any) -> BallotService:
     kwargs.setdefault("resolver", FixedDistrictResolver())
     kwargs.setdefault("snapshot", PeopleSnapshot())
+    kwargs.setdefault("districts", DistrictCache())
     return BallotService(client=client, **kwargs)
 
 
@@ -457,6 +465,134 @@ def test_a_refreshed_snapshot_picks_up_a_newly_sworn_in_member(client: ZeroDBCli
     assert [c.name for c in service.ballot_for(ADDRESS).races[0].candidates] == ["Rep. Newly Sworn"]
 
 
+def district_reads(transport: FakeZeroDBTransport) -> int:
+    """Every round trip the `districts` read takes, counted from the call log.
+
+    Both kinds are counted, because the live `DistrictStore.get` is **two**
+    round trips and not one: the client's filtered `/query` returns nothing
+    (story 1.4's broken server-side filter) and its client-side fallback then
+    reads `/rows` in full. Counting only the `/query` would hide half the cost
+    this story had to remove.
+    """
+    return len(
+        [
+            call
+            for call in transport.calls
+            if "/tables/districts/query" in call.path or "/tables/districts/rows" in call.path
+        ]
+    )
+
+
+def test_a_second_lookup_in_the_same_district_does_not_re_read_the_district(
+    client: ZeroDBClient, transport: FakeZeroDBTransport
+) -> None:
+    """The second half of the latency fix, found by measuring the first half live.
+
+    With `PeopleSnapshot` in place the live p95 was still **907 ms** against a
+    budget of 800, and the request log said why: every lookup also read
+    `districts`, at a median 158 ms and a p95 of 292 ms, in two round trips
+    (filtered query, then the client-side fallback's full read). Geocode
+    (~460-530 ms) plus that is 620-820 ms before a single candidate is
+    assembled, so the district read had to go too.
+
+    `districts` is reference data keyed by the district id — precisely the
+    "district-keyed read" `CensusAddressResolver`'s docstring names as the
+    legitimate thing to cache.
+    """
+    seed_full_delegation(client)
+    service = service_for(client)
+    service.ballot_for(ADDRESS)
+    before = district_reads(transport)
+    second = service.ballot_for(ADDRESS)
+
+    assert district_reads(transport) == before, "the second lookup re-read `districts`"
+    assert second.district.id == HOUSE_DISTRICT
+    assert second.district.name == "Congressional District 19"
+
+
+def test_the_district_cache_is_keyed_on_the_district_not_the_address(
+    client: ZeroDBClient,
+) -> None:
+    """prd.md, privacy first: the key is an OCD-ID, which is not personal data.
+
+    A district holds roughly 760,000 people, so its id identifies nobody —
+    which is exactly why `app.districts.store` already logs it and why it is a
+    safe cache key. The address is not, and must never become one: a memo on it
+    would retain it for the process's lifetime, breaking story 2.3's "never
+    stored" criterion.
+    """
+    seed_full_delegation(client)
+    cache = DistrictCache()
+    service_for(client, districts=cache).ballot_for("500 Private Lane, Example, CA")
+
+    assert list(cache.keys()) == [HOUSE_DISTRICT]
+    assert "Private Lane" not in repr(cache.__dict__)
+    assert "500 Private" not in repr(cache.__dict__)
+
+
+def test_two_voters_in_different_districts_each_get_their_own(
+    client: ZeroDBClient,
+) -> None:
+    """A cache keyed per district must not serve one district's row for another.
+
+    The failure this guards against is the worst kind available here: telling a
+    Wyoming voter they live in California's 19th, confidently. Keyed lookups are
+    easy to get wrong in exactly this way when a single-slot cache is widened.
+    """
+    seed_district(client, name="Congressional District 19")
+    wyoming = "ocd-division/country:us/state:wy"
+    seed_district(client, wyoming, name="Congressional District (at Large)")
+    cache = DistrictCache()
+
+    first = service_for(client, districts=cache).ballot_for(ADDRESS)
+    second = service_for(
+        client,
+        resolver=FixedDistrictResolver(wyoming, name="Congressional District (at Large)"),
+        districts=cache,
+    ).ballot_for(ADDRESS)
+
+    assert first.district.id == HOUSE_DISTRICT
+    assert first.district.name == "Congressional District 19"
+    assert second.district.id == wyoming
+    assert second.district.name == "Congressional District (at Large)"
+    assert sorted(cache.keys()) == sorted([HOUSE_DISTRICT, wyoming])
+
+
+def test_an_expired_district_cache_is_re_read(
+    client: ZeroDBClient, transport: FakeZeroDBTransport
+) -> None:
+    """A redistricting must reach voters without a restart.
+
+    `app.districts.store` creates a row on first resolution and *restates* its
+    name on every later one, which is what makes a renamed or redistricted
+    district self-correct. A cache with no TTL would hold the first-ever label
+    for the process's lifetime and undo that.
+    """
+    seed_full_delegation(client)
+    now = [0.0]
+    cache = DistrictCache(ttl_seconds=60.0, clock=lambda: now[0])
+    service = service_for(client, districts=cache)
+
+    service.ballot_for(ADDRESS)
+    before = district_reads(transport)
+    now[0] = 61.0
+    service.ballot_for(ADDRESS)
+
+    assert district_reads(transport) > before, "the district cache never expired"
+
+
+def test_the_district_cache_is_bounded(client: ZeroDBClient) -> None:
+    """442 districts is a small cache; an unbounded one is still a leak.
+
+    The key space is bounded by the number of congressional districts, so this
+    cannot grow without limit in practice — but "in practice" is not a
+    guarantee, and a cache in a long-lived API process that nothing ever evicts
+    from is the shape of a slow leak. The bound is generous enough that every US
+    district fits.
+    """
+    assert DistrictCache().max_entries >= 500
+
+
 def test_the_default_snapshot_ttl_is_short_enough_to_be_honest() -> None:
     """A long TTL is a correctness bug dressed as a performance win.
 
@@ -510,43 +646,56 @@ def test_the_response_schema_names_a_race_and_a_candidate(api: TestClient) -> No
     assert "is_incumbent" in schemas["BallotCandidate"]["properties"]
 
 
-def test_the_router_hands_every_request_the_same_snapshot(
+def test_the_router_hands_every_request_the_same_caches(
     client: ZeroDBClient, transport: FakeZeroDBTransport
 ) -> None:
     """The wiring the latency fix depends on, and the half a service test cannot see.
 
-    A `PeopleSnapshot` per request would cache nothing: each request would read
-    `people` once and discard the rows, which is the 978 ms p95 this story
-    replaces. So `app.ballot.router` holds one for the process and
-    `ballot_service` puts it into every service it builds. A test that
-    constructs its own service supplies its own snapshot and so can never
-    notice if that wiring is wrong.
+    Per-request caches would cache nothing: each request would read, use the
+    rows and discard them, which is the 4454 ms p95 this story replaces. So
+    `app.ballot.router` holds one of each for the process and `ballot_service`
+    puts both into every service it builds. A test that constructs its own
+    service supplies its own caches and so can never notice if that wiring is
+    wrong.
 
     Called directly rather than over HTTP because the production factory
     defaults the resolver to the real geocoder, and CI makes no network call
-    (CLAUDE.md). What is under test is the snapshot, not the resolver.
+    (CLAUDE.md). What is under test is the wiring, not the resolver.
     """
     from app.ballot.router import ballot_service as build_service
-    from app.ballot.router import people_snapshot
+    from app.ballot.router import district_cache, people_snapshot
 
-    # The dependency hands out one object, which is what "shared" means.
-    shared = people_snapshot()
-    assert people_snapshot() is shared
-    shared.invalidate()
+    # Each dependency hands out one object, which is what "shared" means.
+    shared_people = people_snapshot()
+    shared_districts = district_cache()
+    assert people_snapshot() is shared_people
+    assert district_cache() is shared_districts
+    shared_people.invalidate()
+    shared_districts.invalidate()
 
     seed_full_delegation(client)
-    first = build_service(client=client, snapshot=people_snapshot())
-    second = build_service(client=client, snapshot=people_snapshot())
-    assert first._snapshot is second._snapshot is shared
+    first = build_service(client=client, snapshot=people_snapshot(), districts=district_cache())
+    second = build_service(client=client, snapshot=people_snapshot(), districts=district_cache())
+    assert first._snapshot is second._snapshot is shared_people
+    assert first._districts is second._districts is shared_districts
 
-    # Two services, one read: the cache outlives the request that filled it.
+    # Two services, one read each: the caches outlive the request that filled
+    # them, which is the whole point.
     before = people_reads(transport)
     first._snapshot.rows(lambda: list(Repository(client=client, model=Person).query(limit=100)))
     second._snapshot.rows(lambda: pytest.fail("the second service re-read `people`"))
     assert people_reads(transport) == before + 1
 
+    stored = Repository(client=client, model=District).get(HOUSE_DISTRICT)
+    assert stored is not None
+    first._districts.get(HOUSE_DISTRICT, lambda: stored)
+    second._districts.get(
+        HOUSE_DISTRICT, lambda: pytest.fail("the second service re-read `districts`")
+    )
+
     # Left clean for any later test in this process.
-    shared.invalidate()
+    shared_people.invalidate()
+    shared_districts.invalidate()
 
 
 def test_invalidating_a_snapshot_forces_a_re_read(

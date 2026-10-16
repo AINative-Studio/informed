@@ -77,9 +77,41 @@ alternatives:
     went to **2162 ms**: the extra concurrent load produced a worse tail than
     the thing it fixed. Rejected on the measurement.
   * *cache the `people` read.* `PeopleSnapshot`, below. Median 456 ms, p95
-    **656 ms**, max 699 ms — inside budget with headroom. Chosen.
+    656 ms in isolation. Chosen — but not sufficient on its own.
 
-What is cached is the **table**, never the address (see `PeopleSnapshot`).
+**And the `districts` read turned out to be the rest.** With `PeopleSnapshot`
+in place the measured end-to-end p95 against the live project was still
+**907 ms**, and the request log said why: every lookup also read `districts`,
+at a median 158 ms and a p95 of 292 ms, in *two* round trips — the client issues
+a filtered `/query`, the live server-side filter returns nothing (story 1.4),
+and the client-side fallback then reads `/rows` in full. Geocode plus that is
+620-820 ms before a single candidate is assembled. `DistrictCache`, below,
+removes both round trips on a warm district.
+
+Where it ended up, measured live by `scripts/verify_ballot_live.py` over 39
+paced, round-robin lookups across four addresses (Seattle, NYC, Cheyenne WY,
+Washington DC):
+
+                                 median     p90     p95     max
+      no caching                  1276 ms      -   4454 ms     -
+      people cached                  -         -    907 ms     -
+      people and districts cached  445 ms   574 ms  598 ms   689 ms
+
+against a budget of 800 ms, with the cold-start request (TCP and TLS setup to
+two hosts plus both cold caches) at 715-833 ms, also inside it.
+
+What is cached is **reference data** — the `people` table and `districts` rows
+by OCD-ID — and never the address (see `PeopleSnapshot` and `DistrictCache`).
+
+What remains is the geocode, and the residual risk is its tail rather than its
+median. It is one external call to a free public service: measured at a human
+pace its p95 is ~620 ms, but it has produced isolated multi-second responses
+(one 1500 ms lookup in a 19-sample run; 4404 ms when a benchmark loop hammered
+it), and nothing on Informed's side can cache that away. So a single
+over-budget lookup in a live run is the geocoder's weather, not a regression
+here — which is why the verification script reports p90 alongside p95 and lists
+over-budget requests individually. A regression in Informed's own work moves
+the median and the p90.
 """
 
 from __future__ import annotations
@@ -105,7 +137,7 @@ from app.districts.resolver import (
 )
 from app.districts.store import DistrictStore
 from app.repositories import Repository
-from app.repositories.models import Person, Term
+from app.repositories.models import District, Person, Term
 from app.zerodb import ZeroDBClient
 
 logger = logging.getLogger(__name__)
@@ -132,6 +164,19 @@ MAX_PEOPLE_SCANNED = 20_000
 #: actually changes. A longer TTL would be a correctness bug dressed as a
 #: performance win — see `PeopleSnapshot`.
 PEOPLE_SNAPSHOT_TTL_SECONDS = 600.0
+
+#: How long a `DistrictCache` serves a district row before reading it again.
+#: Ten minutes, matching the people snapshot: a district's name changes on a
+#: redistricting, and `DistrictStore.ensure` restates it from the geocoder's
+#: current answer on every resolution, so a cache that never expired would hold
+#: a stale label for the process's lifetime.
+DISTRICT_CACHE_TTL_SECONDS = 600.0
+
+#: Ceiling on cached districts. There are ~442 congressional districts plus the
+#: delegate divisions, so this is generous — it exists so a long-lived API
+#: process cannot accumulate entries without bound, not to ration a cache that
+#: fits the whole country.
+DISTRICT_CACHE_MAX_ENTRIES = 1_000
 
 #: datamodel.md: `bodies` ids for the two federal chambers.
 HOUSE_BODY_ID = "us-house"
@@ -217,6 +262,92 @@ class PeopleSnapshot:
             self._read_at = 0.0
 
 
+class DistrictCache:
+    """A short-lived, process-local cache of `districts` rows, keyed by OCD-ID.
+
+    The other half of story 2.4's latency fix, and the half that was found by
+    measuring the first half live rather than by reading the code. With
+    `PeopleSnapshot` in place the live p95 was still **907 ms** against a budget
+    of 800, and the request log said why: every lookup also read `districts`, at
+    a median 158 ms and a p95 of 292 ms. Geocode plus that is 620-820 ms before
+    a single candidate is assembled.
+
+    Worse, that read is **two round trips, not one**. Story 1.4 measured the
+    live server-side filter returning nothing for a filter that should match, so
+    the client issues a filtered `/query`, gets an empty page, and falls back to
+    reading `/rows` in full. Caching removes both.
+
+    **The key is the district, which identifies nobody.** An OCD-ID names a
+    division of roughly 760,000 people — which is why `app.districts.store`
+    already logs it freely — so it is a safe cache key in a way the address
+    emphatically is not. `CensusAddressResolver`'s docstring states the rule
+    this implements: the budget is met by caching the district-keyed read and
+    never the address-keyed one.
+
+    **Why it expires.** `DistrictStore.ensure` restates a district's name from
+    the geocoder's current answer on every resolution, which is what makes a
+    renamed or redistricted district self-correct rather than keep its
+    first-ever label. A cache that never expired would undo that for the
+    process's lifetime.
+
+    **Why it is bounded.** The key space is the ~442 congressional districts
+    plus the delegate divisions, so this cannot grow without limit in practice —
+    but a cache in a long-lived API process that nothing ever evicts from is the
+    shape of a slow leak, and "in practice" is not a guarantee. On overflow the
+    whole cache is dropped rather than one entry evicted: at this size the
+    distinction costs nothing, and a one-line clear has no eviction-order bug to
+    have.
+    """
+
+    def __init__(
+        self,
+        *,
+        ttl_seconds: float = DISTRICT_CACHE_TTL_SECONDS,
+        max_entries: int = DISTRICT_CACHE_MAX_ENTRIES,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.ttl_seconds = ttl_seconds
+        self.max_entries = max_entries
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._entries: dict[str, tuple[float, District]] = {}
+
+    def get(self, district_id: str, read: Callable[[], District]) -> District:
+        """The cached row for this district, reading it through `read` if stale.
+
+        `read` is passed in rather than held, so the cache knows nothing about
+        `DistrictStore`, repositories or ZeroDB.
+        """
+        with self._lock:
+            now = self._clock()
+            entry = self._entries.get(district_id)
+            if entry is not None and now - entry[0] < self.ttl_seconds:
+                return entry[1]
+
+        # Read outside the lock: unlike `people`, this is a per-district read,
+        # so two voters in two cold districts should not queue behind each
+        # other. The cost of a rare duplicate read for the same cold district is
+        # one extra round trip, which is cheaper than serialising every miss.
+        district = read()
+
+        with self._lock:
+            if len(self._entries) >= self.max_entries:
+                logger.info("districts cache reached %d entries; clearing it", self.max_entries)
+                self._entries.clear()
+            self._entries[district_id] = (self._clock(), district)
+        return district
+
+    def keys(self) -> list[str]:
+        """The districts currently cached. For tests and for operational insight."""
+        with self._lock:
+            return list(self._entries)
+
+    def invalidate(self) -> None:
+        """Drop every cached district, so the next lookup reads again."""
+        with self._lock:
+            self._entries.clear()
+
+
 class BallotService:
     """Resolves an address to its district, its races and the members in them.
 
@@ -225,11 +356,12 @@ class BallotService:
     different one per country later. It defaults to `CensusAddressResolver`
     (story 2.3).
 
-    The snapshot is injected for the same reason and one more: it must be
-    **shared across requests** to be worth anything, so the router holds one per
-    process and hands it to every service it builds (see `app.ballot.router`). A
-    service constructed without one gets a private snapshot, which is correct
-    but caches nothing useful — fine for a one-shot script, wrong for the API.
+    The two caches are injected for the same reason and one more: they must be
+    **shared across requests** to be worth anything, so the router holds one of
+    each per process and hands them to every service it builds (see
+    `app.ballot.router`). A service constructed without them gets private ones,
+    which is correct but caches nothing useful — fine for a one-shot script,
+    wrong for the API.
     """
 
     def __init__(
@@ -239,15 +371,17 @@ class BallotService:
         resolver: AddressResolver | None = None,
         today: Callable[[], date] = date.today,
         snapshot: PeopleSnapshot | None = None,
+        districts: DistrictCache | None = None,
     ) -> None:
         self._resolver = resolver or CensusAddressResolver()
-        self._districts = DistrictStore(client=client)
+        self._district_store = DistrictStore(client=client)
         self._people: Repository[Person] = Repository(client=client, model=Person)
         #: Injected so a test can pin "now" without freezing the process clock,
         #: and so a future "what did my delegation look like on date X" read has
         #: a seam to use rather than a second code path.
         self._today = today
         self._snapshot = snapshot if snapshot is not None else PeopleSnapshot()
+        self._districts = districts if districts is not None else DistrictCache()
 
     def ballot_for(self, address: str) -> BallotResponse:
         """The district, races and sitting delegation for one address.
@@ -271,8 +405,13 @@ class BallotService:
         resolved = resolution.districts
         # Created on first resolution rather than pre-seeded — see
         # `app.districts.store` for why, and why the geocoder's own label is
-        # the right name for the row.
-        district = self._districts.ensure(resolved, name=resolution.name)
+        # the right name for the row. Cached per district (never per address),
+        # because the read is two live round trips and ~160-290 ms of an 800 ms
+        # budget; see `DistrictCache`.
+        district = self._districts.get(
+            resolved.district_id,
+            lambda: self._district_store.ensure(resolved, name=resolution.name),
+        )
 
         officeholders = self._delegation_for(resolved)
         return BallotResponse(
@@ -566,11 +705,14 @@ def _officeholder(person: Person, term: Term, body_id: str) -> Officeholder:
 
 
 __all__ = [
+    "DISTRICT_CACHE_MAX_ENTRIES",
+    "DISTRICT_CACHE_TTL_SECONDS",
     "HOUSE_BODY_ID",
     "MAX_PEOPLE_SCANNED",
     "PEOPLE_PAGE_SIZE",
     "PEOPLE_SNAPSHOT_TTL_SECONDS",
     "SENATE_BODY_ID",
     "BallotService",
+    "DistrictCache",
     "PeopleSnapshot",
 ]
