@@ -20,9 +20,9 @@ CLAUDE.md, so no scenario here needs credentials.
 
 from __future__ import annotations
 
+import base64
 import json
 import time
-from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -79,31 +79,85 @@ class LimiterContext:
 
 
 @pytest.fixture
-def limiter() -> LimiterContext:
+def limiter(monkeypatch: pytest.MonkeyPatch) -> LimiterContext:
+    """One app, one fake ZeroDB and one clock per scenario.
+
+    The envelope key is set here rather than in a Given for the ordering
+    reason `_build_app` documents: every step that builds the app needs it,
+    and which step gets there first is not the Gherkin's business. It is a
+    throwaway constant — no real voter data is written by any scenario in
+    this file, which only ever reads profiles that do not exist.
+    """
+    monkeypatch.setenv("ZERODB_PROFILE_ROOT_KEY", base64.b64encode(b"\x14" * 32).decode())
     return LimiterContext()
 
 
+def _fake_client(transport: FakeZeroDBTransport) -> ZeroDBClient:
+    """A ZeroDB client over story 1.2's in-memory fake, with no sleeping."""
+    return ZeroDBClient(
+        transport=transport,
+        project_id="proj-test",
+        backoff_base=0.0,
+        sleep=lambda _: None,
+    )
+
+
 def _build_app(context: LimiterContext) -> FastAPI:
-    """The real app, the real middleware, a fake ZeroDB and a frozen clock."""
+    """The real app, the real middleware, a fake ZeroDB and a frozen clock.
+
+    Idempotent, and that matters: pytest-bdd resolves ``@given`` steps that
+    declare a ``target_fixture`` as pytest fixtures, whose instantiation
+    order is not the Gherkin's reading order. A scenario whose Given writes
+    rows can therefore run before the Background's Given. Rebuilding the app
+    (and so the fake transport) on the second call silently discarded those
+    rows, which made "no correction row is written" fail while the HTTP
+    behaviour it was checking was already correct — a test-harness bug that
+    reads exactly like a product bug. Building once per scenario removes the
+    ordering question entirely.
+    """
+    if context.app is not None:
+        return context.app
+
     from app.corrections.router import zerodb_client_for_corrections
     from app.methodology.router import zerodb_client_for_methodology
     from app.profiles.router import zerodb_client_for_profiles
     from app.topics.router import zerodb_client_for_topics
 
     transport = FakeZeroDBTransport()
-    client = ZeroDBClient(
-        api_key="test-key",  # noqa: S106 - the fake transport never authenticates
-        project_id="test-project",
-        transport=transport,
-    )
-    app = create_app(now=context.clock)
+    client = _fake_client(transport)
+    for table in (
+        "corrections",
+        "issue_topics",
+        "issue_stances",
+        "voter_profiles",
+        "methodology_versions",
+    ):
+        client.create_table(table, {"id": "string"})
+    # `trust_forwarded_for` is on only because Starlette's TestClient reports
+    # every request as coming from one peer; see `_as_ip`. The limiter's own
+    # default is off, and `test_a_forwarded_for_header_is_ignored_unless_the
+    # _proxy_is_trusted` is what pins that default.
+    app = create_app(now=context.clock, trust_forwarded_for=True)
+
+    # A zero-argument closure, NOT `lambda client=client: client`. FastAPI
+    # inspects an override's signature and treats its parameters as request
+    # parameters, so a default argument named `client` becomes a *query
+    # parameter*: the override is handed `None`, the endpoint falls back to
+    # building its own client, and the response is a perfectly plausible 201
+    # while the fake transport stays empty. Every status assertion passes and
+    # every "was it written" assertion fails, which is a confusing way to
+    # spend an afternoon. A closure over the loop-invariant `client`
+    # presents no parameters at all.
+    def override() -> ZeroDBClient:
+        return client
+
     for dependency in (
         zerodb_client_for_topics,
         zerodb_client_for_profiles,
         zerodb_client_for_corrections,
         zerodb_client_for_methodology,
     ):
-        app.dependency_overrides[dependency] = lambda client=client: client
+        app.dependency_overrides[dependency] = override
     context.transport = transport
     context.app = app
     return app
@@ -131,14 +185,17 @@ def _correction_body(index: int) -> dict[str, str]:
 
 
 @given("the API is running behind the rate limiter")
-def api_behind_limiter(limiter: LimiterContext) -> Iterator[None]:
+def api_behind_limiter(limiter: LimiterContext) -> None:
     _build_app(limiter)
-    yield
 
 
 def _client(limiter: LimiterContext) -> TestClient:
-    assert limiter.app is not None
-    return TestClient(limiter.app)
+    """A TestClient over the scenario's one app, building it if needed.
+
+    Builds on demand for the same fixture-ordering reason `_build_app`
+    documents: a Given that writes rows may run before the Background's.
+    """
+    return TestClient(_build_app(limiter))
 
 
 # --- real-user traffic ----------------------------------------------------
@@ -162,11 +219,7 @@ def one_voter_paced_reads(limiter: LimiterContext, count: int) -> None:
             del index
 
 
-@when(
-    parsers.parse(
-        "a voter makes {count:d} reads from the same address under a generous limit"
-    )
-)
+@when(parsers.parse("a voter makes {count:d} reads from the same address under a generous limit"))
 def measure_overhead(limiter: LimiterContext, count: int) -> None:
     """Time the limiter's own decision, not the endpoint behind it.
 
@@ -253,11 +306,6 @@ def window_passes(limiter: LimiterContext, exhausted: RateLimitPolicy) -> None:
     limiter.clock.advance(exhausted.window_seconds + 1)
 
 
-@when("that address can read again", target_fixture="_noop")
-def _unused() -> None:  # pragma: no cover - placeholder for parser symmetry
-    return None
-
-
 @when("a different address reads the topics tree")
 def other_address_reads(limiter: LimiterContext) -> None:
     with _client(limiter) as api:
@@ -318,9 +366,7 @@ def overhead_within_budget(limiter: LimiterContext, budget: int) -> None:
 @then(parsers.parse("the last request is refused with {status:d}"))
 def last_refused(limiter: LimiterContext, status: int) -> None:
     assert limiter.responses, "the scenario made no requests"
-    assert limiter.responses[-1].status_code == status, (
-        f"statuses were {limiter.statuses[-5:]}"
-    )
+    assert limiter.responses[-1].status_code == status, f"statuses were {limiter.statuses[-5:]}"
 
 
 @then("the refusal carries a Retry-After header in seconds")
@@ -361,11 +407,7 @@ def last_succeeded(limiter: LimiterContext) -> None:
     )
 
 
-@then(
-    parsers.parse(
-        'the limit for "{write_path}" is lower than the limit for "{read_path}"'
-    )
-)
+@then(parsers.parse('the limit for "{write_path}" is lower than the limit for "{read_path}"'))
 def writes_stricter_than_reads(write_path: str, read_path: str) -> None:
     write_policy = policy_for("POST", write_path)
     read_policy = policy_for("GET", read_path)
@@ -379,12 +421,22 @@ def writes_stricter_than_reads(write_path: str, read_path: str) -> None:
 
 @then("every public route resolves to a rate-limit policy")
 def every_route_covered(limiter: LimiterContext) -> None:
+    """Walks the live route table, so a route added later cannot slip through.
+
+    `UNLIMITED_PATHS` is excluded rather than asserted over: `/health` is
+    deliberately not limited, and the separate "health endpoint is never
+    rate-limited" scenario is what holds that decision in place.
+    """
+    from app.ratelimit import UNLIMITED_PATHS
+
     assert limiter.app is not None
     uncovered: list[str] = []
     for route in limiter.app.routes:
         methods = getattr(route, "methods", None)
         path = getattr(route, "path", "")
-        if not methods or path.startswith(("/openapi", "/docs", "/redoc")):
+        if not methods or path in UNLIMITED_PATHS:
+            continue
+        if path.startswith(("/openapi", "/docs", "/redoc")):
             continue
         for method in methods:
             if method in {"HEAD", "OPTIONS"}:
@@ -401,11 +453,7 @@ def matches_unlimited_app(limiter: LimiterContext) -> None:
     limited = limiter.responses[-1]
     plain = create_app(rate_limit=False)
     assert limiter.transport is not None
-    client = ZeroDBClient(
-        api_key="test-key",  # noqa: S106 - the fake transport never authenticates
-        project_id="test-project",
-        transport=limiter.transport,
-    )
+    client = _fake_client(limiter.transport)
     plain.dependency_overrides[zerodb_client_for_methodology] = lambda: client
     with TestClient(plain) as api:
         unlimited = api.get("/v1/methodology")
@@ -415,11 +463,25 @@ def matches_unlimited_app(limiter: LimiterContext) -> None:
 
 @then("no correction row is written")
 def no_correction_written(limiter: LimiterContext, exhausted: RateLimitPolicy) -> None:
+    """The refusal must stop short of the endpoint, not just change its answer.
+
+    A limiter that returned 429 *after* the handler had already written the
+    row would satisfy every status-code assertion in this file and none of
+    the point of the story. So this counts the rows the fake transport
+    actually holds: exactly the allowance, never the allowance plus the
+    refused attempt.
+    """
     assert limiter.transport is not None
-    stored = limiter.transport.rows.get("corrections", {})
+    stored = [
+        row_id
+        for table, rows in limiter.transport.rows.items()
+        if table == "corrections"
+        for row_id in rows
+    ]
     assert len(stored) == exhausted.limit, (
-        f"{len(stored)} rows stored for a {exhausted.limit}-request allowance, so the "
-        "refused request reached the endpoint behind the limiter"
+        f"{len(stored)} correction row(s) stored for a {exhausted.limit}-request "
+        f"allowance (tables seen: {sorted(limiter.transport.rows)}), so the refused "
+        "request reached the endpoint behind the limiter"
     )
 
 
@@ -462,4 +524,6 @@ def bare_user_id_does_not_change_the_key(limiter: LimiterContext) -> None:
 
 # A named export so the policy table itself is reachable from the step file for
 # debugging a failure, without importing app internals at the use site.
-__all__ = ["POLICIES", "Callable"]
+#: Re-exported so a failing scenario can be debugged by printing the table
+#: without importing app internals at the use site.
+__all__ = ["POLICIES"]

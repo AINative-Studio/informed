@@ -9,8 +9,12 @@ is safe to leave running for a week.
 
 from __future__ import annotations
 
-import pytest
+from typing import Any
 
+import pytest
+from fastapi.testclient import TestClient
+
+from app.main import LOCAL_DEV_ORIGINS, create_app
 from app.ratelimit import (
     PUBLIC_READ,
     RateLimitMiddleware,
@@ -19,7 +23,7 @@ from app.ratelimit import (
     client_key,
     policy_for,
 )
-from app.ratelimit.policy import POLICIES, UNLIMITED_PATHS
+from app.ratelimit.policy import POLICIES, UNLIMITED_PATHS, resolve_template
 
 
 class Clock:
@@ -347,8 +351,192 @@ def test_the_account_hook_identifies_nobody_until_auth_exists() -> None:
 
 
 def test_the_composite_key_is_the_address_while_no_account_is_identified() -> None:
-    clock = Clock()
-    middleware = limiter(clock)
+    middleware = limiter(Clock())
     scope = _scope(("192.0.2.5", 1), {"authorization": "Bearer whatever"})
     assert middleware.identity(scope) == "ip:192.0.2.5"
-    del clock
+
+
+# --- template resolution, the bug that cost this story the most time -----
+
+
+@pytest.mark.parametrize(
+    ("concrete", "template"),
+    [
+        ("/v1/profiles/voter-1", "/v1/profiles/{user_id}"),
+        ("/v1/topics/prescription-drug-pricing/stances", "/v1/topics/{topic_id}/stances"),
+        ("/v1/methodology/2026.1", "/v1/methodology/{version}"),
+        ("/v1/corrections/abcdefghijklmnop", "/v1/corrections/{tracking_token}"),
+        (
+            "/v1/profiles/voter-1/follow/us-house:119-2:452",
+            "/v1/profiles/{user_id}/follow/{person_id}",
+        ),
+        # Literals are already templates and must come back untouched.
+        ("/v1/topics", "/v1/topics"),
+        ("/v1/corrections", "/v1/corrections"),
+        ("/v1/profiles", "/v1/profiles"),
+        ("/v1/profiles/methodology", "/v1/profiles/methodology"),
+    ],
+)
+def test_a_concrete_path_resolves_to_the_template_it_was_declared_under(
+    concrete: str, template: str
+) -> None:
+    """The limiter runs before routing, so it must do this itself.
+
+    Without it, an allowance is per *URL* rather than per endpoint, and a
+    scraper walking `/v1/topics/1/stances`, `/v1/topics/2/stances` … gets a
+    fresh 60 requests per topic — the exact scraping prd.md names. The first
+    implementation prefix-matched instead and silently gave every
+    parameterised route the lenient default allowance.
+    """
+    assert resolve_template(concrete) == template
+
+
+def test_a_concrete_profile_path_gets_the_private_read_policy_not_the_default() -> None:
+    """The regression test for that bug, stated as a policy outcome.
+
+    `/v1/profiles/voter-1` must be limited at 30/minute (`private-read`),
+    not at the 60/minute default a failed template match would hand it.
+    """
+    policy = policy_for("GET", resolve_template("/v1/profiles/voter-1"))
+    assert policy is not None
+    assert policy.name == "private-read"
+
+
+def test_a_specific_literal_beats_a_template_that_would_also_match() -> None:
+    """`/v1/profiles/methodology` is published reference data, not a profile.
+
+    Both `/v1/profiles/methodology` (literal) and `/v1/profiles/{user_id}`
+    (template) match that path. The literal has to win, or the public
+    methodology read is throttled as though it were a per-voter lookup.
+    """
+    assert resolve_template("/v1/profiles/methodology") == "/v1/profiles/methodology"
+    policy = policy_for("GET", "/v1/profiles/methodology")
+    assert policy is not None and policy.name == "public-read"
+
+
+def test_template_matching_does_not_treat_dots_as_wildcards() -> None:
+    """A literal `.` in a declared path must be escaped, not a regex wildcard.
+
+    `/v1/methodology/{version}` is fine either way, but a template gaining a
+    literal dotted segment later would start matching paths it should not.
+    """
+    assert resolve_template("/v1/methodology/2026X1") == "/v1/methodology/{version}"
+    assert resolve_template("/v1/methodology") == "/v1/methodology"
+
+
+def test_a_template_does_not_match_across_a_slash() -> None:
+    """One `{param}` is one path segment, as Starlette treats it.
+
+    If `{user_id}` matched greedily across slashes,
+    `/v1/profiles/a/follow/b` would resolve to `/v1/profiles/{user_id}` and
+    the follow *write* would be limited as a read.
+    """
+    assert (
+        resolve_template("/v1/profiles/a/follow/b") == "/v1/profiles/{user_id}/follow/{person_id}"
+    )
+    policy = policy_for("POST", resolve_template("/v1/profiles/a/follow/b"))
+    assert policy is not None and policy.name == "public-write"
+
+
+# --- the 429 has to be usable by the one client we control ---------------
+#
+# These drive the real app over story 1.2's in-memory fake. The endpoint
+# chosen is `/v1/methodology`, because it is the simplest public read and
+# because what is under test is the limiter's own response, not the payload.
+
+
+def _app_with_fake_zerodb() -> Any:
+    """The real app and the real limiter, over a fake ZeroDB."""
+    from app.methodology.router import zerodb_client_for_methodology
+    from app.zerodb import ZeroDBClient
+    from app.zerodb.testing import FakeZeroDBTransport
+
+    transport = FakeZeroDBTransport()
+    client = ZeroDBClient(
+        transport=transport, project_id="proj-test", backoff_base=0.0, sleep=lambda _: None
+    )
+    client.create_table("methodology_versions", {"id": "string"})
+    app = create_app()
+
+    # A zero-argument closure, never `lambda c=client: c`: FastAPI reads an
+    # override's signature as request parameters, so a default argument
+    # becomes a query parameter and the override receives `None`.
+    def override() -> ZeroDBClient:
+        return client
+
+    app.dependency_overrides[zerodb_client_for_methodology] = override
+    return app
+
+
+def _exhaust(api: TestClient, path: str, origin: str) -> Any:
+    """Request ``path`` until it is refused, returning the refusal."""
+    policy = policy_for("GET", resolve_template(path))
+    assert policy is not None
+    last = None
+    for _ in range(policy.limit + 1):
+        last = api.get(path, headers={"origin": origin})
+    assert last is not None and last.status_code == 429, (
+        f"never refused: {getattr(last, 'status_code', None)}"
+    )
+    return last
+
+
+def test_a_refusal_is_readable_by_a_browser() -> None:
+    """The 429 must carry CORS headers, or the PWA cannot read it.
+
+    This is what fixes the middleware *order*. A limiter mounted outside
+    `CORSMiddleware` short-circuits before CORS runs, so its 429 has no
+    `Access-Control-Allow-Origin`; the browser then gives the app an opaque
+    network error and the `Retry-After` the limiter computed is invisible to
+    the one client we control. Paying one header pass on a refused request is
+    the right trade.
+    """
+    origin = LOCAL_DEV_ORIGINS[0]
+    with TestClient(_app_with_fake_zerodb()) as api:
+        refusal = _exhaust(api, "/v1/methodology", origin)
+    assert refusal.headers.get("access-control-allow-origin") == origin, (
+        "the 429 carries no CORS header, so a browser cannot read it — the "
+        "limiter has been mounted outside CORSMiddleware"
+    )
+    assert refusal.headers.get("retry-after") is not None
+
+
+def test_the_allowance_headers_are_exposed_to_a_cross_origin_caller() -> None:
+    """An honest client can only pace itself if it can read the headers.
+
+    A cross-origin response's headers are invisible to JavaScript unless
+    named in `Access-Control-Expose-Headers`.
+    """
+    origin = LOCAL_DEV_ORIGINS[0]
+    with TestClient(_app_with_fake_zerodb()) as api:
+        response = api.get("/v1/methodology", headers={"origin": origin})
+    exposed = response.headers.get("access-control-expose-headers", "").lower()
+    for header in ("retry-after", "x-ratelimit-remaining"):
+        assert header in exposed, f"{header} is not exposed to a browser"
+
+
+def test_an_allowed_response_reports_what_is_left() -> None:
+    with TestClient(_app_with_fake_zerodb()) as api:
+        first = api.get("/v1/methodology")
+        second = api.get("/v1/methodology")
+    assert first.headers["x-ratelimit-policy"] == "public-read"
+    assert int(first.headers["x-ratelimit-remaining"]) > int(
+        second.headers["x-ratelimit-remaining"]
+    )
+
+
+def test_a_refusal_is_not_cached_by_a_shared_cache() -> None:
+    """One client's 429 must never be served to everybody else.
+
+    The limit is per address, so a shared cache storing this response would
+    turn one scraper's lockout into an outage for every other reader.
+    """
+    with TestClient(_app_with_fake_zerodb()) as api:
+        refusal = _exhaust(api, "/v1/methodology", LOCAL_DEV_ORIGINS[0])
+    assert "no-store" in refusal.headers.get("cache-control", "")
+
+
+def test_the_health_probe_survives_far_more_requests_than_any_limit() -> None:
+    with TestClient(_app_with_fake_zerodb()) as api:
+        statuses = {api.get("/health").status_code for _ in range(200)}
+    assert statuses == {200}, f"the liveness probe was rate-limited: {statuses}"
