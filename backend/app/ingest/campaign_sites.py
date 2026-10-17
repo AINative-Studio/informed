@@ -602,11 +602,12 @@ class CampaignSiteLoader:
                 wayback=WaybackOutcome(ok=False, detail="not re-submitted on a no-op re-run"),
             )
 
+        html_bytes = page.html.encode("utf-8")
         html_file = self._client.upload_file(
             file_key=f"promise-sources/{source_id}.html",
+            content=html_bytes,
             file_name=f"{source_id}.html",
             content_type="text/html; charset=utf-8",
-            size_bytes=len(page.html.encode("utf-8")),
             file_metadata={
                 "sha256": html_sha256,
                 "source_url": url,
@@ -624,9 +625,9 @@ class CampaignSiteLoader:
         pdf_sha256 = sha256_hex(pdf_bytes)
         pdf_file = self._client.upload_file(
             file_key=f"promise-sources/{source_id}.pdf",
+            content=pdf_bytes,
             file_name=f"{source_id}.pdf",
             content_type="application/pdf",
-            size_bytes=len(pdf_bytes),
             file_metadata={
                 "sha256": pdf_sha256,
                 "source_url": url,

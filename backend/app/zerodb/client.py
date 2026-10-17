@@ -55,6 +55,7 @@ references between rows, enforcing append-only history and upserting by
 natural key are the repository layer's job in story 1.4.
 """
 
+import json as json_module
 import logging
 import random
 import re
@@ -102,6 +103,7 @@ from app.zerodb.models import (
 from app.zerodb.settings import ZeroDBSettings
 from app.zerodb.transport import (
     HttpxZeroDBTransport,
+    MultipartFile,
     ZeroDBResponse,
     ZeroDBTransport,
     ZeroDBTransportError,
@@ -856,31 +858,110 @@ class ZeroDBClient:
         self,
         *,
         file_key: str,
+        content: bytes,
         file_name: str | None = None,
         content_type: str | None = None,
-        size_bytes: int | None = None,
         file_metadata: dict[str, Any] | None = None,
     ) -> StoredFile:
-        """Register an archived snapshot. Wraps `zerodb_upload_file`.
+        """Store an archived snapshot's actual bytes. Wraps `zerodb_upload_file`.
 
         `file_metadata` should carry `sha256`, `source_url` and `captured_at`,
         which is what makes a citation verifiable long after the campaign page
         it came from has changed.
+
+        WHY THIS POSTS MULTIPART AND NOT JSON — a bug this method shipped with
+        and which this signature exists to prevent recurring:
+
+        ZeroDB has two POST endpoints that both accept a file and both return
+        200 with a `file_id`, and only one of them stores any bytes.
+
+          * `POST /projects/{id}/database/files` takes a JSON `FileCreate`
+            body. The live OpenAPI schema calls its sibling route
+            (`/files/metadata`, the same schema) "Upload file metadata only (no
+            binary file) — use this endpoint when you've already uploaded the
+            file to MinIO". It writes a file row and nothing else.
+          * `POST /projects/{id}/files/upload` takes `multipart/form-data` with
+            the bytes in a `file` part ("Upload binary file to MinIO storage
+            with metadata tracking"). It creates the project's bucket if
+            needed, stores the object, writes the row, and returns the sha256
+            it computed over what it received.
+
+        Story 1.2 wired this method to the first one. Every file Informed
+        archived through story 9.1 therefore had a perfectly good metadata row
+        — right `file_key`, right sha256, right `source_url` — behind which no
+        object existed, so every presigned download answered `404 NoSuchKey`
+        (confirmed live, 2026-10-17, against all six of story 9.1's real
+        campaign-site files). An archive that cannot be read back is not an
+        archive, so `content` is a required argument: there is no longer a way
+        to register a citation's provenance without storing what it cites.
+
+        `size_bytes` is deliberately gone from the signature. It was a caller-
+        supplied number that the metadata-only endpoint believed without
+        checking; the binary endpoint measures the body it actually received,
+        and a size that disagreed with the stored object would be exactly the
+        kind of silent lie this fix is about.
+
+        Raises:
+            ZeroDBValidationError: if `file_key` or `content` is empty. An
+                empty archive is never a legitimate capture — it means the
+                fetch failed upstream — and recording one would produce a
+                citation pointing at nothing.
         """
         self._require(file_key, "file_key")
-        payload: dict[str, Any] = {"file_key": file_key, "project_id": self._project_id}
-        if file_name is not None:
-            payload["file_name"] = file_name
-        if content_type is not None:
-            payload["content_type"] = content_type
-        if size_bytes is not None:
-            payload["size_bytes"] = size_bytes
+        if not content:
+            raise ZeroDBValidationError(
+                "upload_file needs the file's actual bytes: a file row with no "
+                "stored object behind it cannot be cited"
+            )
+        # `metadata` travels as a JSON *string* in the form body, which is how
+        # the binary endpoint declares it (a multipart part cannot carry a
+        # nested object).
+        form: dict[str, str] = {"key": file_key}
         if file_metadata is not None:
-            payload["file_metadata"] = file_metadata
+            form["metadata"] = json_module.dumps(file_metadata)
         response = self._request(
-            "POST", f"/projects/{self._project_id}/database/files", json=payload
+            "POST",
+            f"/projects/{self._project_id}/files/upload",
+            files={
+                "file": (
+                    file_name or file_key.rsplit("/", 1)[-1],
+                    content,
+                    content_type or "application/octet-stream",
+                )
+            },
+            data=form,
         )
-        return self._parse(StoredFile, response)
+        stored = self._parse(StoredFile, response)
+        # The binary endpoint's response does not echo `file_metadata` back,
+        # unlike the metadata-only one. Callers (story 9.1's capture report,
+        # story 16.3's provenance write) read the sha256 off the returned
+        # object, so the metadata that was just sent is carried through rather
+        # than coming back empty and looking like it was dropped.
+        if file_metadata is not None and not stored.file_metadata:
+            stored = stored.model_copy(update={"file_metadata": dict(file_metadata)})
+        return stored
+
+    def download_file(self, *, file_id: str) -> bytes:
+        """Read one stored file's bytes back.
+
+        Streams through ZeroDB's own content route
+        (`GET /projects/{id}/files/{file_id}/content`) rather than minting a
+        presigned URL and fetching it. Both work — verified live, 2026-10-17 —
+        but this one needs no second HTTP client, no credential outside the
+        transport, and no handling of an expiry window, which is what a
+        server-side reader (promise extraction, an integrity check) wants.
+        `generate_presigned_url` remains the right call for handing a citation
+        to a browser.
+
+        Raises:
+            ZeroDBNotFoundError: if no file with that id exists, or its
+                metadata row exists with no stored object behind it — which is
+                precisely the state story 9.1's archives were left in, and
+                which must surface rather than return empty bytes.
+        """
+        self._require(file_id, "file_id")
+        response = self._request("GET", f"/projects/{self._project_id}/files/{file_id}/content")
+        return response.content
 
     def generate_presigned_url(
         self,
@@ -1135,6 +1216,8 @@ class ZeroDBClient:
         *,
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
+        files: dict[str, MultipartFile] | None = None,
+        data: dict[str, str] | None = None,
         reinterpret: Callable[[ZeroDBError], ZeroDBError | None] | None = None,
     ) -> ZeroDBResponse:
         """Send a request, retrying transient failures with capped backoff.
@@ -1162,7 +1245,9 @@ class ZeroDBClient:
 
         for attempt in range(1, self._max_attempts + 1):
             try:
-                response = self._transport.request(method, path, json=json, params=params)
+                response = self._transport.request(
+                    method, path, json=json, params=params, files=files, data=data
+                )
             except Exception as exc:
                 # Only transport failures are ours to wrap and retry; anything
                 # else (a bug in this module, a KeyboardInterrupt) propagates.

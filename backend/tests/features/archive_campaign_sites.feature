@@ -18,6 +18,21 @@ Feature: Archive campaign sites (story 9.1)
     When I archive the sample campaign site for that candidacy
     Then a PDF file is stored with its own sha256
 
+  # Story 9.1 shipped with the metadata half of this criterion only: the file
+  # rows existed and carried the right sha256, but the bytes were never stored,
+  # so every presigned download 404ed. Archiving is only citable if the archived
+  # content can be read back.
+
+  Scenario: The archived HTML can be read back byte-for-byte
+    When I archive the sample campaign site for that candidacy
+    Then downloading the archived HTML returns the captured page's exact bytes
+    And the downloaded HTML hashes to the sha256 recorded on its file
+
+  Scenario: The archived PDF can be read back byte-for-byte
+    When I archive the sample campaign site for that candidacy
+    Then downloading the archived PDF returns a real PDF
+    And the downloaded PDF hashes to the sha256 recorded on its file
+
   Scenario: Archiving a campaign site writes a promise_sources row keyed by its sha256
     When I archive the sample campaign site for that candidacy
     Then a promise_sources row exists with id "src:{html_sha256}"

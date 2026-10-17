@@ -66,7 +66,13 @@ def client(fake: FakeZeroDBTransport) -> ZeroDBClient:
         ),
         pytest.param(lambda c: c.graph_rag_search(query=""), id="rag"),
         pytest.param(lambda c: c.graph_traverse(entity=""), id="traverse"),
-        pytest.param(lambda c: c.upload_file(file_key=""), id="upload_file"),
+        pytest.param(lambda c: c.upload_file(file_key="", content=b"x"), id="upload_file"),
+        # An empty capture means the fetch failed upstream; storing one would
+        # produce a citation pointing at nothing.
+        pytest.param(
+            lambda c: c.upload_file(file_key="k", content=b""), id="upload_file-no-content"
+        ),
+        pytest.param(lambda c: c.download_file(file_id=""), id="download_file"),
         pytest.param(lambda c: c.create_event(topic="", payload={}), id="create_event"),
         pytest.param(lambda c: c.subscribe_events(event_types=[]), id="subscribe"),
     ],
@@ -135,8 +141,16 @@ def test_supplied_optional_arguments_do_reach_the_wire(
     client.graph_traverse(entity="prm:1", predicates=["tested_by"])
     assert fake.calls[-1].json["predicates"] == ["tested_by"]
 
-    client.upload_file(file_key="k", file_name="n.html", content_type="text/html")
-    assert fake.calls[-1].json["content_type"] == "text/html"
+    # An upload's optional arguments travel as multipart form fields and the
+    # part's own content type, not as a JSON body — see `upload_file`.
+    client.upload_file(
+        file_key="k", content=b"<html></html>", file_name="n.html", content_type="text/html"
+    )
+    call = fake.calls[-1]
+    assert call.json is None
+    assert call.files is not None
+    assert call.files["file"][0] == "n.html"
+    assert call.files["file"][2] == "text/html"
 
 
 def test_delete_table_targets_the_table_path(

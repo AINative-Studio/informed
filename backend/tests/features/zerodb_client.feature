@@ -102,6 +102,27 @@ Feature: Typed ZeroDB client covers every primitive
     When I generate a presigned URL for that file expiring in 300 seconds
     Then a presigned URL is returned
 
+  # An upload that stores metadata but no bytes shipped silently in story 9.1:
+  # the metadata-only endpoint accepted it, and nothing ever read the file back.
+  # These scenarios are the round trip that would have caught it.
+
+  Scenario: An uploaded file's bytes are stored, not just its metadata
+    When I upload the file "archive/campaign-page.html" with sha256 "abc123"
+    Then the upload reports the size of the bytes it sent
+    And downloading that file returns the exact bytes that were uploaded
+
+  Scenario: Uploading a file sends its bytes as a multipart body, not JSON metadata
+    When I upload the file "archive/campaign-page.html" with sha256 "abc123"
+    Then the upload request carried the file's bytes as a multipart body
+
+  Scenario: An upload with no content is refused before any request is made
+    When I try to upload a file with no content
+    Then the upload is refused for having no content to store
+
+  Scenario: Downloading a file that was never uploaded is reported as not found
+    When I try to download the file "00000000-0000-0000-0000-000000000000"
+    Then the download is reported as not found
+
   # --- Events (datamodel.md: keep read models in sync) ---
 
   Scenario: The client publishes an event

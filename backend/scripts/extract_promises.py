@@ -61,26 +61,29 @@ Reads ZeroDB credentials from the environment via `ZeroDBClient.from_env()`,
 exactly like `scripts/archive_campaign_sites.py` — this script never opens
 `local.env` itself; the shell that runs it does (docs/environments.md).
 
-WHERE THE SOURCE TEXT COMES FROM, and why it is re-fetched
-===========================================================
+WHERE THE SOURCE TEXT COMES FROM
+=================================
 
-`promise_sources.archived_file_id` cannot currently be read back:
-`ZeroDBClient.upload_file` POSTs metadata only (file_key, size, sha256) and
-has no byte body, so story 9.1's three file records have no stored bytes — a
-presigned GET of any of them returns `404 NoSuchBucket`, confirmed live
-2026-10-17. There is correspondingly no `download_file` on the client.
+Two paths, and `--require-archive` picks the correct one:
 
-So this script re-fetches each `promise_sources` row's OWN recorded `url` and
-extracts from that. It is honest — the row records the url it captured, and
-the fetch is the same `fetch_campaign_page` story 9.1 used — but it is NOT the
-archived snapshot: a page that changed since capture yields different text,
-and the quote spans would then cite the live page rather than the archive.
-`--require-archive` refuses to run rather than accept that substitution, for
-when byte storage exists and correctness matters more than availability.
+  * **`--require-archive` (correct, now that it works)** reads the archived
+    snapshot through `ZeroDBClient.download_file` and checks that what comes
+    back hashes to the sha256 the `promise_sources` row's id records. A quote
+    span then cites the bytes that were captured.
+  * **The default** re-fetches each row's OWN recorded `url` with the same
+    `fetch_campaign_page` story 9.1 used. Honest, and available when an
+    archive predates the fix below — but it is NOT the archived snapshot: a
+    page that changed since capture yields different text, and the quote spans
+    would cite the live page rather than the archive.
 
-Fixing the underlying gap means a byte-upload/byte-download pair on
-`ZeroDBClient` plus a re-run of story 9.1's archival. That is another story's
-module and another story's live data; it is flagged in story 9.3's PR.
+`--require-archive` was unconditionally broken when this script was written,
+for the reason story 9.3 flagged: `ZeroDBClient.upload_file` posted file
+metadata to ZeroDB's metadata-only route and never sent any bytes, so story
+9.1's archives were rows with no object behind them and every presigned GET
+answered 404. That is fixed (`upload_file` now posts the bytes as multipart to
+the binary endpoint, and `download_file` reads them back), and story 9.1's
+three real captures were re-archived, so `--require-archive` is the right flag
+to pass against current data.
 
 Exit codes:
     0  the run completed (even if some sources were skipped)
@@ -90,6 +93,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import logging
 import sys
 import time
@@ -114,6 +118,7 @@ from app.ingest.promise_extraction import (  # noqa: E402
 from app.repositories import Repository  # noqa: E402
 from app.repositories.models import PromiseSource  # noqa: E402
 from app.zerodb import ZeroDBClient  # noqa: E402
+from app.zerodb.errors import ZeroDBError  # noqa: E402
 
 logger = logging.getLogger("extract_promises")
 
@@ -134,22 +139,46 @@ def _build_extractor() -> tuple[PromiseExtractor, str]:
     return RuleBasedStubExtractor(), STUB_EXTRACTOR_VERSION
 
 
-def _source_text_for(source: PromiseSource, *, require_archive: bool) -> str:
+def _source_text_for(source: PromiseSource, *, require_archive: bool, client: ZeroDBClient) -> str:
     """The text to extract from. See this script's docstring on re-fetching.
+
+    `--require-archive` reads the archived snapshot itself, which is the
+    correct source: it is the bytes the `promise_sources` row's sha256 was
+    computed over, so a quote span cites what was captured rather than
+    whatever the page says today. This path was dead until the file-upload
+    retrievability fix (story 9.1's archives stored no bytes at all); it works
+    now, and a source whose archive is still unreadable fails loudly here
+    rather than silently substituting a re-fetch.
 
     Raises:
         PromiseExtractionError: `--require-archive` was given and the archived
-            bytes are unreadable (which, today, they always are).
+            bytes could not be read back, or the bytes read back do not hash
+            to what the capture recorded.
     """
     if require_archive:
-        raise PromiseExtractionError(
-            f"--require-archive was given, but the archived bytes for "
-            f"{source.id} (file {source.archived_file_id}) cannot be read: "
-            "ZeroDBClient.upload_file stores metadata only and there is no "
-            "download_file. Re-run without --require-archive to extract from a "
-            "live re-fetch of the row's own url instead, accepting that a page "
-            "which changed since capture will yield different text."
-        )
+        try:
+            archived = client.download_file(file_id=source.archived_file_id)
+        except ZeroDBError as exc:
+            raise PromiseExtractionError(
+                f"--require-archive was given, but the archived bytes for "
+                f"{source.id} (file {source.archived_file_id}) could not be "
+                f"read back: {exc}. A capture made before the file-upload "
+                "retrievability fix stores no object; re-archive it with "
+                "scripts/archive_campaign_sites.py, or re-run without "
+                "--require-archive to extract from a live re-fetch of the "
+                "row's own url instead."
+            ) from exc
+        # The row's id IS the capture's sha256 (`src:<sha256>`), so this is a
+        # free end-to-end integrity check on the archive we just read.
+        expected = source.id.removeprefix("src:")
+        actual = hashlib.sha256(archived).hexdigest()
+        if expected != actual:
+            raise PromiseExtractionError(
+                f"the archived bytes for {source.id} hash to {actual}, not the "
+                f"{expected} its id records — the stored object does not match "
+                "the capture, so nothing extracted from it would be citable"
+            )
+        return archived.decode("utf-8", errors="replace")
     page = fetch_campaign_page(source.url)
     return page.html
 
@@ -231,7 +260,9 @@ def main(argv: list[str] | None = None) -> int:
         assert source.id is not None  # noqa: S101 - a stored row always carries one
         logger.info("--- %s (%s)", source.id, source.url)
         try:
-            source_text = _source_text_for(source, require_archive=args.require_archive)
+            source_text = _source_text_for(
+                source, require_archive=args.require_archive, client=client
+            )
         except PromiseExtractionError as exc:
             logger.error("%s", exc)
             return 1

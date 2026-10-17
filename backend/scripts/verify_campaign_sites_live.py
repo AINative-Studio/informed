@@ -27,31 +27,38 @@ browser; rather than add one or fake the capture, that candidate was swapped
 out for a reachable one. See this story's PR for the full substitution
 reasoning.
 
-!!! THE REAL "INFORMED" ZERODB PROJECT COULD NOT BE REACHED THIS SESSION !!!
+REACHING THE REAL "INFORMED" PROJECT
+=====================================
 
-This is the one genuine gap in this story's live verification, stated
-plainly rather than worked around silently:
+**CORRECTION, 2026-10-17.** This docstring previously stated that the real
+"informed" ZeroDB project "COULD NOT BE REACHED THIS SESSION", because no
+`local.env` existed when story 9.1 ran. That claim is stale: `local.env` does
+exist (see docs/environments.md), `ZeroDBClient.from_env()` finds real
+credentials once it is sourced into the shell, and this script has since run
+against the real project and written the three real captures below to it. The
+MCP half of the note still holds -- the `mcp__ainative-zerodb__*` connection
+in this environment is authenticated to a different AINative account, which is
+why `client.py` calls the REST API directly -- but the REST credentials reach
+the real project fine.
 
-  * No `local.env` exists in this environment and no `ZERODB_*` environment
-    variables are set, so `ZeroDBClient.from_env()` has no credentials.
-  * The `mcp__ainative-zerodb__*` MCP connection available in this session
-    is -- confirmed live by listing its 100 projects below -- authenticated
-    to a DIFFERENT AINative account than the one that owns the "informed"
-    project. There is no project named "informed" among them. This is the
-    exact blocker datamodel.md's "Open questions" section already documents
-    for story 1.3 and every story since; it was re-confirmed rather than
-    assumed for this story.
+The honest posture is the one this script already implements: it writes
+through `ZeroDBClient` to WHATEVER TARGET THE CALLER SUPPLIES --
+`ZeroDBClient.from_env()` when real credentials are present, or an in-memory
+`FakeZeroDBTransport` when they are not, clearly labeled in the output as a
+substitute and never presented as the real project. What changed is only that
+the first branch is now the one that runs here.
 
-So **this script runs the real fetch, real hashing, real PDF rendering and
-the real Wayback availability check against the real network**, and then
-writes through `ZeroDBClient` to WHATEVER TARGET THE CALLER SUPPLIES --
-`ZeroDBClient.from_env()` when real credentials exist, or (today, in this
-environment) an in-memory `FakeZeroDBTransport`, clearly labeled in this
-script's own output as a substitute, never presented as a connection to the
-real project. The moment real "informed" credentials are available, running
-this script with no code change writes these same three real captures to
-the real project for real. Re-run it once that is true and attach the
-real output to this story's PR -- this run's output is not that.
+A SECOND CORRECTION: THIS SCRIPT USED TO CLAIM SUCCESS ON A BROKEN PATH
+=========================================================================
+
+It logged the presigned URL for each archived HTML file and stopped there,
+without ever fetching it. Every one of those URLs answered 404: story 9.1's
+`upload_file` posted file metadata to ZeroDB's metadata-only route and never
+sent any bytes, so the archives were rows with nothing behind them. A logged
+URL looked like proof and was not. This script now FETCHES what it archived,
+through `download_file` and through the presigned URL, and compares the bytes
+against the capture's own sha256 -- so "archived" means retrievable or the
+run says so.
 
 Run it:
 
@@ -67,6 +74,8 @@ import logging
 import sys
 from pathlib import Path
 
+import httpx
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.bootstrap import Bootstrapper  # noqa: E402
@@ -75,6 +84,7 @@ from app.ingest.campaign_sites import (  # noqa: E402
     CampaignSiteLoader,
     check_wayback_available,
     fetch_campaign_page,
+    sha256_hex,
 )
 from app.repositories import Repository  # noqa: E402
 from app.repositories.models import Candidacy, District, Election, Person, PromiseSource  # noqa: E402
@@ -189,6 +199,10 @@ def main() -> int:
     loader = CampaignSiteLoader(client)
 
     results = []
+    #: Any archive that could not be read back. Nonzero means this script
+    #: must NOT report success: an unretrievable archive is the exact failure
+    #: that shipped silently the first time.
+    round_trip_failures = 0
     for candidacy_id, person_id, person_name, party, district_id, state, url in REAL_CANDIDATES:
         districts.upsert(
             {
@@ -247,9 +261,49 @@ def main() -> int:
         assert stored.url == url
         assert stored.candidacy_id == candidacy_id
 
-        if is_real:
-            presigned = client.generate_presigned_url(file_id=report.html_file_id)
-            logger.info("  presigned HTML url (expires shortly): %s", presigned.url)
+        # The round trip story 9.1 never ran. "Archived" is a claim about
+        # retrievability, so it is verified by reading the bytes back and
+        # hashing them -- not by the upload answering 200, and not by a
+        # presigned URL merely being mintable.
+        for label, file_id, expected_sha256 in (
+            ("HTML", report.html_file_id, report.html_sha256),
+            ("PDF", report.pdf_file_id, report.pdf_sha256),
+        ):
+            if not file_id:
+                continue
+            downloaded = client.download_file(file_id=file_id)
+            actual = sha256_hex(downloaded)
+            if actual == expected_sha256:
+                logger.info(
+                    "  %s round trip: %d bytes read back, sha256 matches the capture",
+                    label,
+                    len(downloaded),
+                )
+            else:
+                logger.error(
+                    "  %s round trip FAILED: read back %d bytes hashing to %s, expected %s",
+                    label,
+                    len(downloaded),
+                    actual,
+                    expected_sha256,
+                )
+                round_trip_failures += 1
+
+            if is_real:
+                # The UI hands a browser a presigned URL, not a download_file
+                # call, so the path the reader actually uses is checked too.
+                presigned = client.generate_presigned_url(file_id=file_id)
+                fetched = httpx.get(presigned.url, timeout=30, follow_redirects=True)
+                if fetched.status_code == 200 and fetched.content == downloaded:
+                    logger.info("  %s presigned URL: fetched, bytes match", label)
+                else:
+                    logger.error(
+                        "  %s presigned URL FAILED: HTTP %d, %d bytes",
+                        label,
+                        fetched.status_code,
+                        len(fetched.content),
+                    )
+                    round_trip_failures += 1
 
         # Real, keyless Wayback availability check -- confirms independently,
         # against archive.org itself, whether a snapshot exists for this
@@ -288,6 +342,16 @@ def main() -> int:
             "clean these up."
         )
 
+    if round_trip_failures:
+        logger.error(
+            "%d archived file(s) could not be read back. The capture rows exist "
+            "but their content is not retrievable, which is NOT a satisfied "
+            "acceptance criterion -- see this script's docstring.",
+            round_trip_failures,
+        )
+        return 1
+
+    logger.info("every archived file was read back and matched its recorded sha256")
     return 0
 
 

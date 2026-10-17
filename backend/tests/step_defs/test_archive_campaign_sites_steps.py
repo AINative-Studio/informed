@@ -221,6 +221,34 @@ def pdf_file_stored(fake: FakeZeroDBTransport, result: dict[str, Any]) -> None:
     assert stored["file_metadata"]["sha256"] != report.html_sha256
 
 
+@then("downloading the archived HTML returns the captured page's exact bytes")
+def archived_html_downloads(zerodb: ZeroDBClient, result: dict[str, Any]) -> None:
+    report: CaptureReport = result["report"]
+    downloaded = zerodb.download_file(file_id=report.html_file_id)
+    assert downloaded == result["html"].encode("utf-8")
+
+
+@then("the downloaded HTML hashes to the sha256 recorded on its file")
+def archived_html_hash_matches(zerodb: ZeroDBClient, result: dict[str, Any]) -> None:
+    report: CaptureReport = result["report"]
+    downloaded = zerodb.download_file(file_id=report.html_file_id)
+    assert hashlib.sha256(downloaded).hexdigest() == report.html_sha256
+
+
+@then("downloading the archived PDF returns a real PDF")
+def archived_pdf_downloads(zerodb: ZeroDBClient, result: dict[str, Any]) -> None:
+    report: CaptureReport = result["report"]
+    downloaded = zerodb.download_file(file_id=report.pdf_file_id)
+    assert downloaded.startswith(b"%PDF-"), "the stored bytes are not a PDF"
+
+
+@then("the downloaded PDF hashes to the sha256 recorded on its file")
+def archived_pdf_hash_matches(zerodb: ZeroDBClient, result: dict[str, Any]) -> None:
+    report: CaptureReport = result["report"]
+    downloaded = zerodb.download_file(file_id=report.pdf_file_id)
+    assert hashlib.sha256(downloaded).hexdigest() == report.pdf_sha256
+
+
 def _promise_source_rows(fake: FakeZeroDBTransport, candidacy_id: str) -> list[dict[str, Any]]:
     stored = fake.rows.get("promise_sources", {})
     return [

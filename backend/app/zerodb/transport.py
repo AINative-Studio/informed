@@ -18,6 +18,10 @@ import httpx
 USER_AGENT = "informed-api/zerodb-client"
 
 
+#: One multipart part, as httpx wants it: `(filename, bytes, content_type)`.
+MultipartFile = tuple[str, bytes, str]
+
+
 @dataclass(frozen=True)
 class ZeroDBResponse:
     """A transport-neutral answer from ZeroDB.
@@ -28,11 +32,15 @@ class ZeroDBResponse:
             reports the target is absent, and so on).
         json_body: The parsed response body, or None when it was not JSON.
         text: The raw body, kept for error messages when parsing failed.
+        content: The raw response bytes. The only ZeroDB response that is not
+            JSON is a file download, and `text` would corrupt a PDF, so the
+            bytes are carried separately rather than decoded.
     """
 
     status_code: int
     json_body: Any | None
     text: str = ""
+    content: bytes = b""
 
     @property
     def is_success(self) -> bool:
@@ -57,11 +65,21 @@ class ZeroDBTransport(Protocol):
         *,
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
+        files: dict[str, MultipartFile] | None = None,
+        data: dict[str, str] | None = None,
     ) -> ZeroDBResponse:
         """Send one request and return the response. One attempt, no retrying.
 
         Retrying is the client's job: it owns the policy about which failures
         are worth repeating, so every transport behaves identically under load.
+
+        `files` and `data` send a multipart/form-data body instead of JSON, and
+        are mutually exclusive with `json`. ZeroDB's file-storage endpoints are
+        the only ones that need them: the binary upload endpoint takes the
+        actual file bytes as a multipart part, and posting the same information
+        as a JSON metadata payload records a file row with no stored object
+        behind it (see `ZeroDBClient.upload_file`). An MCP transport maps these
+        onto `zerodb_upload_file`'s file argument.
         """
         ...
 
@@ -113,13 +131,31 @@ class HttpxZeroDBTransport:
         *,
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
+        files: dict[str, MultipartFile] | None = None,
+        data: dict[str, str] | None = None,
     ) -> ZeroDBResponse:
-        response = self._client.request(method, path, json=json, params=params)
+        headers: dict[str, str] | None = None
+        if files is not None or data is not None:
+            # The client's default Content-Type is application/json; httpx must
+            # be left to set the multipart boundary itself, so the default is
+            # dropped for this one request rather than for the whole session.
+            headers = {"Content-Type": ""}
+        response = self._client.request(
+            method, path, json=json, params=params, files=files, data=data, headers=headers
+        )
         try:
             body: Any | None = response.json()
         except ValueError:
             body = None
-        return ZeroDBResponse(status_code=response.status_code, json_body=body, text=response.text)
+        return ZeroDBResponse(
+            status_code=response.status_code,
+            json_body=body,
+            text=response.text,
+            # A file download is the one ZeroDB response that is not JSON, and
+            # `text` would decode a PDF's bytes lossily, so `download_file`
+            # reads the payload from here instead.
+            content=response.content,
+        )
 
     def close(self) -> None:
         if self._owns_client:
@@ -146,11 +182,17 @@ class RecordedCall:
     json: dict[str, Any] | None = None
     params: dict[str, Any] | None = None
     headers: dict[str, str] = field(default_factory=dict)
+    #: The multipart parts, when the request sent a body rather than JSON. A
+    #: test asserts on these to prove an upload carried the real file bytes and
+    #: not just a metadata payload.
+    files: dict[str, MultipartFile] | None = None
+    data: dict[str, str] | None = None
 
 
 __all__ = [
     "USER_AGENT",
     "HttpxZeroDBTransport",
+    "MultipartFile",
     "RecordedCall",
     "ZeroDBResponse",
     "ZeroDBTransport",

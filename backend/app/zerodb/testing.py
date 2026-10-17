@@ -23,6 +23,7 @@ inference. A behaviour that depends on real ranking or real graph reasoning must
 be checked against live ZeroDB in a story of its own, never asserted here.
 """
 
+import hashlib
 import json as json_module
 import uuid
 from dataclasses import dataclass, field
@@ -54,7 +55,8 @@ class FakeZeroDBTransport:
         vectors: Namespace to the vectors stored in it.
         graph_entities: Canonical name (an Informed NoSQL id) to the entity.
         graph_edges: The set of `(source, predicate, target)` triples created.
-        files: File id to the stored file envelope.
+        files: File id to the stored file envelope (metadata).
+        file_content: File id to the bytes stored for it, when any were.
         events: Published events, in order.
         subscriptions: Registered event subscriptions.
     """
@@ -86,6 +88,11 @@ class FakeZeroDBTransport:
     graph_entities: dict[str, dict[str, Any]] = field(default_factory=dict)
     graph_edges: set[tuple[str, str, str]] = field(default_factory=set)
     files: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: File id -> the bytes actually stored for it. Separate from `files` on
+    #: purpose: ZeroDB's metadata-only route writes a `files` entry with no
+    #: object behind it, and keeping the two apart is what lets this fake
+    #: reproduce that state instead of papering over it.
+    file_content: dict[str, bytes] = field(default_factory=dict)
     events: list[dict[str, Any]] = field(default_factory=list)
     subscriptions: list[dict[str, Any]] = field(default_factory=list)
     ontology: dict[str, Any] = field(default_factory=dict)
@@ -179,8 +186,11 @@ class FakeZeroDBTransport:
         *,
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
+        files: dict[str, tuple[str, bytes, str]] | None = None,
+        data: dict[str, str] | None = None,
     ) -> ZeroDBResponse:
         """Record the call, then either fail it or serve it from memory."""
+        multipart = files is not None or data is not None
         self.calls.append(
             RecordedCall(
                 method=method,
@@ -189,8 +199,13 @@ class FakeZeroDBTransport:
                 params=params,
                 headers={
                     "Authorization": f"Bearer {self.API_KEY}",
-                    "Content-Type": "application/json",
+                    # httpx sets the boundary itself for a multipart body, so
+                    # the real transport drops its default JSON Content-Type
+                    # for exactly these requests; the fake records the same.
+                    **({} if multipart else {"Content-Type": "application/json"}),
                 },
+                files=files,
+                data=data,
             )
         )
 
@@ -219,7 +234,7 @@ class FakeZeroDBTransport:
                 text=json_module.dumps(self._fixed_json),
             )
 
-        return self._route(method, path, json or {}, params or {})
+        return self._route(method, path, json or {}, params or {}, files, data or {})
 
     def _next_failure(self) -> _Failure | None:
         if self._queued_failures:
@@ -229,7 +244,13 @@ class FakeZeroDBTransport:
     # --- routing ----------------------------------------------------------
 
     def _route(
-        self, method: str, path: str, body: dict[str, Any], params: dict[str, Any]
+        self,
+        method: str,
+        path: str,
+        body: dict[str, Any],
+        params: dict[str, Any],
+        files: dict[str, tuple[str, bytes, str]] | None = None,
+        data: dict[str, str] | None = None,
     ) -> ZeroDBResponse:
         segments = [segment for segment in path.split("/") if segment]
 
@@ -250,7 +271,7 @@ class FakeZeroDBTransport:
         if "tables" in segments:
             return self._route_tables(method, segments, body, params)
         if "files" in segments:
-            return self._route_files(method, segments, body)
+            return self._route_files(method, segments, body, files, data or {})
         if "events" in segments:
             return self._route_events(method, segments, body, params)
         if "memory" in segments and "database" in segments:
@@ -721,8 +742,32 @@ class FakeZeroDBTransport:
     # files ----------------------------------------------------------------
 
     def _route_files(
-        self, method: str, segments: list[str], body: dict[str, Any]
+        self,
+        method: str,
+        segments: list[str],
+        body: dict[str, Any],
+        files: dict[str, tuple[str, bytes, str]] | None = None,
+        data: dict[str, str] | None = None,
     ) -> ZeroDBResponse:
+        """Serve ZeroDB's file routes, faithfully to the live API's split.
+
+        The live project exposes two POST routes that both answer 200 with a
+        `file_id` and differ in whether any bytes are stored (measured
+        2026-10-17; see `ZeroDBClient.upload_file`):
+
+          * `/database/files` — JSON metadata only, no object written. The
+            fake used to answer *this* route for every upload and happily
+            served a presigned URL for the result, which is exactly how the
+            missing-bytes bug passed a full green CI run while being broken
+            live. It is still modelled, still metadata-only, and a download of
+            a file registered through it now 404s here as it does live.
+          * `/files/upload` — multipart, the bytes in a `file` part. The
+            object is stored, and the server measures size and sha256 over
+            what it received.
+
+        `/files/{id}/content` streams the stored bytes; `/presigned-url` mints
+        a link to them. Neither can produce bytes that were never stored.
+        """
         if segments[-1] == "presigned-url":
             file_id = segments[-2]
             if file_id not in self.files:
@@ -741,7 +786,51 @@ class FakeZeroDBTransport:
                 }
             )
 
+        if segments[-1] in {"content", "download"} and method == "GET":
+            file_id = segments[-2]
+            content = self.file_content.get(file_id)
+            if content is None:
+                # Live, a metadata row with no object behind it answers
+                # `404 NoSuchKey` from object storage rather than succeeding
+                # with an empty body. An empty success here would let the very
+                # bug this models slip through again.
+                return _not_found(f"File content for '{file_id}' not found")
+            return ZeroDBResponse(status_code=200, json_body=None, text="", content=content)
+
+        if method == "POST" and segments[-1] == "upload":
+            # The binary endpoint: the bytes arrive as a multipart part, and
+            # the key and metadata as form fields (metadata as a JSON string,
+            # which is the only way a multipart field carries an object).
+            data = data or {}
+            file_name, content, content_type = (files or {})["file"]
+            file_key = data.get("key") or file_name
+            metadata_raw = data.get("metadata")
+            file_id = str(uuid.uuid4())
+            envelope = {
+                "file_id": file_id,
+                "file_key": file_key,
+                "file_name": file_name,
+                "content_type": content_type,
+                # Measured over the received body, as the live endpoint does,
+                # never taken from a caller-supplied number.
+                "size_bytes": len(content),
+                "sha256_hash": hashlib.sha256(content).hexdigest(),
+                # The binary endpoint does NOT echo `file_metadata` back; the
+                # client carries the sent metadata through itself. Returning it
+                # here would hide that, and a test asserting on the round trip
+                # would pass against the fake and fail live.
+                "file_metadata": None,
+            }
+            self.files[file_id] = {
+                **envelope,
+                "file_metadata": json_module.loads(metadata_raw) if metadata_raw else None,
+            }
+            self.file_content[file_id] = content
+            return _ok(envelope)
+
         if method == "POST":
+            # `/database/files` — metadata only. No `file_content` entry, so a
+            # later download of this file 404s, as it does live.
             file_id = str(uuid.uuid4())
             envelope = {
                 "file_id": file_id,
