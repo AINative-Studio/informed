@@ -67,19 +67,24 @@ has never run against a real vote. Fabricating one to make this story look
 complete would put an uncitable claim in the evidence graph, which is the one
 thing prd.md's "evidence over opinion" principle forbids.
 
-**No `made_promise` edge has been written against real data either, for the
-same kind of reason**: `promises` rows come from story 9.3's extractor, which is
-in flight in a separate PR. What exists today is 1,318 real `promise_sources`
-rows (story 9.1's archived campaign pages) but no extracted promises. So
-`write_promise_evidence` is built and tested, and `scripts/write_evidence_graph.py`
-writes promise edges for every real promise it finds — which is zero today and
-will be the real count the moment 9.3 lands, with no code change here.
+**What HAS been written against real data:** `person -> ran_in -> candidacy`,
+from the real `candidacies` rows story 2.6 loaded. Measured live 2026-10-17: 3
+edges from the 3 live candidacy rows, each traversed back and confirmed to
+resolve to a citable row by its NoSQL id.
 
-**What HAS been written against real data:** `person -> ran_in -> candidacy`
-edges, from the real `candidacies` rows story 2.6 loaded. That is the one
-predicate in datamodel.md's table whose both endpoints exist in the live
-project today, and `scripts/write_evidence_graph.py` is the script that writes
-them.
+**`candidacy -> made_promise -> promise` and `promise -> about -> stance` are
+wired to real rows but have none to write yet.** Story 9.3's extractor has
+merged, so the code path is complete and `scripts/write_evidence_graph.py`
+writes an edge per `promises` row it reads — but the live project holds **0**
+promise rows (and 3 `promise_sources`), because nobody has run the extractor
+against it. So this is a *data* gap, not a code gap: the count becomes real the
+moment `scripts/extract_promises.py` runs, with no change here. Checked live
+rather than assumed.
+
+**`promise -> tested_by -> roll_call` and `promise -> has_verdict -> verdict`
+are built but idle**, for the same reason as `voted`: a mapping needs a roll
+call, and a verdict needs a mapping. They will be written by the mapping agent
+(epic 10) and the verdict agent (epic 7) through these same methods.
 
 ===============================================================================
 WHY THE WRITER IS NOT IDEMPOTENT-BY-BOOKKEEPING

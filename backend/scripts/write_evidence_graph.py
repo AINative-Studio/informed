@@ -18,13 +18,15 @@ in the live project — the `people` rows story 2.2 loaded and the `candidacies`
 rows story 2.6 loaded — so this is the predicate this script writes from real
 data, one edge per candidacy row.
 
-**`candidacy -> made_promise -> promise` and everything downstream of a
-promise: writable the moment promises exist.** The `promises` table is created
-(story 1.3) and empty: story 9.1 archived 1,318 real campaign pages into
-`promise_sources`, and story 9.3's extractor — in flight in a separate PR — is
-what turns those into rows. This script reads `promises` and writes an edge per
-row it finds, which is zero today and will be the real count with no code
-change here.
+**`candidacy -> made_promise -> promise` and `promise -> about -> stance`:
+code complete, no rows to write yet.** Story 9.3's extractor has merged, so
+this script writes an edge per `promises` row it reads — but the live project
+holds 0 promise rows today (checked 2026-10-17), because nobody has run
+`scripts/extract_promises.py` against it. A data gap, not a code gap: the count
+becomes real the moment that script runs, with nothing to change here.
+`about` is written only for a promise the extractor classified to a stance; one
+it could not still gets its `made_promise` edge, because the quote, its source
+and its capture time are evidence even before a stance is assigned.
 
 **`person -> voted -> roll_call`: blocked on data that does not exist.** A
 `voted` edge needs a `member_votes` row, which needs a roll call from
@@ -37,8 +39,8 @@ the graph look fuller.** An uncitable edge in the evidence graph is worse than
 a missing one: the agent's whole contract is that every claim resolves to a
 primary source.
 
-So a run today reports real `ran_in` edges and zeros for the rest, and the
-zeros are the honest answer rather than a failure.
+So a run reports real `ran_in` and promise edges, and zero `voted` edges — and
+that zero is the honest answer rather than a failure.
 
 ===============================================================================
 RUNNING IT
@@ -187,7 +189,21 @@ def main() -> int:
             continue
         written_edges += 1
 
-    # --- candidacy -> made_promise -> promise, zero today -----------------
+    # --- candidacy -> made_promise -> promise ------------------------------
+    #
+    # datamodel.md's edge properties for `made_promise` are `source_id` and
+    # `captured_at`. `source_id` is a field on the promise row;
+    # **`captured_at` is not** — it lives on the `promise_sources` row the
+    # promise cites (story 9.1's archived capture). So the sources are read
+    # once into a lookup rather than fetched per promise: a promise set of any
+    # size would otherwise be one extra request per row against a ~60 req/min
+    # ceiling.
+    sources = _all_rows(client, "promise_sources", limit=None, pace=pace)
+    captured_at_by_source = {
+        str(row.get("id")): str(row.get("captured_at") or "") for row in sources
+    }
+    logger.info("read %d promise_source row(s) for their capture times", len(sources))
+
     promises = _all_rows(client, "promises", limit=args.limit, pace=pace)
     logger.info("read %d promise row(s)", len(promises))
     for row in promises:
@@ -196,6 +212,7 @@ def main() -> int:
         if not promise_id or not candidacy_id:
             skipped.append(f"promise {promise_id!r} has no candidacy_id")
             continue
+        source_id = str(row.get("source_id") or "")
         if args.dry_run:
             written_edges += 1
             continue
@@ -204,8 +221,14 @@ def main() -> int:
             writer.write_promise_evidence(
                 candidacy_id=candidacy_id,
                 promise_id=promise_id,
-                source_id=row.get("source_id") or "",
-                captured_at=row.get("captured_at") or "",
+                source_id=source_id,
+                captured_at=captured_at_by_source.get(source_id, ""),
+                # A promise whose extractor could not classify it to a stance
+                # has `stance_id: None`, and `write_promise_evidence` then
+                # writes only the `made_promise` edge — still evidence (the
+                # quote, its source, the capture time), and withholding it
+                # until a classifier catches up would make the promise
+                # uncitable in the meantime.
                 stance_id=row.get("stance_id"),
                 stance_confidence=float(row.get("confidence") or 1.0),
             )
