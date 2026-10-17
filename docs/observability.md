@@ -208,20 +208,68 @@ tracing backend before one is provisioned.
 
 ## Verification against the live "informed" ZeroDB project
 
-Run during this story, using `local.env` credentials sourced into the shell
-and never printed or committed:
+Run with the live credentials sourced into the shell, never printed or
+committed:
 
 ```bash
 cd backend
-source ../local.env   # ZERODB_WORKSPACE_ID / ZERODB_PROJECT_ID / ZERODB_API_KEY
-.venv/bin/uvicorn app.main:app --port 8000 &
-curl -s http://127.0.0.1:8000/health
-curl -s http://127.0.0.1:8000/v1/topics > /dev/null   # generates a real request-metrics sample
-curl -s http://127.0.0.1:8000/metrics
+set -a; . ../local.env; set +a
+.venv/bin/python scripts/verify_monitoring_and_tracing_live.py
 ```
 
-See this story's PR for the actual captured output: real
-`http_requests_total`/`http_request_duration_seconds` lines reflecting the
-requests just made, and real `job_last_success_timestamp_seconds` /
-`job_ingest_lag_over_threshold` lines read live from the "informed" project's
-own `scheduled_jobs` table.
+Read-only against `scheduled_jobs` (`/metrics`'s ingest-lag read is a plain
+`get_row`), so there is no cleanup step. Run during this story, 2026-10-17,
+against the real "informed" project (id redacted):
+
+```
+Connected to ZeroDB project: '<redacted>'
+GET /health -> 200
+GET /v1/topics -> 200 (ZeroDB-backed read)
+GET /metrics -> 200
+
+--- /metrics output (request-metrics portion) ---
+http_requests_total{method="GET",route="/health",status="200"} 1
+http_requests_total{method="GET",route="/v1/topics",status="200"} 1
+http_request_duration_seconds_bucket{method="GET",route="/health",le="0.005"} 1
+...
+http_request_duration_seconds_bucket{method="GET",route="/health",le="+Inf"} 1
+http_request_duration_seconds_count{method="GET",route="/health"} 1
+...
+
+PASS: /metrics reflects the real requests just made.
+
+--- /metrics output (ingest-lag portion, read from the live scheduled_jobs table) ---
+job_last_success_timestamp_seconds{job="sweep_correction_emails"} 1792194212.449863
+job_ingest_lag_over_threshold{job="sweep_correction_emails"} 1
+job_ingest_lag_over_threshold{job="load_candidacies"} 0
+job_ingest_lag_over_threshold{job="load_house_rollcalls"} 0
+job_ingest_lag_over_threshold{job="run_nightly_integrity_checks"} 0
+job_ingest_lag_over_threshold{job="repair_member_votes_denormalization"} 0
+
+PASS: ingest-lag gauges were computed live for all 5 registered jobs against the real scheduled_jobs table.
+```
+
+Two real findings from this run, not fixture artifacts:
+
+1. **This run caught a real bug.** The first live run printed bucket lines
+   that climbed past the true total and then dropped back down at `+Inf` —
+   `render_prometheus_text` was re-accumulating `_Histogram.bucket_counts`,
+   which `observe()` already stores cumulatively. The in-memory-fake test
+   suite had not caught it because every existing test observed only one
+   value per histogram, which hides double-accumulation. Fixed (this story's
+   PR), with a regression test using three observations spread across three
+   buckets.
+2. **`sweep_correction_emails` is genuinely over the 6-hour ingest-lag
+   threshold right now** — its real `scheduled_jobs` row shows a last
+   success from 2026-10-11, about six days before this verification run.
+   This is the live project's actual state, not a seeded scenario: the one
+   privacy-sensitive periodic job (story 12.4's 90-day contact-email
+   retention sweep) has not run recently against this project. That tracks
+   `.github/workflows/scheduled-jobs.yml`'s own documented status (Epic 16):
+   the daily workflow exists and is enabled, but targets the `prod` GitHub
+   Environment's `ZERODB_*` secrets, which `docs/environments.md` records as
+   not yet configured — so every scheduled tick fails fast on a missing
+   credential rather than actually running `scripts/run_scheduled_jobs.py`
+   against this project. This is exactly the gap "alerts on ingest lag over
+   6 hours" would close once those secrets are configured and a real
+   alerting rule exists to evaluate `job_ingest_lag_over_threshold`.
