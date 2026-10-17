@@ -263,16 +263,7 @@ class ScheduledJobRunner:
         never recorded one (a brand-new job, or a project that has never
         bootstrapped the `scheduled_jobs` table at all — both are "due").
         """
-        try:
-            row = self._client.get_row(TABLE_NAME, job_name)
-        except ZeroDBNotFoundError:
-            return None
-        if row is None:
-            return None
-        last_run_at = row.row_data.get("last_run_at")
-        if not last_run_at:
-            return None
-        return _parse_iso(last_run_at)
+        return last_success_at(self._client, job_name)
 
     def _record_success(self, job_name: str, moment: datetime) -> None:
         """Upsert this job's last-run timestamp. Idempotent by `job_name`,
@@ -281,6 +272,28 @@ class ScheduledJobRunner:
         """
         payload: dict[str, Any] = {"id": job_name, "last_run_at": _iso(moment)}
         self._client.upsert_row(TABLE_NAME, job_name, payload)
+
+
+def last_success_at(client: ZeroDBClient, job_name: str) -> datetime | None:
+    """The stored last-success timestamp for `job_name`, or `None` if it has
+    never recorded one.
+
+    Public (story 16.5) so `app.observability.ingest_lag` can read the exact
+    same bookkeeping `ScheduledJobRunner` itself relies on to decide "is this
+    due" without duplicating the read or reaching into a private method —
+    one ingest-lag reading and one due/not-due decision, same source of
+    truth, same row shape.
+    """
+    try:
+        row = client.get_row(TABLE_NAME, job_name)
+    except ZeroDBNotFoundError:
+        return None
+    if row is None:
+        return None
+    last_run_at = row.row_data.get("last_run_at")
+    if not last_run_at:
+        return None
+    return _parse_iso(last_run_at)
 
 
 def run_due_jobs(
@@ -303,6 +316,7 @@ __all__ = [
     "JobStatus",
     "RunReport",
     "ScheduledJobRunner",
+    "last_success_at",
     "run_due_jobs",
     "ZeroDBError",
 ]

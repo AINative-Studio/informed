@@ -90,7 +90,13 @@ from typing import Any
 #: than any human browses. A 429 to a health check reads as an outage, so
 #: rate-limiting the liveness probe is how a limiter takes down the service it
 #: was added to protect.
-UNLIMITED_PATHS: frozenset[str] = frozenset({"/health"})
+#:
+#: `/metrics` (story 16.5) is the same argument: a monitoring scraper polls it
+#: on a fixed interval from a small, known set of addresses, and throttling
+#: the thing an operator reads to find out whether the service is healthy is
+#: exactly backwards during an incident, which is the one time it is scraped
+#: hardest and matters most.
+UNLIMITED_PATHS: frozenset[str] = frozenset({"/health", "/metrics"})
 
 #: OpenAPI and docs routes, excluded from policy resolution the same way.
 _DOCS_PREFIXES = ("/openapi", "/docs", "/redoc")
@@ -289,6 +295,18 @@ def resolve_template(concrete_path: str) -> str:
     return concrete_path
 
 
+def declared_route_templates() -> frozenset[str]:
+    """Every path template any rate-limit policy declares.
+
+    A public, read-only view over `_DECLARED_PATHS` (story 16.5): the
+    metrics middleware needs to tell "a concrete path that resolved to a
+    real declared template" apart from "a concrete path `resolve_template`
+    could not match and returned unchanged", and the private tuple itself is
+    not something another module should reach into directly.
+    """
+    return frozenset(path for path, _ in _DECLARED_PATHS)
+
+
 def _matches(policy: RateLimitPolicy, method: str, path: str) -> bool:
     if policy.methods and method.upper() not in policy.methods:
         return False
@@ -441,6 +459,7 @@ __all__ = [
     "RateLimitPolicy",
     "account_key",
     "client_key",
+    "declared_route_templates",
     "policy_for",
     "served_routes",
     "unlimited_routes",
