@@ -194,8 +194,10 @@ _REFUSE_PATTERNS: tuple[tuple[str, str], ...] = (
     # --- the direct ask, in all its spacings -----------------------------
     (
         "should_i_vote_for_whom",
-        _spaced("who should") + r"\s+(?:i|we|they|someone)\b|"
-        + _spaced("whom should") + r"\s+(?:i|we|they|someone)\b|"
+        _spaced("who should")
+        + r"\s+(?:i|we|they|someone)\b|"
+        + _spaced("whom should")
+        + r"\s+(?:i|we|they|someone)\b|"
         r"\bwho (?:should|shall|do|must) (?:i|we|they|someone)\b",
     ),
     (

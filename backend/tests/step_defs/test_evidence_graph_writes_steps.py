@@ -46,9 +46,7 @@ class GraphWorld:
 @pytest.fixture
 def world() -> GraphWorld:
     transport = FakeZeroDBTransport()
-    client = ZeroDBClient(
-        project_id=FakeZeroDBTransport.PROJECT_ID, transport=transport
-    )
+    client = ZeroDBClient(project_id=FakeZeroDBTransport.PROJECT_ID, transport=transport)
     return GraphWorld(transport=transport, client=client, writer=EvidenceGraphWriter(client))
 
 
@@ -198,9 +196,7 @@ def no_extra_predicates(world: GraphWorld) -> None:
 
 
 @then(
-    parsers.parse(
-        'a "{entity_type}" entity exists whose canonical name is the person\'s NoSQL id'
-    )
+    parsers.parse('a "{entity_type}" entity exists whose canonical name is the person\'s NoSQL id')
 )
 def person_entity_exists(world: GraphWorld, entity_type: str) -> None:
     entity = world.transport.graph_entities[PERSON_ID]
@@ -227,9 +223,7 @@ def ran_in_edge_exists(world: GraphWorld, predicate: str) -> None:
 @then("the edge carries the party and incumbency from the candidacy row")
 def edge_carries_party(world: GraphWorld) -> None:
     edge = [
-        call
-        for call in world.transport.calls
-        if (call.json or {}).get("predicate") == "ran_in"
+        call for call in world.transport.calls if (call.json or {}).get("predicate") == "ran_in"
     ][-1]
     properties = (edge.json or {})["properties"]
     assert properties["party"] == "D"
@@ -248,9 +242,7 @@ def every_entity_resolves(world: GraphWorld) -> None:
 @then(parsers.parse('the graph holds exactly one "{predicate}" edge for that pair'))
 def exactly_one_edge(world: GraphWorld, predicate: str) -> None:
     matches = [
-        edge
-        for edge in world.transport.graph_edges
-        if edge == (PERSON_ID, predicate, CANDIDACY_ID)
+        edge for edge in world.transport.graph_edges if edge == (PERSON_ID, predicate, CANDIDACY_ID)
     ]
     assert len(matches) == 1
 

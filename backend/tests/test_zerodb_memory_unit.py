@@ -50,9 +50,7 @@ def transport() -> FakeZeroDBTransport:
 
 @pytest.fixture
 def client(transport: FakeZeroDBTransport) -> ZeroDBClient:
-    return ZeroDBClient(
-        project_id=FakeZeroDBTransport.PROJECT_ID, transport=transport
-    )
+    return ZeroDBClient(project_id=FakeZeroDBTransport.PROJECT_ID, transport=transport)
 
 
 # --- store_memory ---------------------------------------------------------

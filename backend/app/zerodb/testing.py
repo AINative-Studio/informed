@@ -120,9 +120,7 @@ class FakeZeroDBTransport:
         `ZeroDBClient.delete_memory`).
         """
         for _ in range(count):
-            self._queued_failures.append(
-                _Failure(status=status, exception=exception, body=body)
-            )
+            self._queued_failures.append(_Failure(status=status, exception=exception, body=body))
 
     def always_fail(
         self,

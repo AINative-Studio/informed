@@ -8,13 +8,13 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+from pytest_bdd import given, parsers, scenarios, then, when
+
 from app.agent_memory import (
     RETENTION,
     SessionMemoryService,
     sweep_expired_session_memory,
 )
-from pytest_bdd import given, parsers, scenarios, then, when
-
 from app.zerodb import ZeroDBClient
 from app.zerodb.testing import FakeZeroDBTransport
 
@@ -40,9 +40,7 @@ class MemoryWorld:
 @pytest.fixture
 def world() -> MemoryWorld:
     transport = FakeZeroDBTransport()
-    client = ZeroDBClient(
-        project_id=FakeZeroDBTransport.PROJECT_ID, transport=transport
-    )
+    client = ZeroDBClient(project_id=FakeZeroDBTransport.PROJECT_ID, transport=transport)
     return MemoryWorld(transport=transport, client=client, service=SessionMemoryService(client))
 
 
@@ -112,16 +110,12 @@ def remember_the_turn(world: MemoryWorld) -> None:
 
 @when("the first session's memory is read")
 def read_the_first_session(world: MemoryWorld) -> None:
-    world.recalled = world.service.recall(
-        session_id=world.sessions[0], anonymous=False, now=NOW
-    )
+    world.recalled = world.service.recall(session_id=world.sessions[0], anonymous=False, now=NOW)
 
 
 @when("the session's memory is read")
 def read_the_session(world: MemoryWorld) -> None:
-    world.recalled = world.service.recall(
-        session_id=world.sessions[-1], anonymous=False, now=NOW
-    )
+    world.recalled = world.service.recall(session_id=world.sessions[-1], anonymous=False, now=NOW)
 
 
 @when("the session-memory retention sweep runs")

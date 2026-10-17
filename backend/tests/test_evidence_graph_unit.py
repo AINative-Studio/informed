@@ -32,9 +32,7 @@ from app.zerodb import ZeroDBClient
 from app.zerodb.testing import FakeZeroDBTransport
 
 PERSON_ID = "person:B000944"
-CANDIDACY_ID = (
-    "us-2026-11-03-general:ocd-division/country:us/state:oh/cd:11:person:B000944"
-)
+CANDIDACY_ID = "us-2026-11-03-general:ocd-division/country:us/state:oh/cd:11:person:B000944"
 PROMISE_ID = "prm:11111111-1111-4111-8111-111111111111"
 STANCE_ID = "stance:housing-supply:for"
 TOPIC_ID = "topic:housing"
@@ -52,9 +50,7 @@ def transport() -> FakeZeroDBTransport:
 
 @pytest.fixture
 def client(transport: FakeZeroDBTransport) -> ZeroDBClient:
-    return ZeroDBClient(
-        project_id=FakeZeroDBTransport.PROJECT_ID, transport=transport
-    )
+    return ZeroDBClient(project_id=FakeZeroDBTransport.PROJECT_ID, transport=transport)
 
 
 @pytest.fixture
@@ -232,7 +228,7 @@ def test_the_ran_in_edge_carries_party_and_incumbency(
 def test_every_entity_name_is_a_real_row_id(
     writer: EvidenceGraphWriter, transport: FakeZeroDBTransport
 ) -> None:
-    """"Canonical names are NoSQL ids": the entity's name IS the row id, so a
+    """ "Canonical names are NoSQL ids": the entity's name IS the row id, so a
     traversal resolves back to a citable record with no mapping table.
     """
     writer.write_candidacy_evidence(
@@ -314,9 +310,7 @@ def test_the_verdict_edge_carries_methodology_version_and_is_current(
         verdict_is_current=True,
     )
     edge = [
-        call
-        for call in transport.calls
-        if (call.json or {}).get("predicate") == "has_verdict"
+        call for call in transport.calls if (call.json or {}).get("predicate") == "has_verdict"
     ][-1]
     properties = (edge.json or {})["properties"]
     assert properties["methodology_version"] == "m2"
@@ -333,9 +327,7 @@ def test_the_made_promise_edge_carries_its_source_and_capture_time(
         captured_at="2026-01-02T00:00:00Z",
     )
     edge = [
-        call
-        for call in transport.calls
-        if (call.json or {}).get("predicate") == "made_promise"
+        call for call in transport.calls if (call.json or {}).get("predicate") == "made_promise"
     ][-1]
     properties = (edge.json or {})["properties"]
     assert properties["source_id"] == "src:abc"
@@ -370,9 +362,7 @@ def test_a_voted_edge_is_written_for_a_roll_call_a_promise_tests(
         confidence=0.88,
         qa_status="approved",
     )
-    writer.write_vote_evidence(
-        person_id=PERSON_ID, roll_call_id=ROLL_CALL_ID, position="Yea"
-    )
+    writer.write_vote_evidence(person_id=PERSON_ID, roll_call_id=ROLL_CALL_ID, position="Yea")
     assert (PERSON_ID, "voted", ROLL_CALL_ID) in transport.graph_edges
 
 
@@ -418,9 +408,7 @@ def test_the_voted_edge_carries_the_position(
         promise_id=PROMISE_ID, roll_call_id=ROLL_CALL_ID, effect="advances", confidence=0.9
     )
     writer.write_vote_evidence(person_id=PERSON_ID, roll_call_id=ROLL_CALL_ID, position="Yea")
-    edge = [
-        call for call in transport.calls if (call.json or {}).get("predicate") == "voted"
-    ][-1]
+    edge = [call for call in transport.calls if (call.json or {}).get("predicate") == "voted"][-1]
     assert (edge.json or {})["properties"]["position"] == "Yea"
 
 

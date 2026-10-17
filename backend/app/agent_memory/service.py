@@ -252,9 +252,7 @@ class SessionMemoryService:
             created_at=_iso(moment) if now is not None else None,
         )
         logger.info("stored a Q&A turn, expiring in %d day(s)", RETENTION_DAYS)
-        return RememberResult(
-            stored=True, memory_id=record.memory_id, expires_at=expires_at
-        )
+        return RememberResult(stored=True, memory_id=record.memory_id, expires_at=expires_at)
 
     def recall(
         self,

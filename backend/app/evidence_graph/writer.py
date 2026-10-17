@@ -527,9 +527,7 @@ class EvidenceGraphWriter:
         self._bill_stance_bills.add(bill_id)
         return report
 
-    def write_sponsorship_evidence(
-        self, *, person_id: str, bill_id: str, role: str
-    ) -> WriteReport:
+    def write_sponsorship_evidence(self, *, person_id: str, bill_id: str, role: str) -> WriteReport:
         """`person -> sponsored -> bill`, from `bills.sponsors[]`."""
         return self.write_edge(
             source=(person_id, "person"),
@@ -576,9 +574,7 @@ class EvidenceGraphWriter:
         if evidence_bearing is None:
             evidence_bearing = roll_call_id in self.evidence_bearing_roll_calls()
         if not evidence_bearing:
-            logger.debug(
-                "declined a voted edge for %s: no evidence reaches it", roll_call_id
-            )
+            logger.debug("declined a voted edge for %s: no evidence reaches it", roll_call_id)
             return VoteEdgeResult(
                 written=False,
                 reason="no promise or bill-stance edge touches this roll call",

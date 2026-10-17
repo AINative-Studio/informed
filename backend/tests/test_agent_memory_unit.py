@@ -27,13 +27,13 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
+
 from app.agent_memory import (
     RETENTION,
     RETENTION_DAYS,
     SessionMemoryService,
     sweep_expired_session_memory,
 )
-
 from app.zerodb import ZeroDBClient
 from app.zerodb.testing import FakeZeroDBTransport
 
@@ -49,9 +49,7 @@ def transport() -> FakeZeroDBTransport:
 
 @pytest.fixture
 def client(transport: FakeZeroDBTransport) -> ZeroDBClient:
-    return ZeroDBClient(
-        project_id=FakeZeroDBTransport.PROJECT_ID, transport=transport
-    )
+    return ZeroDBClient(project_id=FakeZeroDBTransport.PROJECT_ID, transport=transport)
 
 
 @pytest.fixture
@@ -84,9 +82,7 @@ def test_remembering_a_turn_writes_it(service: SessionMemoryService) -> None:
 def test_the_stored_turn_carries_an_expiry_exactly_one_day_out(
     service: SessionMemoryService, transport: FakeZeroDBTransport
 ) -> None:
-    service.remember(
-        session_id=SESSION, role="user", content="q", anonymous=False, now=NOW
-    )
+    service.remember(session_id=SESSION, role="user", content="q", anonymous=False, now=NOW)
     metadata = (transport.calls[-1].json or {})["memory_metadata"]
     assert metadata["expires_at"] == "2026-10-18T12:00:00.000000Z"
     assert metadata["retention_days"] == 1
@@ -121,9 +117,7 @@ def test_the_stored_payload_holds_no_voter_profile_field(
 def test_anonymous_mode_writes_nothing(
     service: SessionMemoryService, transport: FakeZeroDBTransport
 ) -> None:
-    result = service.remember(
-        session_id=SESSION, role="user", content="q", anonymous=True, now=NOW
-    )
+    result = service.remember(session_id=SESSION, role="user", content="q", anonymous=True, now=NOW)
     assert result.stored is False
     assert result.memory_id is None
     assert result.reason == "anonymous mode"
@@ -161,9 +155,7 @@ def test_anonymous_is_required_rather_than_defaulted(service: SessionMemoryServi
 
 def test_recall_returns_only_this_sessions_turns(service: SessionMemoryService) -> None:
     service.remember(session_id=SESSION, role="user", content="one", anonymous=False, now=NOW)
-    service.remember(
-        session_id=SESSION, role="assistant", content="two", anonymous=False, now=NOW
-    )
+    service.remember(session_id=SESSION, role="assistant", content="two", anonymous=False, now=NOW)
     service.remember(
         session_id=OTHER_SESSION, role="user", content="elsewhere", anonymous=False, now=NOW
     )
