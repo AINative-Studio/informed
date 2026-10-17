@@ -73,6 +73,10 @@ Feature: Scheduled job runner (infrastructure for stories 2.6, 5.1/5.6, 12.4)
     Then the real job registry includes a job named "repair_member_votes_denormalization"
     And that job's interval is 1 day(s)
 
+  Scenario: run_panel_gate_check is registered to run nightly (story 12.5)
+    Then the real job registry includes a job named "run_panel_gate_check"
+    And that job's interval is 1 day(s)
+
   Scenario: A job missing its required credentials is skipped as blocked, not crashed
     Given a registered job "needs-a-key" that runs every 1 day(s) and requires an unset environment variable
     And the job has never recorded a last-run
