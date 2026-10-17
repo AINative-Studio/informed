@@ -366,6 +366,35 @@ TABLE_SCHEMAS: dict[str, dict[str, str]] = {
         "key_ref": "string",
         "created_at": "string",
     },
+    # Story 14.2: the append-only GDPR special-category consent ledger.
+    #
+    # Infrastructure rather than one of datamodel.md's 22 for the same reason
+    # `voter_profile_keys` is: datamodel.md describes no consent table, and it
+    # fixes `voter_profiles` at exactly seven fields, so the record cannot live
+    # on the profile row. Article 7(1) GDPR puts the burden of *demonstrating*
+    # consent on the controller, and story 4.1's `consent: true` request flag
+    # demonstrated nothing once the request ended — see
+    # app/profiles/consent.py's module docstring for the full argument.
+    #
+    # Nothing here is a voter's politics and nothing here is an identity:
+    # `profile_ref` is the same `vp:{hmac(user_id)}` the profile row uses, so
+    # this table names no accounts, and the row records only WHICH wording was
+    # agreed and WHEN. There is nothing in it to encrypt — and encrypting it
+    # would be wrong, because the withdrawal record has to stay readable after
+    # the profile's data key is shredded.
+    #
+    # Append-only, like `provenance_log`: the id is content-addressed
+    # (`vc:{sha256}` over the event's own content, exactly like
+    # `prov:{sha256}` and `pr:{sha256}`), a withdrawal is a NEW row rather
+    # than a mutation of the grant, and nothing ever calls `update_row` on it.
+    "voter_consents": {
+        "id": "string",
+        "profile_ref": "string",
+        "consent_version": "string",
+        "action": "string",
+        "lawful_basis": "string",
+        "recorded_at": "string",
+    },
     # Story 3.3: the cross-partisan advisory panel's review ledger over the
     # wording in `issue_topics` and `stances`.
     #
@@ -433,14 +462,21 @@ TABLE_SCHEMAS: dict[str, dict[str, str]] = {
 DATAMODEL_TABLE_COUNT = 22
 
 #: `schema_versions` (story 1.3's own bookkeeping), `voter_profile_keys`
-#: (story 14.1's wrapped data keys), `panel_reviews` (story 3.3's wording
-#: review ledger) and `scheduled_jobs` (Epic 16's scheduled-job runner's
-#: last-run bookkeeping). None holds product data in datamodel.md's sense;
-#: all four exist so a documented rule — idempotent bootstrap, "key shredded
-#: on delete", "reviewed by a cross-partisan advisory panel before each
-#: release", "this job runs on schedule" — can actually be implemented rather
-#: than asserted in a release note.
-INFRASTRUCTURE_TABLES = ("schema_versions", "voter_profile_keys", "panel_reviews", "scheduled_jobs")
+#: (story 14.1's wrapped data keys), `voter_consents` (story 14.2's consent
+#: ledger), `panel_reviews` (story 3.3's wording review ledger) and
+#: `scheduled_jobs` (Epic 16's scheduled-job runner's last-run bookkeeping).
+#: None holds product data in datamodel.md's sense; all five exist so a
+#: documented rule — idempotent bootstrap, "key shredded on delete", "GDPR
+#: special-category consent recorded", "reviewed by a cross-partisan advisory
+#: panel before each release", "this job runs on schedule" — can actually be
+#: implemented rather than asserted in a release note.
+INFRASTRUCTURE_TABLES = (
+    "schema_versions",
+    "voter_profile_keys",
+    "voter_consents",
+    "panel_reviews",
+    "scheduled_jobs",
+)
 
 assert len(TABLE_SCHEMAS) == DATAMODEL_TABLE_COUNT + len(INFRASTRUCTURE_TABLES), (
     f"expected {DATAMODEL_TABLE_COUNT} datamodel.md tables plus "
