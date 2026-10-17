@@ -96,6 +96,31 @@ VerdictValue = Literal["kept", "partial", "broken", "no_opportunity", "absent", 
 #: datamodel.md: "`qa_status` takes `pending`, `approved` or `rejected`".
 QaStatus = Literal["pending", "approved", "rejected"]
 
+#: Which way an extracted commitment points (story 9.3). prd.md's step 2 names
+#: `direction` as the fourth part of an atomic commitment, alongside actor,
+#: action and object, and prd.md's scoring runs a candidate's position from −1
+#: ("acts against the voter's stance") to +1 ("acts for it") — so a promise has
+#: to say which of those a kept version of it would be.
+#:
+#: Three values, and the third is not a gap in the first two:
+#:
+#:   * `support` — a kept version of this advances the object ("vote to cap
+#:     insulin co-pays at $35/month").
+#:   * `oppose` — a kept version of this blocks it ("vote against any bill
+#:     that cuts Medicaid").
+#:   * `unclear` — the text commits to *something* about the object but does
+#:     not say which way, which is the honest reading of most non-testable
+#:     rhetoric ("I'll fight for working families" — for what, against whom?).
+#:     A `Literal` rather than `None` so the field stays required: an
+#:     extractor that could leave `direction` unset would quietly drop the
+#:     fourth part of the four-part commitment this story's acceptance
+#:     criteria name, and nothing downstream would notice.
+#:
+#: A `Literal` and not a bare string for the same reason as `VotePosition`: an
+#: out-of-vocabulary direction would flow into scoring as "some other
+#: direction" rather than being rejected at the write.
+PromiseDirection = Literal["support", "oppose", "unclear"]
+
 #: What a cross-partisan advisory panel decided about one row's wording
 #: (story 3.3; prd.md: "stance cards and issue taxonomy reviewed by a
 #: cross-partisan advisory panel before each release").
@@ -1101,6 +1126,192 @@ class PromiseSource(RowModel):
     url: str
     archived_file_id: str
     captured_at: str
+
+
+class Promise(RowModel):
+    """One atomic commitment extracted from one promise source (story 9.3).
+
+    datamodel.md: id pattern `prm:{uuid}`; fields candidacy_id, person_id,
+    source_id, quote_span, actor, action, object, direction, topic_id,
+    stance_id, testable, extractor_version, confidence, vector_id,
+    `mappings[]`, qa_pending; queried by person and by QA queue
+    (`qa_pending = true`).
+
+    prd.md's Promise vs. Record step 2: "an agent turns text into atomic,
+    testable commitments: actor, action, object, direction ('vote to cap
+    insulin at $35/month'). Vague rhetoric is tagged *non-testable* and shown
+    but not scored."
+
+    ===========================================================================
+    WHY THE ID IS CONTENT-ADDRESSED AND NOT A FRESH `prm:{uuid4}`
+    ===========================================================================
+
+    datamodel.md writes the id pattern as `prm:{uuid}`. This model keeps the
+    `prm:` prefix and the hex shape, but the hex is a **truncated sha256 of
+    the commitment's own identity** — `(source_id, quote_span, actor, action,
+    object, direction)` — computed by
+    `app.ingest.promise_extraction.promise_id_for`, not a random uuid4. The
+    deviation is deliberate and is the same call `PromiseSource` and
+    `ProvenanceLog` already made for their own ids, for the same reason:
+
+    A random uuid4 would make re-extraction non-idempotent. Extraction is
+    re-run whenever the extractor improves — which, given this story ships a
+    documented stand-in and the real LLM extractor is blocked on a credential
+    (see `app.ingest.promise_extraction`'s module docstring), is a certainty
+    rather than a hypothetical. With a random id, every re-run over the same
+    archived campaign page would mint a second row for every commitment it
+    had already found, and `promises` would fill with duplicates that story
+    10.1 would then map twice and story 11's verdict aggregation would count
+    twice. datamodel.md rule 1 is explicit that this is not how this project
+    identifies rows: "Ids are deterministic strings built from natural keys …
+    Re-ingesting a record is an idempotent upsert." A content-addressed id is
+    that rule applied to a record whose natural key is its own text.
+
+    The alternative considered and rejected was keeping `prm:{uuid4}` and
+    having the pipeline read every existing promise for a source first, to
+    skip the ones whose (quote_span, actor, action, object, direction) tuple
+    already existed. That works, but it puts the uniqueness rule in one
+    caller rather than in the id, so any second writer — a backfill, a QA
+    correction, story 9.2's other source types — re-introduces the duplicate.
+    Making the id itself the dedupe key means idempotency holds no matter who
+    writes.
+
+    `natural_key` is therefore EMPTY and the caller supplies `id`, exactly
+    like `PromiseSource`: the key is a hash, and `build_id`'s join-with-colons
+    cannot produce one.
+
+    **`confidence` and `testable` are deliberately NOT in the identity.** A
+    better extractor re-reading the same sentence and giving it a different
+    confidence, or reclassifying it from non-testable to testable, has
+    restated the SAME commitment — so it must update that row rather than
+    appear beside it as a second, contradictory promise about one quote.
+
+    ===========================================================================
+    TESTABLE VS. NON-TESTABLE, AND WHAT EACH ONE OWES
+    ===========================================================================
+
+    `testable` is the field prd.md's "shown but not scored" rule turns on, and
+    the two classes genuinely carry different data, enforced by the validators
+    below rather than left to each caller:
+
+      * **Testable** — the commitment names a specific, checkable action and
+        object that a future vote, bill or sponsorship could be matched
+        against ("vote to cap insulin co-pays at $35/month"). It MUST carry an
+        `action` and an `object`: a row marked testable with no object reaches
+        story 10.1's mapping agent as something unmappable and comes back as a
+        false `no_opportunity` verdict — a wrong published answer, which is
+        worse than a missing one.
+      * **Non-testable** — an aspiration or value statement with no checkable
+        object ("I'll fight for working families"). `object` may be None and
+        `direction` may be `unclear`, because requiring an object here would
+        force the extractor to invent one, the opposite of prd.md's
+        evidence-over-opinion rule. It still carries its `quote_span`, because
+        prd.md shows it to the voter — just never scores it.
+
+    `qa_pending` defaults to **False**, and a non-testable promise may never
+    set it. Extraction is not what routes work to a reviewer: story 10.1 maps
+    a promise to legislation and flags the low-confidence mappings, and story
+    10.3's queue reviews those mappings. A non-testable promise is never
+    mapped at all, so flagging one would put a row in a reviewer queue with
+    nothing in it to review.
+
+    `topic_id`, `stance_id`, `mappings` and `vector_id` all default to
+    unset/empty for the same reason — they belong to later stories (9.4
+    embeds, 10.1 maps and classifies) and a value invented here would be an
+    uncited claim about a candidate's position. Extraction's whole output is:
+    this source said this, in these words, and here is whether it can be
+    checked.
+
+    ===========================================================================
+    PROVENANCE
+    ===========================================================================
+
+    This model declares no `source_url`, so `requires_provenance(Promise)` is
+    False and a `Repository(model=Promise)` takes no `ProvenanceContext` —
+    correctly, and unlike `PromiseSource` this needs no workaround. A promise
+    is not a fetch of an external record: it is a reading of one already on
+    file. Its citability flows through `source_id` to the `promise_sources`
+    row, which carries the url, the captured_at and the archived file, and
+    which already has its own `provenance_log` entry written by story 9.1's
+    `CampaignSiteLoader`. The reference is required and checked before every
+    write, so no promise can exist without the sourced row it is quoting.
+    """
+
+    table_name: ClassVar[str] = "promises"
+    references: ClassVar[dict[str, str]] = {
+        "candidacy_id": "candidacies",
+        "person_id": "people",
+        "source_id": "promise_sources",
+    }
+
+    candidacy_id: str
+    person_id: str
+    source_id: str
+    #: The commitment's own words, VERBATIM from the source text — a literal
+    #: substring, never a cleaned-up or re-punctuated version. This is the
+    #: citation prd.md's evidence-over-opinion rule rests on, and
+    #: `app.ingest.promise_extraction.verify_quote_span` refuses a write whose
+    #: span cannot be found in the text it was extracted from.
+    quote_span: str = Field(min_length=1)
+    actor: str | None = None
+    action: str | None = None
+    object: str | None = None  # noqa: A003 - datamodel.md names this field `object`
+    direction: PromiseDirection
+    topic_id: str | None = None
+    stance_id: str | None = None
+    testable: bool
+    #: Which extractor produced this row. Not decoration: a stand-in
+    #: extractor's output and a real LLM extractor's output are both rows in
+    #: this table, and this field is the only thing that distinguishes them.
+    extractor_version: str = Field(min_length=1)
+    confidence: float = Field(ge=0.0, le=1.0)
+    vector_id: str | None = None
+    mappings: list[dict[str, Any]] = Field(default_factory=list)
+    qa_pending: bool = False
+
+    @model_validator(mode="after")
+    def _a_quote_span_is_not_blank(self) -> Promise:
+        """Whitespace is not a quote. See `quote_span`."""
+        if not self.quote_span.strip():
+            raise ValueError(
+                "promise quote_span is blank; the verbatim quote is the citation "
+                "this row exists to carry"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _a_testable_promise_is_actually_checkable(self) -> Promise:
+        """A testable promise carries the action and object to check it by.
+
+        See the class docstring: a testable row with no object becomes a false
+        `no_opportunity` verdict downstream rather than a visible gap.
+        """
+        if not self.testable:
+            return self
+        missing = [
+            name
+            for name, value in (("action", self.action), ("object", self.object))
+            if not (value or "").strip()
+        ]
+        if missing:
+            raise ValueError(
+                f"promise {self.quote_span[:60]!r} is marked testable but has no "
+                f"{' and no '.join(missing)}; nothing can be checked against it, and "
+                "story 10.1's mapping agent would return a false 'no opportunity' "
+                "verdict rather than a visible gap. Mark it testable=False instead."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _a_non_testable_promise_is_never_queued_for_qa(self) -> Promise:
+        """Nothing maps a non-testable promise, so nothing can review one."""
+        if self.qa_pending and not self.testable:
+            raise ValueError(
+                f"promise {self.quote_span[:60]!r} is not testable but is flagged "
+                "qa_pending; a non-testable promise is never mapped to legislation, "
+                "so a reviewer would open it with nothing to review"
+            )
+        return self
 
 
 class ProvenanceLog(RowModel):
