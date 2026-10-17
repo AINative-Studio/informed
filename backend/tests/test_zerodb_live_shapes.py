@@ -12,6 +12,10 @@ revealed the truth:
     omits the canonical names and properties entirely;
   * traversal nodes name the entity in `label`, with its type in `type`;
   * `file_metadata` comes back null, not `{}`, when none was supplied;
+  * `POST /database/files` stores file METADATA ONLY — no object behind it —
+    while `POST /files/upload` takes the bytes as multipart and is the only
+    route that stores anything retrievable (found 2026-10-17, after story 9.1
+    archived six real campaign-site files that all 404ed on download);
   * the events list is a bare JSON array, not a `{"total", "data"}` envelope.
 
 If ZeroDB changes any of these, these tests fail here rather than at 3am in an
@@ -103,6 +107,41 @@ LIVE_FILE_WITH_NULL_METADATA: dict[str, Any] = {
     "file_key": "shape/probe.html",
     "created_at": "2026-10-15T23:08:29.843601Z",
     "updated_at": "2026-10-15T23:08:29.843601Z",
+}
+
+#: Captured live from the real "informed" project on 2026-10-17, from
+#: `POST /projects/{id}/files/upload` — the MULTIPART binary endpoint, whose
+#: existence this fix turned on. Bucket name, ids and timings are redacted.
+#:
+#: Pinning this matters more than most shapes here, because the shape is how
+#: the two upload routes are told apart at runtime. The metadata-only route
+#: (`LIVE_FILE_WITH_NULL_METADATA`, above) echoes `file_metadata` and a
+#: caller-supplied `size_bytes` and never reports a hash; this one reports the
+#: `size_bytes` and `sha256_hash` the SERVER measured over the bytes it
+#: received, and does not echo `file_metadata` at all. A response carrying a
+#: `sha256_hash` is proof an object was actually stored.
+LIVE_BINARY_UPLOAD: dict[str, Any] = {
+    "success": True,
+    "file_id": "465c1ccc-553c-4638-b35c-de76141b6562",
+    "file_name": "probe-a.txt",
+    "file_key": "probe/roundtrip-a.txt",
+    "size_bytes": 31,
+    "size_mb": 0.0,
+    "content_type": "text/plain",
+    "bucket": "zerodb-REDACTED",
+    "storage_usage_mb": 0.0,
+    "minio_result": {
+        "bucket_name": "zerodb-REDACTED",
+        "file_key": "probe/roundtrip-a.txt",
+        "project_id": "00000000-0000-0000-0000-000000000000",
+        "size_bytes": 31,
+        "content_type": "text/plain",
+        "upload_time_ms": 38.63,
+        "status": "uploaded",
+        "sha256_hash": "70604ebc0c7d03143e78bc6de805a94c1b807605c79143c6405070cb8129de8d",
+    },
+    "message": "File uploaded successfully to MinIO via streaming (memory-efficient)",
+    "sha256_hash": "70604ebc0c7d03143e78bc6de805a94c1b807605c79143c6405070cb8129de8d",
 }
 
 LIVE_PRESIGNED: dict[str, Any] = {
@@ -359,6 +398,24 @@ def test_a_live_file_payload_with_null_metadata_parses_to_an_empty_dict() -> Non
     assert stored.file_key == "shape/probe.html"
 
 
+def test_a_live_binary_upload_payload_carries_the_servers_own_size_and_hash() -> None:
+    """The response shape is how a stored object is distinguished from a bare row.
+
+    `LIVE_FILE_WITH_NULL_METADATA` (the metadata-only route) reports neither a
+    hash nor a server-measured size; this one reports both. Story 9.1's broken
+    archives were created by the former, which is why none of their bytes
+    could be fetched back.
+    """
+    stored = StoredFile.model_validate(LIVE_BINARY_UPLOAD)
+
+    assert stored.size_bytes == 31
+    assert stored.sha256_hash == LIVE_BINARY_UPLOAD["minio_result"]["sha256_hash"]
+    # The binary endpoint does not echo the metadata the caller sent, so the
+    # client carries it through itself (see `ZeroDBClient.upload_file`).
+    assert stored.file_metadata == {}
+    assert StoredFile.model_validate(LIVE_FILE_WITH_NULL_METADATA).sha256_hash is None
+
+
 def test_a_live_presigned_payload_reads_the_url_out_of_presigned_url() -> None:
     presigned = PresignedUrl.model_validate(LIVE_PRESIGNED)
 
@@ -476,6 +533,7 @@ def test_a_malformed_retry_after_falls_back_to_the_clients_own_backoff(bad: Any)
         LIVE_ROW,
         LIVE_EDGE,
         LIVE_FILE_WITH_NULL_METADATA,
+        LIVE_BINARY_UPLOAD,
         LIVE_PRESIGNED,
         LIVE_ONTOLOGY,
     ],

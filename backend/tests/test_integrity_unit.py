@@ -2,9 +2,9 @@
 reached by the BDD suite (stories 16.2, 16.4).
 
 `tests/features/integrity_checks.feature` and `tests/features/drift_repair.feature`
-cover the five checks' and the repair's observable behaviour, including
-sabotage scenarios that prove each check catches a real violation. This file
-covers the shared plumbing those scenarios exercise only incidentally:
+cover every check's and the repair's observable behaviour, including sabotage
+scenarios that prove each check catches a real violation. This file covers the
+shared plumbing those scenarios exercise only incidentally:
 `paged_rows`' own pagination boundaries (this codebase has a documented
 history of live ZeroDB paging bugs — see datamodel.md's "Open questions" —
 so the loop logic earns a direct test rather than relying on it working by
@@ -21,6 +21,7 @@ from app.integrity.checks import (
     CheckReport,
     CombinedReport,
     Violation,
+    _expected_sha256,  # noqa: PLC2701 - its fallback paths need direct coverage
     check_current_verdict_uniqueness,
     paged_rows,
 )
@@ -263,3 +264,47 @@ def test_repair_dry_run_reports_drift_without_writing_it() -> None:
     # Nothing was actually written: a second, real run still finds the drift.
     stored = client.get_row(MemberVote.table_name, "us-house:119-2:452:B000944")
     assert stored.row_data["vote_type"] == "cloture"
+
+
+# --- _expected_sha256: where check 6 gets the hash to verify against --------
+#
+# The content-addressed path (`src:<sha256>`) is covered by the feature's
+# scenarios. These cover the two fallbacks, which decide whether an archive
+# gets verified or merely reached.
+
+
+def test_expected_sha256_falls_back_to_the_files_own_recorded_metadata() -> None:
+    """A row whose id is not content-addressed still has a hash to check."""
+    transport = FakeZeroDBTransport()
+    client = ZeroDBClient(transport=transport, project_id="proj-test")
+    stored = client.upload_file(
+        file_key="archive/transcript.txt",
+        content=b"a debate transcript",
+        file_metadata={"sha256": "cafebabe"},
+    )
+
+    assert (
+        _expected_sha256(
+            client, {"id": "transcript:2026-03-11"}, "transcript:2026-03-11", stored.file_id
+        )
+        == "cafebabe"
+    )
+
+
+def test_expected_sha256_is_none_when_the_file_records_no_hash() -> None:
+    """Unverifiable rather than verified — check 6 reports this, not silence."""
+    transport = FakeZeroDBTransport()
+    client = ZeroDBClient(transport=transport, project_id="proj-test")
+    stored = client.upload_file(file_key="archive/t.txt", content=b"no metadata at all")
+
+    assert _expected_sha256(client, {"id": "t:1"}, "t:1", stored.file_id) is None
+
+
+def test_expected_sha256_is_none_when_the_files_metadata_cannot_be_read() -> None:
+    """A ZeroDB failure reading metadata must not be mistaken for a match."""
+    transport = FakeZeroDBTransport()
+    client = ZeroDBClient(
+        transport=transport, project_id="proj-test", backoff_base=0.0, sleep=lambda _: None
+    )
+
+    assert _expected_sha256(client, {"id": "t:1"}, "t:1", "no-such-file-id") is None

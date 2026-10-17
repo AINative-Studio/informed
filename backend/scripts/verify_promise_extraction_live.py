@@ -75,26 +75,34 @@ The table stays empty until a real extractor exists. That is a visible,
 honest gap rather than an invisible, labeled one.
 
 ===============================================================================
-ANOTHER LIVE FINDING: THE ARCHIVED BYTES DO NOT EXIST
+ANOTHER LIVE FINDING (SINCE FIXED): THE ARCHIVED BYTES DID NOT EXIST
 ===============================================================================
 
-This script re-fetches each `promise_sources` row's own recorded `url` rather
-than reading its `archived_file_id`, because the archived bytes cannot be read
-back. Confirmed live during this run: `generate_presigned_url` mints a real
-signed URL for all three files, and a GET of each returns `404 NoSuchBucket`.
-The cause is in the client — `ZeroDBClient.upload_file` POSTs metadata only
-(`file_key`, `file_name`, `content_type`, `size_bytes`, `file_metadata`) with
-no body for the file contents, and there is no `download_file` method at all.
-Story 9.1 registered three file records whose bytes were never sent.
+Found by this script's own live run on 2026-10-17: `generate_presigned_url`
+minted a real signed URL for all three of story 9.1's archived files, and a
+GET of each returned `404 NoSuchBucket`. The cause was in the client —
+`ZeroDBClient.upload_file` posted file metadata to ZeroDB's metadata-only
+route and never sent any bytes, so story 9.1 registered three file records
+whose contents had never been stored.
 
-That is a gap in the Files integration, not in story 9.3, and fixing it means
-a byte-upload/byte-download pair on `ZeroDBClient` plus a re-run of 9.1's
-archival — another story's module and another story's live data. Flagged in
-story 9.3's PR.
+That is fixed: `upload_file` posts the bytes as multipart to ZeroDB's binary
+endpoint, `download_file` reads them back, and story 9.1's three real captures
+were re-archived. The per-source "archived bytes" check below reads them
+through `download_file` and verifies the sha256 against what the capture
+recorded, so this script reports the real state of the live data on every run
+rather than restating a conclusion from one.
+
+This script still extracts from a live re-fetch of each row's own recorded
+`url` rather than from the archive. That is deliberate for a *verification*
+script — it exercises the same `fetch_campaign_page` path story 9.1 used, so a
+site that has started refusing us shows up here. Extraction for real goes
+through `scripts/extract_promises.py --require-archive`, which reads the
+archive itself.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import sys
 from pathlib import Path
@@ -150,21 +158,41 @@ def main() -> int:
         logger.info("  url:       %s", source.url)
         logger.info("  candidacy: %s", source.candidacy_id)
 
-        # Are the archived bytes readable? Checked live, not assumed.
+        # Are the archived bytes readable, and are they the right bytes? Both
+        # checked live, not assumed. Reading back through BOTH paths matters:
+        # `download_file` is what a server-side reader uses, and the presigned
+        # URL is what the UI hands a browser, and story 9.1 shipped with the
+        # second one 404ing while nothing ever ran it.
+        try:
+            archived_bytes = client.download_file(file_id=source.archived_file_id)
+            # The row's id is `src:<sha256 of the capture>`, so this is an
+            # end-to-end integrity check and not just a reachability one.
+            expected = source.id.removeprefix("src:")
+            actual = hashlib.sha256(archived_bytes).hexdigest()
+            logger.info(
+                "  archived bytes: READABLE via download_file (%d bytes), sha256 %s",
+                len(archived_bytes),
+                "MATCHES the capture" if actual == expected else f"MISMATCH ({actual})",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("  archived bytes: UNREADABLE via download_file (%s)", exc)
+
         try:
             presigned = client.generate_presigned_url(file_id=source.archived_file_id)
             archived = httpx.get(presigned.url, timeout=30, follow_redirects=True)
             if archived.status_code == 200:
-                logger.info("  archived bytes: READABLE (%d bytes)", len(archived.content))
-            else:
                 logger.info(
-                    "  archived bytes: UNREADABLE (HTTP %d, %s) -- re-fetching the "
-                    "row's own url instead; see this script's docstring",
+                    "  archived bytes: READABLE via presigned URL (%d bytes)",
+                    len(archived.content),
+                )
+            else:
+                logger.warning(
+                    "  archived bytes: UNREADABLE via presigned URL (HTTP %d, %s)",
                     archived.status_code,
                     archived.text[:60].replace("\n", " "),
                 )
         except Exception as exc:  # noqa: BLE001
-            logger.info("  archived bytes: UNREADABLE (%s)", type(exc).__name__)
+            logger.warning("  archived bytes: presigned URL failed (%s)", type(exc).__name__)
 
         try:
             page = fetch_campaign_page(source.url)

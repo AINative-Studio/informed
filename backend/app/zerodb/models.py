@@ -295,6 +295,13 @@ class StoredFile(_ZeroDBModel):
     what makes the snapshot verifiable years later. The live API returns it as
     null when none was supplied, so it is normalised to an empty dict rather
     than left as None for every caller to guard.
+
+    `size_bytes` and `sha256_hash` are measured by ZeroDB over the body it
+    actually received from the binary-upload endpoint, not copied from
+    anything the caller asserted. Comparing `sha256_hash` against the hash in
+    `file_metadata["sha256"]` is therefore a genuine end-to-end integrity
+    check on the stored object; the metadata-only endpoint returns neither,
+    which is one way to tell the two apart (see `ZeroDBClient.upload_file`).
     """
 
     file_id: str
@@ -302,6 +309,7 @@ class StoredFile(_ZeroDBModel):
     file_name: str | None = None
     content_type: str | None = None
     size_bytes: int | None = None
+    sha256_hash: str | None = None
     file_metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: str | None = None
 

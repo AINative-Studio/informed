@@ -5,6 +5,9 @@ features do not spell out: endpoint paths, payload shapes, settings loading and
 the REST/MCP transport seam. Nothing here touches live ZeroDB.
 """
 
+import hashlib
+import json
+
 import httpx
 import pytest
 
@@ -433,28 +436,90 @@ def test_graph_traverse_sends_hop_and_time_bounds(
 # --- files ----------------------------------------------------------------
 
 
-def test_upload_file_registers_provenance_metadata(
+def test_upload_file_posts_the_bytes_to_the_binary_endpoint(
     client: ZeroDBClient, fake: FakeZeroDBTransport
 ) -> None:
+    """The metadata-only route records a file with no object behind it.
+
+    This is the regression guard for the bug story 9.1 shipped: posting a JSON
+    `FileCreate` body to `/database/files` returns 200 with a `file_id` and
+    stores nothing, so every download of it 404s. The bytes must go to
+    `/files/upload` as multipart. See `ZeroDBClient.upload_file`.
+    """
+    content = b"%PDF-1.4 the real bill text"
     client.upload_file(
         file_key="archive/bill-text.pdf",
+        content=content,
         file_name="bill-text.pdf",
         content_type="application/pdf",
-        size_bytes=102400,
         file_metadata={"sha256": "deadbeef", "source_url": "https://congress.gov/x"},
     )
 
     call = fake.calls[-1]
-    assert call.path == "/projects/proj-test/database/files"
-    assert call.json["file_key"] == "archive/bill-text.pdf"
-    assert call.json["file_metadata"]["sha256"] == "deadbeef"
+    assert call.path == "/projects/proj-test/files/upload"
+    assert call.path != "/projects/proj-test/database/files", "that route stores no bytes"
+    assert call.json is None, "the bytes must not be replaced by a JSON metadata payload"
+    assert call.files is not None
+    assert call.files["file"] == ("bill-text.pdf", content, "application/pdf")
+    assert call.data["key"] == "archive/bill-text.pdf"
+    # Metadata travels as a JSON string: a multipart field cannot carry an
+    # object, which is why this is not simply nested in the form.
+    assert json.loads(call.data["metadata"])["sha256"] == "deadbeef"
+
+
+def test_upload_file_returns_the_size_and_hash_the_server_measured(
+    client: ZeroDBClient,
+) -> None:
+    """A caller-asserted size was believed without checking; this one is measured."""
+    content = b"<html>a captured campaign page</html>"
+    stored = client.upload_file(
+        file_key="archive/page.html", content=content, content_type="text/html"
+    )
+
+    assert stored.size_bytes == len(content)
+    assert stored.sha256_hash == hashlib.sha256(content).hexdigest()
+    # The binary endpoint does not echo the metadata back, so the client
+    # carries what it sent rather than handing the caller an empty dict.
+    assert (
+        client.upload_file(
+            file_key="archive/page2.html", content=content, file_metadata={"sha256": "abc"}
+        ).file_metadata["sha256"]
+        == "abc"
+    )
+
+
+def test_an_uploaded_file_downloads_as_the_exact_bytes_that_were_sent(
+    client: ZeroDBClient, fake: FakeZeroDBTransport
+) -> None:
+    """The round trip story 9.1 never ran, which is why its archives were empty."""
+    content = b"\x89PNG\r\n\x1a\n binary bytes that must survive verbatim \xff\xfe"
+    stored = client.upload_file(file_key="archive/snapshot.png", content=content)
+
+    assert client.download_file(file_id=stored.file_id) == content
+    assert fake.calls[-1].path == f"/projects/proj-test/files/{stored.file_id}/content"
+
+
+def test_downloading_a_file_registered_with_metadata_only_is_not_found(
+    client: ZeroDBClient, fake: FakeZeroDBTransport
+) -> None:
+    """The exact live state story 9.1 left behind, asserted rather than assumed.
+
+    A `files` row with no stored object answers 404 from object storage. An
+    empty success here would be the silent failure all over again.
+    """
+    # Register metadata the way the broken path did, bypassing `upload_file`.
+    metadata_only_id = "11111111-1111-1111-1111-111111111111"
+    fake.files[metadata_only_id] = {"file_id": metadata_only_id, "file_key": "archive/ghost.html"}
+
+    with pytest.raises(ZeroDBNotFoundError):
+        client.download_file(file_id=metadata_only_id)
 
 
 def test_generate_presigned_url_defaults_to_a_short_lived_download(
     client: ZeroDBClient, fake: FakeZeroDBTransport
 ) -> None:
     """The UI serves citations through short-lived URLs (datamodel.md)."""
-    uploaded = client.upload_file(file_key="archive/page.html")
+    uploaded = client.upload_file(file_key="archive/page.html", content=b"<html></html>")
     client.generate_presigned_url(file_id=uploaded.file_id)
 
     call = fake.calls[-1]

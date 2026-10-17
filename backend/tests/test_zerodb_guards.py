@@ -66,7 +66,13 @@ def client(fake: FakeZeroDBTransport) -> ZeroDBClient:
         ),
         pytest.param(lambda c: c.graph_rag_search(query=""), id="rag"),
         pytest.param(lambda c: c.graph_traverse(entity=""), id="traverse"),
-        pytest.param(lambda c: c.upload_file(file_key=""), id="upload_file"),
+        pytest.param(lambda c: c.upload_file(file_key="", content=b"x"), id="upload_file"),
+        # An empty capture means the fetch failed upstream; storing one would
+        # produce a citation pointing at nothing.
+        pytest.param(
+            lambda c: c.upload_file(file_key="k", content=b""), id="upload_file-no-content"
+        ),
+        pytest.param(lambda c: c.download_file(file_id=""), id="download_file"),
         pytest.param(lambda c: c.create_event(topic="", payload={}), id="create_event"),
         pytest.param(lambda c: c.subscribe_events(event_types=[]), id="subscribe"),
     ],
@@ -135,8 +141,16 @@ def test_supplied_optional_arguments_do_reach_the_wire(
     client.graph_traverse(entity="prm:1", predicates=["tested_by"])
     assert fake.calls[-1].json["predicates"] == ["tested_by"]
 
-    client.upload_file(file_key="k", file_name="n.html", content_type="text/html")
-    assert fake.calls[-1].json["content_type"] == "text/html"
+    # An upload's optional arguments travel as multipart form fields and the
+    # part's own content type, not as a JSON body — see `upload_file`.
+    client.upload_file(
+        file_key="k", content=b"<html></html>", file_name="n.html", content_type="text/html"
+    )
+    call = fake.calls[-1]
+    assert call.json is None
+    assert call.files is not None
+    assert call.files["file"][0] == "n.html"
+    assert call.files["file"][2] == "text/html"
 
 
 def test_delete_table_targets_the_table_path(
@@ -193,6 +207,71 @@ def test_the_httpx_transport_sends_a_bearer_token_and_parses_json() -> None:
     assert response.status_code == 200
     assert response.json_body == {"table_name": "people"}
     assert seen["auth"] == "Bearer live-key"
+
+
+def test_the_httpx_transport_sends_a_real_multipart_body_for_a_file_upload() -> None:
+    """The second half of the file-retrievability bug, pinned.
+
+    A session-level `Content-Type: application/json` default silently replaces
+    the `multipart/form-data; boundary=...` header httpx generates, and ZeroDB
+    then rejects the body as malformed JSON (`422 Field required`) — measured
+    live while fixing `upload_file`. So the transport must set no session
+    default, and the bytes must arrive in the body.
+    """
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["content_type"] = request.headers.get("Content-Type")
+        seen["body"] = request.read()
+        return httpx.Response(200, json={"file_id": "f-1", "file_key": "k"})
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler), base_url=BASE_URL)
+    with HttpxZeroDBTransport(
+        base_url=BASE_URL, api_key="live-key", client=http_client
+    ) as transport:
+        transport.request(
+            "POST",
+            "/projects/p/files/upload",
+            files={"file": ("page.html", b"<html>the real bytes</html>", "text/html")},
+            data={"key": "archive/page.html"},
+        )
+
+    assert seen["content_type"].startswith("multipart/form-data; boundary=")
+    assert b"<html>the real bytes</html>" in seen["body"]
+    assert b'name="key"' in seen["body"]
+
+
+def test_the_httpx_transport_still_sends_json_as_json() -> None:
+    """Dropping the session default must not stop JSON requests being JSON."""
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["content_type"] = request.headers.get("Content-Type")
+        return httpx.Response(200, json={"table_name": "people"})
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler), base_url=BASE_URL)
+    with HttpxZeroDBTransport(
+        base_url=BASE_URL, api_key="live-key", client=http_client
+    ) as transport:
+        transport.request("POST", "/projects/p/database/tables", json={"table_name": "people"})
+
+    assert seen["content_type"] == "application/json"
+
+
+def test_the_httpx_transport_returns_a_binary_body_as_bytes() -> None:
+    """A downloaded PDF must not come back through a lossy text decode."""
+    pdf = b"%PDF-1.4\n\xff\xfe\x00 binary \x80\x81"
+    http_client = httpx.Client(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, content=pdf)),
+        base_url=BASE_URL,
+    )
+    with HttpxZeroDBTransport(
+        base_url=BASE_URL, api_key="live-key", client=http_client
+    ) as transport:
+        response = transport.request("GET", "/projects/p/files/f-1/content")
+
+    assert response.content == pdf
+    assert response.json_body is None
 
 
 def test_the_httpx_transport_reports_a_non_json_body_without_raising() -> None:

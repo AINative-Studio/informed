@@ -81,41 +81,34 @@ campaign sites plus story 9.2's debate transcripts and questionnaires, and
 precision measured per `extractor_version` so a regression is visible.
 
 ===============================================================================
-A SECOND LIVE FINDING: THE ARCHIVED HTML BYTES ARE NOT READABLE BACK
+A SECOND LIVE FINDING (SINCE FIXED): THE ARCHIVED BYTES WERE NOT READABLE BACK
 ===============================================================================
 
 This shapes the module's signature, so it is here and not in a footnote.
 `extract_from_source` takes the source text as a parameter rather than
-fetching it from `promise_sources.archived_file_id`, because **the archived
-bytes cannot currently be read back out of ZeroDB** — confirmed live against
-the real "informed" project this story (2026-10-17):
+fetching it from `promise_sources.archived_file_id`. The original reason was
+that **the archived bytes could not be read back out of ZeroDB** — found live
+against the real "informed" project during this story (2026-10-17): all three
+of story 9.1's real `promise_sources` rows existed with real
+`archived_file_id` values, `generate_presigned_url` minted a real signed URL
+for each, and a GET of it 404ed for all three, because
+`ZeroDBClient.upload_file` posted file *metadata* to ZeroDB's metadata-only
+route and never sent any bytes.
 
-  * All three of story 9.1's real `promise_sources` rows exist and carry real
-    `archived_file_id` values.
-  * `ZeroDBClient.generate_presigned_url` mints a real, signed S3 URL for each.
-  * A GET of that URL returns **`404 NoSuchBucket`** for all three.
+**That is fixed.** `upload_file` now posts the bytes as multipart to ZeroDB's
+binary endpoint, `ZeroDBClient.download_file` reads them back, and story 9.1's
+three real captures were re-archived so they are genuinely retrievable. See
+`ZeroDBClient.upload_file` for the two-endpoint trap that caused it.
 
-The cause is visible in the client: `ZeroDBClient.upload_file` POSTs only
-*metadata* — `file_key`, `file_name`, `content_type`, `size_bytes`,
-`file_metadata` (including the sha256) — and has no request body for the file
-contents. There is no byte-upload path on the client at all, so story 9.1
-registered three file records whose bytes were never sent, and there is
-correspondingly no `download_file` method to read them with.
-
-That is a gap in the Files integration, not in this story, and fixing it
-properly means a byte-upload/byte-download pair on `ZeroDBClient` plus a
-re-run of 9.1's archival — a change to another story's module and its live
-data, which this story is not the place to make. It is flagged in this story's
-PR as the blocker it is.
-
-**The design consequence, which is a good one:** `extract_from_source` takes
-`source_text` explicitly. That makes the text an injected input exactly like
-`page_fetcher` in `campaign_sites.py` — the pipeline runs in tests with no
-network and no file store, and it runs in production against whatever the
-caller can actually supply (today: a live re-fetch of the `promise_sources`
-row's own `url`, which is how `scripts/extract_promises.py` does it, and which
-is honest because the row records the url it captured). When a real
-`download_file` exists, the caller changes and this module does not.
+**This module's signature does not change, and that was the point of the
+seam.** `extract_from_source` takes `source_text` explicitly, making the text
+an injected input exactly like `page_fetcher` in `campaign_sites.py`: the
+pipeline runs in tests with no network and no file store, and in production
+against whatever the caller supplies. What changed is only the caller —
+`scripts/extract_promises.py --require-archive` now reads the archived
+snapshot through `download_file` and verifies its sha256 against the capture,
+instead of refusing to run. The default path (re-fetching the row's own
+recorded url) remains available for archives captured before the fix.
 
 ===============================================================================
 THE EXTRACTOR SEAM

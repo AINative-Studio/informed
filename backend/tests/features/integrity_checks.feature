@@ -1,8 +1,8 @@
 Feature: Nightly data integrity checks (story 16.2)
 
   As an operator
-  I want the five integrity checks from the data model run nightly
-  So that broken references are caught
+  I want the data model's integrity checks run nightly
+  So that broken references and unfetchable evidence are caught
 
   # datamodel.md, "Integrity checks" — the five checks this feature covers,
   # in order:
@@ -167,8 +167,53 @@ Feature: Nightly data integrity checks (story 16.2)
     When I run the provenance coverage check
     Then the provenance coverage check reports a violation naming that row
 
+  # --- check 6: archived files are actually retrievable ----------------------
+  #
+  # NOT one of datamodel.md's original five. Added by the story-9.1
+  # file-retrievability fix, because that bug is exactly the kind these checks
+  # exist to catch and none of the five could see it: story 9.1's archives had
+  # correct `promise_sources` rows, correct file metadata and correct sha256
+  # values, and every download of them answered 404. Checks 1-5 all passed.
+  #
+  # So this check asks the one question that would have caught it: does the
+  # archive a citation names actually read back, and do those bytes hash to
+  # what the row claims? A citation whose evidence cannot be fetched is not
+  # evidence (prd.md, "evidence over opinion").
+
+  Scenario: Check 6 passes vacuously when no rows reference an archived file
+    When I run the archive retrievability check
+    Then the archive retrievability check reports no violations
+
+  Scenario: Check 6 passes when an archived file reads back and matches its sha256
+    Given a promise_sources row whose archived file was stored with its bytes
+    When I run the archive retrievability check
+    Then the archive retrievability check reports no violations
+
+  Scenario: Check 6 catches a row whose archived file has no stored content
+    Given a promise_sources row whose archived file was registered with metadata only
+    When I run the archive retrievability check
+    Then the archive retrievability check reports a violation naming that unreadable archive
+
+  Scenario: Check 6 catches a row whose archived file holds the wrong bytes
+    Given a promise_sources row whose archived file holds bytes that do not match its sha256
+    When I run the archive retrievability check
+    Then the archive retrievability check reports a violation naming that mismatched archive
+
+  Scenario: Check 6 catches a row that names no archived file at all
+    Given a promise_sources row with an empty archived_file_id
+    When I run the archive retrievability check
+    Then the archive retrievability check reports a violation naming that row
+
+  # Reached but unverifiable is its own outcome, not a pass: an archive whose
+  # contents cannot be checked against a recorded hash could be anything.
+
+  Scenario: Check 6 reports an archive that reads back but records no sha256
+    Given a row naming an archived file that reads back with no recorded sha256
+    When I run the archive retrievability check
+    Then the archive retrievability check reports a violation naming that unverifiable archive
+
   # --- the combined nightly run -----------------------------------------------
 
-  Scenario: Running all five checks together reports each check's name
+  Scenario: Running every check together reports each check's name
     When I run every integrity check
-    Then the combined report covers checks "references", "verdict_roll_call_mapping", "is_current_uniqueness", "member_votes_drift", "provenance_coverage"
+    Then the combined report covers checks "references", "verdict_roll_call_mapping", "is_current_uniqueness", "member_votes_drift", "provenance_coverage", "archive_retrievability"

@@ -18,6 +18,21 @@ Feature: Archive campaign sites (story 9.1)
     When I archive the sample campaign site for that candidacy
     Then a PDF file is stored with its own sha256
 
+  # Story 9.1 shipped with the metadata half of this criterion only: the file
+  # rows existed and carried the right sha256, but the bytes were never stored,
+  # so every presigned download 404ed. Archiving is only citable if the archived
+  # content can be read back.
+
+  Scenario: The archived HTML can be read back byte-for-byte
+    When I archive the sample campaign site for that candidacy
+    Then downloading the archived HTML returns the captured page's exact bytes
+    And the downloaded HTML hashes to the sha256 recorded on its file
+
+  Scenario: The archived PDF can be read back byte-for-byte
+    When I archive the sample campaign site for that candidacy
+    Then downloading the archived PDF returns a real PDF
+    And the downloaded PDF hashes to the sha256 recorded on its file
+
   Scenario: Archiving a campaign site writes a promise_sources row keyed by its sha256
     When I archive the sample campaign site for that candidacy
     Then a promise_sources row exists with id "src:{html_sha256}"
@@ -43,6 +58,18 @@ Feature: Archive campaign sites (story 9.1)
     Given I have already archived the sample campaign site for that candidacy once
     When I archive the sample campaign site for that candidacy again
     Then no new file is uploaded by the second capture
+
+  # A re-run must MEND a capture whose content was never stored, not treat the
+  # surviving row as proof the archive is intact. Every capture made before the
+  # file-upload retrievability fix is in exactly this state.
+
+  Scenario: Re-archiving a capture whose stored content is missing repairs it
+    Given I have already archived the sample campaign site for that candidacy once
+    And that capture's archived content has gone missing from storage
+    When I archive the sample campaign site for that candidacy again
+    Then the files are re-uploaded
+    And downloading the archived HTML returns the captured page's exact bytes
+    And exactly 1 promise_sources row exists for that candidacy
 
   Scenario: A genuinely changed site produces a second, distinct promise_sources row
     Given I have already archived the sample campaign site for that candidacy once

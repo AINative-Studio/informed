@@ -17,6 +17,8 @@ a path the write-time repository guards do NOT cover.
 
 from __future__ import annotations
 
+import hashlib
+import uuid
 from typing import Any
 
 import pytest
@@ -26,6 +28,7 @@ from app.bootstrap import Bootstrapper
 from app.integrity.checks import (
     CheckReport,
     CombinedReport,
+    check_archive_retrievability,
     check_current_verdict_uniqueness,
     check_member_votes_drift,
     check_provenance_coverage,
@@ -39,6 +42,7 @@ from app.repositories.models import (
     CandidatePosition,
     MemberVote,
     Person,
+    PromiseSource,
     RollCall,
     Verdict,
 )
@@ -550,9 +554,178 @@ def run_provenance_check(zerodb: ZeroDBClient) -> CheckReport:
     return check_provenance_coverage(zerodb)
 
 
+@when("I run the archive retrievability check", target_fixture="check_result")
+def run_archive_check(zerodb: ZeroDBClient) -> CheckReport:
+    return check_archive_retrievability(zerodb)
+
+
 @when("I run every integrity check", target_fixture="combined_result")
 def run_combined(zerodb: ZeroDBClient) -> CombinedReport:
     return run_all_checks(zerodb)
+
+
+# --- check 6: archive retrievability ----------------------------------------
+#
+# A `promise_sources` row's id IS its capture's sha256, so these fixtures write
+# the row through the repository and then manipulate the fake's file store to
+# reproduce each broken state. That is sabotage testing in the same sense as
+# the scenarios above: the bad states below are what a half-working upload
+# produces, which no write-time guard caught.
+
+_ARCHIVED_HTML = b"<html><body><p>I will cap insulin at $35.</p></body></html>"
+
+
+def _promise_source_with_archive(
+    zerodb: ZeroDBClient,
+    fake: FakeZeroDBTransport,
+    result: dict[str, Any],
+    *,
+    store_bytes: bytes | None,
+    file_id: str | None = None,
+) -> str:
+    """Write a `promise_sources` row, then set its archive's stored state.
+
+    `store_bytes=None` leaves the file id with no stored object — the exact
+    state the pre-fix `upload_file` produced.
+    """
+    _seed_candidacy(zerodb)
+    archived_file_id = file_id if file_id is not None else str(uuid.uuid4())
+    source_id = f"src:{hashlib.sha256(_ARCHIVED_HTML).hexdigest()}"
+    if archived_file_id:
+        fake.files[archived_file_id] = {
+            "file_id": archived_file_id,
+            "file_key": f"promise-sources/{source_id}.html",
+            "file_name": f"{source_id}.html",
+            "content_type": "text/html; charset=utf-8",
+            "file_metadata": {"sha256": hashlib.sha256(_ARCHIVED_HTML).hexdigest()},
+        }
+        if store_bytes is not None:
+            fake.file_content[archived_file_id] = store_bytes
+    Repository(client=zerodb, model=PromiseSource).upsert(
+        {
+            "id": source_id,
+            "candidacy_id": ARCHIVE_CANDIDACY_ID,
+            "source_type": "campaign_website",
+            "url": "https://arriaga-for-congress.example/",
+            "archived_file_id": archived_file_id,
+            "captured_at": "2026-10-16T22:00:00+00:00",
+        }
+    )
+    result["archive_row_id"] = source_id
+    return source_id
+
+
+ARCHIVE_CANDIDACY_ID = (
+    "us-2026-11-03-general:ocd-division/country:us/state:pa/cd:2:person:fec-H6PA02205"
+)
+
+
+def _seed_candidacy(zerodb: ZeroDBClient) -> None:
+    """The reference `PromiseSource.candidacy_id` must resolve to."""
+    from app.repositories.models import District, Election
+
+    Repository(client=zerodb, model=Election).upsert(
+        {
+            "id": "us-2026-11-03-general",
+            "jurisdiction_id": "us-federal",
+            "name": "2026 federal general election",
+            "election_date": "2026-11-03",
+            "kind": "general",
+        }
+    )
+    Repository(client=zerodb, model=District).upsert(
+        {
+            "id": "ocd-division/country:us/state:pa/cd:2",
+            "body_id": "us-house",
+            "name": "PA congressional district 2",
+            "state": "PA",
+            "valid_from": "2025-01-03",
+        }
+    )
+    Repository(client=zerodb, model=Person).upsert(
+        {
+            "id": "person:fec-H6PA02205",
+            "canonical_name": "ARRIAGA, JESSICA",
+            "external_ids": {"fec": "H6PA02205"},
+            "photo_url": None,
+            "terms": [],
+        }
+    )
+    Repository(client=zerodb, model=Candidacy).upsert(
+        {
+            "id": ARCHIVE_CANDIDACY_ID,
+            "election_id": "us-2026-11-03-general",
+            "district_id": "ocd-division/country:us/state:pa/cd:2",
+            "person_id": "person:fec-H6PA02205",
+            "person_name": "ARRIAGA, JESSICA",
+            "party": "REP",
+            "is_incumbent": False,
+            "status": "filed",
+        }
+    )
+
+
+@given("a promise_sources row whose archived file was stored with its bytes")
+def archive_healthy(
+    zerodb: ZeroDBClient, fake: FakeZeroDBTransport, result: dict[str, Any]
+) -> None:
+    _promise_source_with_archive(zerodb, fake, result, store_bytes=_ARCHIVED_HTML)
+
+
+@given("a promise_sources row whose archived file was registered with metadata only")
+def archive_metadata_only(
+    zerodb: ZeroDBClient, fake: FakeZeroDBTransport, result: dict[str, Any]
+) -> None:
+    _promise_source_with_archive(zerodb, fake, result, store_bytes=None)
+
+
+@given("a promise_sources row whose archived file holds bytes that do not match its sha256")
+def archive_wrong_bytes(
+    zerodb: ZeroDBClient, fake: FakeZeroDBTransport, result: dict[str, Any]
+) -> None:
+    _promise_source_with_archive(
+        zerodb, fake, result, store_bytes=b"<html>a completely different page</html>"
+    )
+
+
+@given("a promise_sources row with an empty archived_file_id")
+def archive_missing_id(
+    zerodb: ZeroDBClient, fake: FakeZeroDBTransport, result: dict[str, Any]
+) -> None:
+    _promise_source_with_archive(zerodb, fake, result, store_bytes=None, file_id="")
+
+
+@given("a row naming an archived file that reads back with no recorded sha256")
+def archive_unverifiable(
+    zerodb: ZeroDBClient, fake: FakeZeroDBTransport, result: dict[str, Any]
+) -> None:
+    """A row whose id is NOT content-addressed, and whose file records no hash.
+
+    `promise_sources` ids are always `src:<sha256>`, so the hash is in the id
+    and this state cannot arise there. It is the realistic shape of the OTHER
+    archive-bearing tables datamodel.md names (bill text, debate transcripts),
+    whose ids will not be content hashes — so the row is written directly
+    through the client, bypassing the repository that would reject a
+    non-conforming `promise_sources` id. The check must report such a row as
+    unverifiable rather than passing it for merely being reachable.
+    """
+    _seed_candidacy(zerodb)
+    stored = zerodb.upload_file(
+        file_key="promise-sources/transcript.txt", content=b"a debate transcript, unhashed"
+    )
+    row_id = "transcript:2026-03-11-debate"
+    zerodb.insert_row(
+        PromiseSource.table_name,
+        {
+            "id": row_id,
+            "candidacy_id": ARCHIVE_CANDIDACY_ID,
+            "source_type": "transcript",
+            "url": "https://example.test/debate",
+            "archived_file_id": stored.file_id,
+            "captured_at": "2026-10-16T22:00:00+00:00",
+        },
+    )
+    result["archive_row_id"] = row_id
 
 
 # --- assertions ----------------------------------------------------------
@@ -663,6 +836,39 @@ def drift_violation(check_result: CheckReport, row_id: str, field: str) -> None:
 def provenance_violation_names_row(check_result: CheckReport, result: dict[str, Any]) -> None:
     row_id = result["bypass_row_id"]
     assert any(v.row_id == row_id for v in check_result.violations), check_result.violations
+
+
+@then("the archive retrievability check reports a violation naming that unreadable archive")
+def archive_violation_unreadable(check_result: CheckReport, result: dict[str, Any]) -> None:
+    row_id = result["archive_row_id"]
+    assert any(
+        v.row_id == row_id and "cannot be read back" in v.detail for v in check_result.violations
+    ), check_result.violations
+
+
+@then("the archive retrievability check reports a violation naming that mismatched archive")
+def archive_violation_mismatch(check_result: CheckReport, result: dict[str, Any]) -> None:
+    row_id = result["archive_row_id"]
+    assert any(
+        v.row_id == row_id and "not the recorded" in v.detail for v in check_result.violations
+    ), check_result.violations
+
+
+@then("the archive retrievability check reports a violation naming that unverifiable archive")
+def archive_violation_unverifiable(check_result: CheckReport, result: dict[str, Any]) -> None:
+    row_id = result["archive_row_id"]
+    assert any(
+        v.row_id == row_id and "records no sha256" in v.detail for v in check_result.violations
+    ), check_result.violations
+
+
+@then("the archive retrievability check reports a violation naming that row")
+def archive_violation_names_row(check_result: CheckReport, result: dict[str, Any]) -> None:
+    row_id = result["archive_row_id"]
+    assert any(
+        v.row_id == row_id and "names no archived_file_id" in v.detail
+        for v in check_result.violations
+    ), check_result.violations
 
 
 @then(parsers.parse('the combined report covers checks "{names}"'))

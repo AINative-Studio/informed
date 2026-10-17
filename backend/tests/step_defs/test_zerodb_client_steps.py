@@ -11,6 +11,7 @@ import pytest
 from pytest_bdd import given, parsers, scenarios, then, when
 
 from app.zerodb import ZeroDBClient
+from app.zerodb.errors import ZeroDBNotFoundError, ZeroDBValidationError
 from app.zerodb.testing import FakeZeroDBTransport
 
 scenarios("../features/zerodb_client.feature")
@@ -251,22 +252,77 @@ def traversal_reaches(result: dict[str, Any], target: str) -> None:
 # --- files ----------------------------------------------------------------
 
 
+#: The bytes every file scenario uploads. Held here so the round-trip
+#: assertions compare against exactly what was sent.
+UPLOADED_CONTENT = b"<html><body>a real captured campaign page</body></html>"
+
+
 @given(parsers.parse('the file "{file_key}" was uploaded'))
 @when(parsers.parse('I upload the file "{file_key}" with sha256 "{sha}"'))
 def upload_file(
     client: ZeroDBClient, result: dict[str, Any], file_key: str, sha: str = "abc123"
 ) -> None:
+    result["content"] = UPLOADED_CONTENT
     result["file"] = client.upload_file(
         file_key=file_key,
+        content=UPLOADED_CONTENT,
         file_name="campaign-page.html",
         content_type="text/html",
-        size_bytes=2048,
         file_metadata={
             "sha256": sha,
             "source_url": "https://example.org/platform",
             "captured_at": "2026-10-15T00:00:00Z",
         },
     )
+
+
+@when("I try to upload a file with no content")
+def upload_empty_file(client: ZeroDBClient, result: dict[str, Any]) -> None:
+    try:
+        client.upload_file(file_key="archive/empty.html", content=b"")
+    except ZeroDBValidationError as exc:
+        result["error"] = exc
+    else:
+        result["error"] = None
+
+
+@when(parsers.parse('I try to download the file "{file_id}"'))
+def download_missing_file(client: ZeroDBClient, result: dict[str, Any], file_id: str) -> None:
+    try:
+        client.download_file(file_id=file_id)
+    except ZeroDBNotFoundError as exc:
+        result["error"] = exc
+    else:
+        result["error"] = None
+
+
+@then("the upload reports the size of the bytes it sent")
+def upload_reports_size(result: dict[str, Any]) -> None:
+    assert result["file"].size_bytes == len(result["content"])
+
+
+@then("downloading that file returns the exact bytes that were uploaded")
+def download_returns_same_bytes(client: ZeroDBClient, result: dict[str, Any]) -> None:
+    assert client.download_file(file_id=result["file"].file_id) == result["content"]
+
+
+@then("the upload request carried the file's bytes as a multipart body")
+def upload_was_multipart(fake: FakeZeroDBTransport, result: dict[str, Any]) -> None:
+    call = next(c for c in reversed(fake.calls) if c.path.endswith("/files/upload"))
+    assert call.json is None, "the bytes must not travel as a JSON metadata payload"
+    assert call.files is not None
+    assert call.files["file"][1] == result["content"]
+
+
+@then("the upload is refused for having no content to store")
+def upload_refused(fake: FakeZeroDBTransport, result: dict[str, Any]) -> None:
+    assert isinstance(result["error"], ZeroDBValidationError)
+    assert fake.calls == [], "nothing should reach the wire for an empty upload"
+
+
+@then("the download is reported as not found")
+def download_not_found(result: dict[str, Any]) -> None:
+    assert isinstance(result["error"], ZeroDBNotFoundError)
 
 
 @when(parsers.parse("I generate a presigned URL for that file expiring in {secs:d} seconds"))

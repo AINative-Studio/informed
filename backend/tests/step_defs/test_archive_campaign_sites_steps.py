@@ -221,6 +221,34 @@ def pdf_file_stored(fake: FakeZeroDBTransport, result: dict[str, Any]) -> None:
     assert stored["file_metadata"]["sha256"] != report.html_sha256
 
 
+@then("downloading the archived HTML returns the captured page's exact bytes")
+def archived_html_downloads(zerodb: ZeroDBClient, result: dict[str, Any]) -> None:
+    report: CaptureReport = result["report"]
+    downloaded = zerodb.download_file(file_id=report.html_file_id)
+    assert downloaded == result["html"].encode("utf-8")
+
+
+@then("the downloaded HTML hashes to the sha256 recorded on its file")
+def archived_html_hash_matches(zerodb: ZeroDBClient, result: dict[str, Any]) -> None:
+    report: CaptureReport = result["report"]
+    downloaded = zerodb.download_file(file_id=report.html_file_id)
+    assert hashlib.sha256(downloaded).hexdigest() == report.html_sha256
+
+
+@then("downloading the archived PDF returns a real PDF")
+def archived_pdf_downloads(zerodb: ZeroDBClient, result: dict[str, Any]) -> None:
+    report: CaptureReport = result["report"]
+    downloaded = zerodb.download_file(file_id=report.pdf_file_id)
+    assert downloaded.startswith(b"%PDF-"), "the stored bytes are not a PDF"
+
+
+@then("the downloaded PDF hashes to the sha256 recorded on its file")
+def archived_pdf_hash_matches(zerodb: ZeroDBClient, result: dict[str, Any]) -> None:
+    report: CaptureReport = result["report"]
+    downloaded = zerodb.download_file(file_id=report.pdf_file_id)
+    assert hashlib.sha256(downloaded).hexdigest() == report.pdf_sha256
+
+
 def _promise_source_rows(fake: FakeZeroDBTransport, candidacy_id: str) -> list[dict[str, Any]]:
     stored = fake.rows.get("promise_sources", {})
     return [
@@ -282,10 +310,33 @@ def n_promise_source_rows(fake: FakeZeroDBTransport, count: int) -> None:
     assert len(rows) == count, f"found {len(rows)} promise_sources row(s), expected {count}"
 
 
+def _upload_calls(fake: FakeZeroDBTransport) -> list[Any]:
+    """Calls to ZeroDB's binary-upload route — the one that stores bytes."""
+    return [call for call in fake.calls if call.path.endswith("/files/upload")]
+
+
 @then("no new file is uploaded by the second capture")
 def no_new_file_uploaded(fake: FakeZeroDBTransport) -> None:
-    upload_calls = [call for call in fake.calls if call.path.endswith("/database/files")]
-    assert len(upload_calls) == 0, f"expected no file-upload calls, saw {len(upload_calls)}"
+    uploads = _upload_calls(fake)
+    assert len(uploads) == 0, f"expected no file-upload calls, saw {len(uploads)}"
+
+
+@given("that capture's archived content has gone missing from storage")
+def archive_content_missing(fake: FakeZeroDBTransport, result: dict[str, Any]) -> None:
+    """Reproduce the live state of every pre-fix capture: rows, no bytes.
+
+    The file metadata rows stay; only the stored objects go. That is exactly
+    what story 9.1's archives looked like live — `promise_sources` and file
+    rows intact, every download 404.
+    """
+    fake.file_content.clear()
+    fake.calls.clear()
+
+
+@then("the files are re-uploaded")
+def files_were_reuploaded(fake: FakeZeroDBTransport) -> None:
+    uploads = _upload_calls(fake)
+    assert len(uploads) == 2, f"expected the HTML and PDF re-uploaded, saw {len(uploads)}"
 
 
 # --- provenance ------------------------------------------------------------
