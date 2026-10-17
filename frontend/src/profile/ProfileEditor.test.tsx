@@ -45,6 +45,25 @@ const TOPICS: TopicTreeResponse = {
   ],
 };
 
+const CONSENT_OFFER = {
+  consent_version: '2026.1',
+  summary:
+    'Informed is asking you to save your political priorities to your account. Your political ' +
+    'opinions are special-category personal data.',
+  what_is_stored: [
+    'The issues you choose, encrypted with a key held for you alone.',
+    'Nothing else about your politics.',
+  ],
+  anonymous_alternative:
+    'You do not have to agree. Anonymous mode gives you the same full app with your priorities ' +
+    'kept in this browser only.',
+  your_rights: [
+    'Export: download everything stored for you as JSON.',
+    'Delete: permanently erase your profile and destroy its encryption key.',
+  ],
+  lawful_basis: 'gdpr-9-2-a-explicit-consent',
+};
+
 const WEIGHTS = {
   methodology_version: '2026.1',
   weights: { primary: 3.0, secondary: 1.5, nice_to_have: 0.5 },
@@ -75,6 +94,13 @@ beforeEach(() => {
     }
     if (url.pathname === '/v1/profiles/methodology') {
       return jsonResponse(WEIGHTS);
+    }
+    // Story 14.2: the editor now reads its consent wording from the server on
+    // every mount, so this shared stub serves it for the earlier stories'
+    // tests too. Without it those tests would exercise the consent-unavailable
+    // branch rather than the behaviour they are actually about.
+    if (url.pathname === '/v1/profiles/consent') {
+      return jsonResponse(CONSENT_OFFER);
     }
     const stanceMatch = url.pathname.match(/^\/v1\/topics\/(.+)\/stances$/);
     if (stanceMatch) {
@@ -176,6 +202,7 @@ describe('ProfileEditor — tier assignment and limits (story 4.2)', () => {
         });
       }
       if (url.pathname === '/v1/profiles/methodology') return jsonResponse(WEIGHTS);
+      if (url.pathname === '/v1/profiles/consent') return jsonResponse(CONSENT_OFFER);
       const stanceMatch = url.pathname.match(/^\/v1\/topics\/(.+)\/stances$/);
       if (stanceMatch) return jsonResponse(stancesFor(decodeURIComponent(stanceMatch[1])));
       const loadMatch = url.pathname.match(/^\/v1\/profiles\/(.+)$/);
@@ -210,6 +237,7 @@ describe('ProfileEditor — tier assignment and limits (story 4.2)', () => {
         });
       }
       if (url.pathname === '/v1/profiles/methodology') return jsonResponse(WEIGHTS);
+      if (url.pathname === '/v1/profiles/consent') return jsonResponse(CONSENT_OFFER);
       const stanceMatch = url.pathname.match(/^\/v1\/topics\/(.+)\/stances$/);
       if (stanceMatch) return jsonResponse(stancesFor(decodeURIComponent(stanceMatch[1])));
       const loadMatch = url.pathname.match(/^\/v1\/profiles\/(.+)$/);
@@ -390,24 +418,6 @@ describe('ProfileEditor — save and load (story 4.4)', () => {
  * endpoint got stubbed is not evidence of anything.
  */
 
-const CONSENT_OFFER = {
-  consent_version: '2026.1',
-  summary:
-    'Informed is asking you to save your political priorities to your account. Your political ' +
-    'opinions are special-category personal data.',
-  what_is_stored: [
-    'The issues you choose, encrypted with a key held for you alone.',
-    'Nothing else about your politics.',
-  ],
-  anonymous_alternative:
-    'You do not have to agree. Anonymous mode gives you the same full app with your priorities ' +
-    'kept in this browser only.',
-  your_rights: [
-    'Export: download everything stored for you as JSON.',
-    'Delete: permanently erase your profile and destroy its encryption key.',
-  ],
-  lawful_basis: 'gdpr-9-2-a-explicit-consent',
-};
 
 const EXPORT_DOCUMENT = {
   exported_at: '2026-10-17T00:00:00Z',
@@ -570,7 +580,7 @@ describe('ProfileEditor — anonymous mode (story 14.3)', () => {
 
     await user.click(screen.getByRole('button', { name: /save my profile/i }));
 
-    expect(await screen.findByText(/this browser only/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Saved in this browser only/i)).toBeInTheDocument();
     expect(writeRequests()).toEqual([]);
   });
 
@@ -583,7 +593,7 @@ describe('ProfileEditor — anonymous mode (story 14.3)', () => {
     const row = screen.getByRole('group', { name: 'Prescription drug pricing' });
     await user.selectOptions(within(row).getByLabelText(/stance/i), 'Option A');
     await user.click(screen.getByRole('button', { name: /save my profile/i }));
-    await screen.findByText(/this browser only/i);
+    await screen.findByText(/Saved in this browser only/i);
     first.unmount();
 
     renderWithQuery(<ProfileEditor />);
@@ -606,7 +616,7 @@ describe('ProfileEditor — anonymous mode (story 14.3)', () => {
     const row = screen.getByRole('group', { name: 'Prescription drug pricing' });
     await user.selectOptions(within(row).getByLabelText(/stance/i), 'Option A');
     await user.click(screen.getByRole('button', { name: /save my profile/i }));
-    await screen.findByText(/this browser only/i);
+    await screen.findByText(/Saved in this browser only/i);
 
     await user.click(screen.getByRole('button', { name: /clear.*(browser|anonymous)/i }));
 
@@ -661,7 +671,12 @@ describe('ProfileEditor — export and delete (story 14.4)', () => {
 
     await user.click(screen.getByRole('button', { name: /delete my (profile|data)/i }));
 
-    expect(await screen.findByText(/cannot be undone|permanent/i)).toBeInTheDocument();
+    // Scoped to the confirmation group: the consent panel's "your rights"
+    // list legitimately mentions permanent deletion too, so an unscoped text
+    // query would pass on the wrong element and prove nothing about the guard.
+    const confirmation = await screen.findByRole('group', { name: /confirm deletion/i });
+    expect(within(confirmation).getByText(/cannot be undone/i)).toBeInTheDocument();
+    expect(within(confirmation).getByText(/encryption key is destroyed/i)).toBeInTheDocument();
     expect(seen.some((request) => request.method === 'DELETE')).toBe(false);
   });
 
@@ -673,8 +688,11 @@ describe('ProfileEditor — export and delete (story 14.4)', () => {
     await user.click(screen.getByRole('button', { name: /delete my (profile|data)/i }));
     await user.click(await screen.findByRole('button', { name: /yes.*delete|delete permanently/i }));
 
-    expect(await screen.findByText(/permanently deleted/i)).toBeInTheDocument();
-    expect(screen.getByText(/key/i)).toBeInTheDocument();
+    // The success message states BOTH guarantees story 14.4 asks for — the
+    // row is gone and the key is shredded — in one status line.
+    const done = await screen.findByRole('status');
+    expect(done).toHaveTextContent(/permanently deleted/i);
+    expect(done).toHaveTextContent(/encryption key/i);
     expect(seen.some((request) => request.method === 'DELETE')).toBe(true);
   });
 
