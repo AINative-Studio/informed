@@ -268,4 +268,102 @@ describe('BallotPage', () => {
       expect(document.body.textContent ?? '').not.toMatch(/vote for|recommend|endorse|best match/i);
     });
   });
+
+  describe('sharing a candidate summary card (story 14.6)', () => {
+    const BALLOT_WITH_CANDIDACY: Ballot = {
+      ...BALLOT,
+      races: [
+        {
+          id: 'us-house:ocd-division/country:us/state:ca/cd:19',
+          body_id: 'us-house',
+          office_name: 'U.S. House of Representatives',
+          district_id: 'ocd-division/country:us/state:ca/cd:19',
+          district_name: 'California 19th Congressional District',
+          election_id: 'election',
+          candidates: [
+            {
+              person_id: 'person:ZZ000001',
+              name: 'Rep. Synthetic Example',
+              party: 'Independent',
+              is_incumbent: true,
+              candidacy_id: 'election:district:person:ZZ000001',
+            },
+          ],
+        },
+      ],
+    };
+
+    it('shows a Share button for a candidate who has a candidacy_id', async () => {
+      respondWith(BALLOT_WITH_CANDIDACY);
+      renderWithQuery(<BallotPage />);
+      await submitAddress();
+      await screen.findByText('Rep. Synthetic Example');
+
+      expect(
+        screen.getByRole('button', { name: /share rep\. synthetic example/i }),
+      ).toBeInTheDocument();
+    });
+
+    it('shows no Share button when no candidacy_id is known yet', async () => {
+      respondWith(BALLOT);
+      renderWithQuery(<BallotPage />);
+      await submitAddress();
+      await screen.findByText('Rep. Synthetic Example');
+
+      expect(screen.queryByRole('button', { name: /^share /i })).not.toBeInTheDocument();
+    });
+
+    it('builds a shareable summary containing only candidate data, never the voter profile', async () => {
+      respondWith(BALLOT_WITH_CANDIDACY);
+      renderWithQuery(<BallotPage />);
+      await submitAddress();
+      await screen.findByText('Rep. Synthetic Example');
+
+      const user = userEvent.setup();
+      await user.click(screen.getByRole('button', { name: /share rep\. synthetic example/i }));
+
+      const shareText = await screen.findByText(/candidate summary from informed/i);
+      expect(shareText.textContent ?? '').toMatch(/Rep\. Synthetic Example/);
+      expect(shareText.textContent ?? '').toMatch(/Independent/);
+      // Nothing resembling a voter's own data ever appears in the share text.
+      expect(shareText.textContent ?? '').not.toMatch(/profile|interest|user_id|voter/i);
+    });
+
+    it('the Share button calls the summary-card endpoint with no profile parameter', async () => {
+      respondWith(BALLOT_WITH_CANDIDACY);
+      renderWithQuery(<BallotPage />);
+      await submitAddress();
+      await screen.findByText('Rep. Synthetic Example');
+
+      fetchMock.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            candidacy_id: 'election:district:person:ZZ000001',
+            person_name: 'Rep. Synthetic Example',
+            party: 'Independent',
+            district: 'California 19th Congressional District',
+            photo_url: null,
+            verdict_counts: null,
+            say_do_gap: null,
+            positions_summary: null,
+            updated_at: '2026-10-17T00:00:00Z',
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+      );
+      const user = userEvent.setup();
+      await user.click(screen.getByRole('button', { name: /share rep\. synthetic example/i }));
+
+      const call = await waitFor(() => {
+        const match = fetchMock.mock.calls.find(([url]) =>
+          String(url).includes('/summary-card'),
+        );
+        expect(match).toBeDefined();
+        return match;
+      });
+      const [url, init] = call ?? [];
+      expect(String(url)).not.toMatch(/profile|user_id|voter/i);
+      expect(JSON.stringify(init ?? {})).not.toMatch(/profile|user_id|voter/i);
+    });
+  });
 });
