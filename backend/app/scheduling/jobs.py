@@ -1,6 +1,6 @@
 """The real job registry: every periodic task this codebase needs, named once.
 
-Three jobs today, one per story that flagged the scheduling gap:
+Five jobs today, one per story that flagged the scheduling gap:
 
   * `sweep_correction_emails` — story 12.4's 90-day contact-email retention
     sweep. Daily. The most urgent of the three (see `app.corrections.retention`'s
@@ -15,20 +15,36 @@ Three jobs today, one per story that flagged the scheduling gap:
     the hourly cadence story 5.6 specifies ("new votes picked up hourly while
     the House is in session") even though 5.6 itself has not been built yet.
     Blocked on `CONGRESS_GOV_API_KEY` for the same reason as `load_candidacies`.
+  * `run_nightly_integrity_checks` — story 16.2's five datamodel.md integrity
+    checks (`app.integrity.checks`). Nightly, no precondition: every check
+    reads tables that already exist (even if some are empty today), so there
+    is no missing credential to block on. See `run_nightly_integrity_checks`'s
+    own docstring for how a violation becomes a `FAILED` job in this runner's
+    report, and for the honest gap around paging/ticketing this does NOT do.
+  * `repair_member_votes_denormalization` — story 16.4's drift repair
+    (`app.integrity.repair`). Nightly, after the check above: fixing drift
+    the moment it is found (rather than only reporting it) is the point of
+    16.4's acceptance criterion, and running it right after the check means
+    one nightly invocation both reports and heals.
 
 Each job calls directly into the already-tested `app.ingest.*` / `app.corrections.*`
-logic, using the `ZeroDBClient` the runner injects — exactly the pattern
-`backend/scripts/*.py` already uses, except the CLI scripts build their own
-client from the environment where these jobs take one as a parameter. This is
-deliberate: CLI scripts in this codebase are "intentionally thin" wrappers
-with no logic of their own (see `scripts/bootstrap.py`'s module docstring),
-and a scheduled job is just another caller of the same tested logic, not a
-third copy of it.
+/ `app.integrity.*` logic, using the `ZeroDBClient` the runner injects — exactly
+the pattern `backend/scripts/*.py` already uses, except the CLI scripts build
+their own client from the environment where these jobs take one as a
+parameter. This is deliberate: CLI scripts in this codebase are
+"intentionally thin" wrappers with no logic of their own (see
+`scripts/bootstrap.py`'s module docstring), and a scheduled job is just
+another caller of the same tested logic, not a third copy of it.
 
 **Nothing here is paced for the live ~60 req/min ZeroDB ceiling beyond what
 each callee already does.** `CandidacyLoader` and `HouseRollCallLoader` take
 their own `pace` callback exactly as the CLI scripts configure them; this
-module wires the same default pacer rather than inventing a second one.
+module wires the same default pacer rather than inventing a second one. The
+two integrity jobs are read-mostly paged scans (see `app.integrity.checks.paged_rows`)
+over tables that are small today; pacing them is a follow-up once
+`member_votes` holds its real ~600k rows per Congress (same open question
+datamodel.md already tracks for every other full-table read in this
+codebase).
 """
 
 from __future__ import annotations
@@ -56,6 +72,8 @@ from app.ingest.house_rollcalls import (
     fetch_roll_call_numbers,
     transform_roll_calls,
 )
+from app.integrity.checks import run_all_checks
+from app.integrity.repair import repair_member_votes_drift
 from app.scheduling.registry import JobRegistration
 from app.seed_elections import UPCOMING_ELECTIONS, ElectionSeeder
 from app.zerodb.client import ZeroDBClient
@@ -219,6 +237,54 @@ def run_load_house_rollcalls(client: ZeroDBClient) -> None:
     )
 
 
+# --- story 16.2: run_nightly_integrity_checks -------------------------------
+
+
+def run_nightly_integrity_checks(client: ZeroDBClient) -> None:
+    """Run all five datamodel.md integrity checks; raise if any found a violation.
+
+    Delegates entirely to `app.integrity.checks.run_all_checks`, which never
+    raises on a check's own findings (see that module's docstring: one check's
+    violations must not stop the others from running, matching
+    `ScheduledJobRunner`'s own principle). This function is where a violation
+    becomes a job FAILURE rather than a quietly-logged report: raising here is
+    what makes `ScheduledJobRunner` record this job as `FAILED` in its
+    `RunReport` — visible in CI/ops output today, and the hook a real
+    paging/ticketing integration attaches to tomorrow. See
+    `app.integrity.checks`'s module docstring for why no such integration
+    exists yet, and why faking one would be worse than the honest gap.
+
+    A genuine `ZeroDBError` from a check's own reads (table unreachable, not a
+    violation) propagates unchanged — that is already a job failure by the
+    runner's own rules, with no need for this function to add to it.
+    """
+    report = run_all_checks(client)
+    for check_report in report.reports:
+        logger.info("integrity check %s", check_report.summary())
+    if not report.ok:
+        violation_lines = "; ".join(str(v) for v in report.violations)
+        raise ZeroDBError(
+            f"nightly integrity checks found {len(report.violations)} violation(s): "
+            f"{violation_lines}"
+        )
+
+
+# --- story 16.4: repair_member_votes_denormalization ------------------------
+
+
+def run_repair_member_votes_drift(client: ZeroDBClient) -> None:
+    """Re-copy every drifted denormalized field on `member_votes`.
+
+    Delegates entirely to `app.integrity.repair.repair_member_votes_drift`,
+    which is idempotent (see that module's docstring) and raises `ZeroDBError`
+    on a genuine write failure — exactly the behaviour the registry needs to
+    decide RAN vs FAILED, the same contract `run_sweep_correction_emails`
+    already follows for its own periodic repair.
+    """
+    result = repair_member_votes_drift(client)
+    logger.info("repair_member_votes_denormalization: %s", result.summary())
+
+
 # --- the registry itself ----------------------------------------------------
 
 
@@ -249,6 +315,16 @@ def default_jobs() -> list[JobRegistration]:
             run=run_load_house_rollcalls,
             precondition=_require_env("CONGRESS_GOV_API_KEY"),
         ),
+        JobRegistration(
+            name="run_nightly_integrity_checks",
+            interval=timedelta(days=1),
+            run=run_nightly_integrity_checks,
+        ),
+        JobRegistration(
+            name="repair_member_votes_denormalization",
+            interval=timedelta(days=1),
+            run=run_repair_member_votes_drift,
+        ),
     ]
 
 
@@ -265,5 +341,7 @@ __all__ = [
     "default_jobs",
     "run_load_candidacies",
     "run_load_house_rollcalls",
+    "run_nightly_integrity_checks",
+    "run_repair_member_votes_drift",
     "run_sweep_correction_emails",
 ]

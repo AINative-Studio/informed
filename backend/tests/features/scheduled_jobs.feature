@@ -65,6 +65,14 @@ Feature: Scheduled job runner (infrastructure for stories 2.6, 5.1/5.6, 12.4)
     Then the real job registry includes a job named "load_house_rollcalls"
     And that job's interval is 1 hour(s)
 
+  Scenario: run_nightly_integrity_checks is registered to run nightly
+    Then the real job registry includes a job named "run_nightly_integrity_checks"
+    And that job's interval is 1 day(s)
+
+  Scenario: repair_member_votes_denormalization is registered to run nightly
+    Then the real job registry includes a job named "repair_member_votes_denormalization"
+    And that job's interval is 1 day(s)
+
   Scenario: A job missing its required credentials is skipped as blocked, not crashed
     Given a registered job "needs-a-key" that runs every 1 day(s) and requires an unset environment variable
     And the job has never recorded a last-run
