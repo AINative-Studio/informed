@@ -107,9 +107,7 @@ def synced_roll_call(zerodb: ZeroDBClient, roll_call_id: str, vote_type: str, bi
     return roll_call_id
 
 
-@given(
-    parsers.parse('a synced member vote on "{roll_call_id}" for person "{person_id}"')
-)
+@given(parsers.parse('a synced member vote on "{roll_call_id}" for person "{person_id}"'))
 def synced_member_vote(zerodb: ZeroDBClient, roll_call_id: str, person_id: str) -> None:
     if zerodb.get_row(Person.table_name, person_id) is None:
         Repository(client=zerodb, model=Person).upsert(
@@ -151,8 +149,6 @@ def correct_synced_roll_call_both(
     zerodb.update_row(
         RollCall.table_name, synced_roll_call_id, {"vote_type": vote_type, "bill_id": bill_id}
     )
-
-
 
 
 @when("I run the drift repair", target_fixture="repair_result")

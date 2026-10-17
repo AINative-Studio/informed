@@ -132,9 +132,7 @@ def roll_call_row_with_fields(
     )
 
 
-@given(
-    parsers.parse('the roll_calls row "{roll_call_id}" is corrected to vote_type "{vote_type}"')
-)
+@given(parsers.parse('the roll_calls row "{roll_call_id}" is corrected to vote_type "{vote_type}"'))
 def correct_roll_call_vote_type(zerodb: ZeroDBClient, roll_call_id: str, vote_type: str) -> None:
     zerodb.update_row(RollCall.table_name, roll_call_id, {"vote_type": vote_type})
 
@@ -167,11 +165,7 @@ def people_row(zerodb: ZeroDBClient, person_id: str) -> None:
     )
 
 
-@given(
-    parsers.parse(
-        'a member_votes row for roll call "{roll_call_id}" and person "{person_id}"'
-    )
-)
+@given(parsers.parse('a member_votes row for roll call "{roll_call_id}" and person "{person_id}"'))
 def member_votes_row_plain(zerodb: ZeroDBClient, roll_call_id: str, person_id: str) -> None:
     Repository(client=zerodb, model=MemberVote).upsert(
         {
@@ -210,8 +204,7 @@ def member_votes_row_copying(zerodb: ZeroDBClient, roll_call_id: str, person_id:
 
 @given(
     parsers.parse(
-        "a member_votes row is written directly with a dangling roll_call_id "
-        '"{roll_call_id}"'
+        'a member_votes row is written directly with a dangling roll_call_id "{roll_call_id}"'
     )
 )
 def dangling_member_vote(zerodb: ZeroDBClient, roll_call_id: str) -> None:
@@ -244,14 +237,17 @@ def _election_and_district(zerodb: ZeroDBClient) -> tuple[str, str]:
     election_id = "us-2026-11-03-general"
     district_id = "ocd-division/country:us/state:zz/cd:1"
     if zerodb.get_row("jurisdictions", "us-federal") is None:
-        zerodb.insert_row("jurisdictions", {
-            "id": "us-federal",
-            "name": "United States",
-            "country_code": "US",
-            "level": "federal",
-            "adapter_name": "us_federal",
-            "active": True,
-        })
+        zerodb.insert_row(
+            "jurisdictions",
+            {
+                "id": "us-federal",
+                "name": "United States",
+                "country_code": "US",
+                "level": "federal",
+                "adapter_name": "us_federal",
+                "active": True,
+            },
+        )
     if zerodb.get_row("elections", election_id) is None:
         zerodb.insert_row(
             "elections",
@@ -304,9 +300,7 @@ def candidacies_row(zerodb: ZeroDBClient, person_id: str) -> None:
 
 
 @given(
-    parsers.parse(
-        'a candidacies row is written directly with a dangling person_id "{person_id}"'
-    )
+    parsers.parse('a candidacies row is written directly with a dangling person_id "{person_id}"')
 )
 def dangling_candidacy(zerodb: ZeroDBClient, person_id: str) -> None:
     election_id, district_id = _election_and_district(zerodb)
@@ -329,13 +323,9 @@ def dangling_candidacy(zerodb: ZeroDBClient, person_id: str) -> None:
 
 
 @given(
-    parsers.parse(
-        'a promise "{promise_id}" with an approved mapping to roll call "{roll_call_id}"'
-    )
+    parsers.parse('a promise "{promise_id}" with an approved mapping to roll call "{roll_call_id}"')
 )
-def promise_with_approved_mapping(
-    zerodb: ZeroDBClient, promise_id: str, roll_call_id: str
-) -> None:
+def promise_with_approved_mapping(zerodb: ZeroDBClient, promise_id: str, roll_call_id: str) -> None:
     zerodb.insert_row(
         "promises",
         {
@@ -579,7 +569,7 @@ def report_has_no_violations(check_result: CheckReport) -> None:
 
 @then(
     parsers.parse(
-        'the reference integrity check reports a violation for member_votes row referencing '
+        "the reference integrity check reports a violation for member_votes row referencing "
         'roll_call_id "{roll_call_id}"'
     )
 )
@@ -592,7 +582,7 @@ def references_violation_member_votes(check_result: CheckReport, roll_call_id: s
 
 @then(
     parsers.parse(
-        'the reference integrity check reports a violation for candidacies row referencing '
+        "the reference integrity check reports a violation for candidacies row referencing "
         'person_id "{person_id}"'
     )
 )
@@ -604,8 +594,7 @@ def references_violation_candidacies(check_result: CheckReport, person_id: str) 
 
 @then(
     parsers.parse(
-        "the verdict roll-call mapping check reports a violation for verdict "
-        '"{verdict_id}"'
+        'the verdict roll-call mapping check reports a violation for verdict "{verdict_id}"'
     )
 )
 def mapping_violation_for_verdict_id(check_result: CheckReport, verdict_id: str) -> None:
@@ -665,9 +654,9 @@ def is_current_violation_positions(
     )
 )
 def drift_violation(check_result: CheckReport, row_id: str, field: str) -> None:
-    assert any(
-        v.row_id == row_id and field in v.detail for v in check_result.violations
-    ), check_result.violations
+    assert any(v.row_id == row_id and field in v.detail for v in check_result.violations), (
+        check_result.violations
+    )
 
 
 @then("the provenance coverage check reports a violation naming that row")

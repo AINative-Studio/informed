@@ -157,10 +157,7 @@ class CheckReport:
         return not self.violations
 
     def summary(self) -> str:
-        return (
-            f"{self.name}: scanned {self.scanned} row(s), "
-            f"{len(self.violations)} violation(s)"
-        )
+        return f"{self.name}: scanned {self.scanned} row(s), {len(self.violations)} violation(s)"
 
 
 def paged_rows(client: ZeroDBClient, table: str) -> list[dict[str, Any]]:
@@ -229,8 +226,7 @@ def check_references(client: ZeroDBClient) -> CheckReport:
                     table=Candidacy.table_name,
                     row_id=str(row.get("id")),
                     detail=(
-                        f"person_id {person_id!r} does not resolve to a "
-                        f"{Person.table_name} row"
+                        f"person_id {person_id!r} does not resolve to a {Person.table_name} row"
                     ),
                 )
             )
@@ -529,8 +525,7 @@ def check_provenance_coverage(client: ZeroDBClient) -> CheckReport:
                         table=table,
                         row_id=row_id,
                         detail=(
-                            f"carries source_url {source_url!r} with no "
-                            f"{PROVENANCE_TABLE} entry"
+                            f"carries source_url {source_url!r} with no {PROVENANCE_TABLE} entry"
                         ),
                     )
                 )

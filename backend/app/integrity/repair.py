@@ -122,9 +122,7 @@ class RepairResult:
         )
 
 
-def repair_member_votes_drift(
-    client: ZeroDBClient, *, dry_run: bool = False
-) -> RepairResult:
+def repair_member_votes_drift(client: ZeroDBClient, *, dry_run: bool = False) -> RepairResult:
     """Re-copy every drifted denormalized field on `member_votes`.
 
     Idempotent: a second run over the same data repairs nothing and reports
@@ -173,9 +171,7 @@ def repair_member_votes_drift(
         }
         if not dry_run:
             client.update_row(MemberVote.table_name, vote_id, patch)
-            logger.info(
-                "repaired drift on member_votes %s: %s", vote_id, sorted(drifted)
-            )
+            logger.info("repaired drift on member_votes %s: %s", vote_id, sorted(drifted))
         records.append(
             DriftRecord(
                 member_vote_id=vote_id,
