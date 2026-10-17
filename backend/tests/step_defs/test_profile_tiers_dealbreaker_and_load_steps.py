@@ -18,7 +18,8 @@ from fastapi.testclient import TestClient
 from pytest_bdd import given, parsers, scenarios, then, when
 
 from app.main import create_app
-from app.profiles.crypto import KEY_WRAP_TABLE, ProfileKeyring, ProfileRootKey
+from app.profiles import PROFILE_TABLES
+from app.profiles.crypto import ProfileKeyring, ProfileRootKey
 from app.profiles.methodology import TABLE_NAME as METHODOLOGY_TABLE
 from app.profiles.router import profile_service, zerodb_client_for_profiles
 from app.profiles.service import VoterProfileService
@@ -44,7 +45,11 @@ def zdb(transport: FakeZeroDBTransport) -> ZeroDBClient:
     client = ZeroDBClient(
         transport=transport, project_id="proj-test", backoff_base=0.0, sleep=lambda _: None
     )
-    for table in ("voter_profiles", KEY_WRAP_TABLE, METHODOLOGY_TABLE):
+    # `PROFILE_TABLES` rather than a hand-written list: it is the single
+    # sequence `app.bootstrap` and every profile fixture read, so a table added
+    # to the feature (story 14.2's `voter_consents`) cannot be forgotten here
+    # and surface as a live-only 404.
+    for table in (*PROFILE_TABLES, METHODOLOGY_TABLE):
         client.create_table(table, {"id": "string"})
     return client
 

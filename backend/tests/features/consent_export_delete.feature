@@ -81,12 +81,20 @@ Feature: Consent, anonymous mode, export and delete (stories 14.2, 14.3, 14.4)
     Then the save is refused with a 422 naming the consent version
     And no profile row is written for that voter
 
-  Scenario: Re-consenting appends rather than overwriting
+  Scenario: Re-consenting on a later day appends rather than overwriting
+    Given a synthetic tiered selection with 1 primary interest
+    When the voter submits the profile with consent given
+    And the voter submits the profile with consent given again a day later
+    Then two consent records exist for that voter
+    And both consent records are still readable
+    And the earlier consent record was not overwritten
+
+  Scenario: Two saves in the same second record one consent event, not two
     Given a synthetic tiered selection with 1 primary interest
     When the voter submits the profile with consent given
     And the voter submits the profile with consent given again
-    Then two consent records exist for that voter
-    And both consent records are still readable
+    Then exactly 1 consent record exists for that voter
+    And the profile is saved at version 2
 
   Scenario: Withdrawing consent by deleting the profile is itself recorded
     Given a synthetic tiered selection with 1 primary interest

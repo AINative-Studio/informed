@@ -24,7 +24,8 @@ def test_routes_are_only_the_ones_built_so_far(client: TestClient) -> None:
     `/v1/panel` review surface; story 12.2 adds the public `/v1/methodology`
     page and its changelog; story 15.1 adds the follow/unfollow endpoints;
     story 12.4 adds the public correction form and the reporter's status
-    lookup.
+    lookup; story 14.2 adds the published consent language and story 14.4 the
+    one-action export and delete.
 
     Replaces story 1.1's "health is the only route" assertion, whose own
     docstring named 1.5 as the story that would change it, and that story's
@@ -43,7 +44,18 @@ def test_routes_are_only_the_ones_built_so_far(client: TestClient) -> None:
         "/v1/topics/{topic_id}/stances",
         "/v1/profiles",
         "/v1/profiles/methodology",
+        # Story 14.2: the GDPR special-category consent wording and its
+        # version, published with the anonymous-mode alternative in the same
+        # payload so a client cannot render one without the other. Needs no
+        # identity — an anonymous voter reads it to decide whether to have an
+        # account at all.
+        "/v1/profiles/consent",
+        # `GET` loads (4.4) and `DELETE` permanently erases + shreds the data
+        # key (14.4). One path, two methods; the OpenAPI schema keys by path.
         "/v1/profiles/{user_id}",
+        # Story 14.4: one-action export of everything stored for one voter,
+        # decrypted for its owner, with the consent history travelling with it.
+        "/v1/profiles/{user_id}/export",
         # Story 15.1: follow/unfollow an incumbent, read-modify-write through
         # the same encrypted VoterProfileService every other profile change
         # uses — see app.profiles.router's module docstring on this endpoint.
