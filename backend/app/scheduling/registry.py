@@ -125,7 +125,7 @@ class JobRegistration:
         interval: how often this job is due, as a `timedelta`. The runner
             compares this against elapsed time since the last recorded
             success — not against the caller's own invocation cadence, which
-            is why a daily GitHub Actions trigger correctly serves a job
+            is why a 3-hourly GitHub Actions trigger correctly serves a job
             whose own `interval` is 7 days (it is simply reported SKIPPED on
             the 6 days out of 7 it is not due).
         run: the callable that does the job's actual work. Takes the

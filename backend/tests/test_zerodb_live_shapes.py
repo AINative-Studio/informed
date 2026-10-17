@@ -23,10 +23,12 @@ from typing import Any
 import pytest
 
 from app.zerodb import ZeroDBClient
-from app.zerodb.errors import ZeroDBRateLimitError
+from app.zerodb.errors import ZeroDBNotFoundError, ZeroDBRateLimitError
 from app.zerodb.models import (
     Event,
     GraphEdge,
+    MemoryPage,
+    MemoryRecord,
     Ontology,
     PresignedUrl,
     Row,
@@ -162,6 +164,72 @@ LIVE_EVENT: dict[str, Any] = {
     "published_at": "2026-10-15T22:51:10.681438Z",
 }
 
+#: Captured live during story 13.5 from `POST
+#: /projects/{id}/database/memory`. Three facts worth pinning, each of which
+#: shapes `ZeroDBClient.store_memory` and `app.agent_memory`:
+#:
+#:   * the probe request included `ttl_seconds: 86400` AND a top-level
+#:     `expires_at`. **Neither appears here.** The endpoint answered 200 and
+#:     dropped both, which is why `store_memory` takes no TTL parameter and
+#:     why retention is a sweep rather than a server-side promise.
+#:   * `memory_metadata` DOES round-trip verbatim, which is where
+#:     `app.agent_memory` keeps its own `expires_at` marker.
+#:   * `embedding` comes back as a long all-zeros vector for content stored
+#:     without one (truncated here). `MemoryRecord` does not model it, so
+#:     `extra="ignore"` has to drop it — this payload is what proves that.
+LIVE_MEMORY_RECORD: dict[str, Any] = {
+    "agent_id": None,
+    "session_id": "5ae00e47-3008-437c-ab37-5aae4b44d8c0",
+    "role": "user",
+    "content": "SYNTHETIC PROBE: uuid session id + ttl attempt",
+    "memory_metadata": {"probe": "13.5", "expires_at": "2026-10-18T00:00:00Z"},
+    "memory_id": "828091b7-ba66-44e1-96a5-f8d4b8e2848e",
+    "project_id": "00000000-0000-0000-0000-000000000000",
+    "embedding": [0.0] * 110,
+    "created_at": "2026-10-17T09:05:59.050155+00:00",
+}
+
+#: Captured live from `GET /projects/{id}/database/memory?session_id=...`.
+#: The list envelope is `{data, total, limit, offset, has_more}` — note
+#: `offset`, not the `skip` the request uses — and each item carries BOTH `id`
+#: and `memory_id` holding the same uuid. `MemoryPage` renames `data` to
+#: `memories` and `MemoryRecord` models only `memory_id`, deliberately: two
+#: names for one value is how a caller ends up comparing the wrong one.
+#:
+#: This also pins that the `session_id` filter works SERVER-SIDE on this
+#: endpoint — one row written under a fresh session uuid came back by exactly
+#: that filter — unlike `/rows`' filter, which matches nothing (datamodel.md's
+#: open question). No client-side fallback is needed or built here.
+LIVE_MEMORY_PAGE: dict[str, Any] = {
+    "data": [
+        {
+            "id": "828091b7-ba66-44e1-96a5-f8d4b8e2848e",
+            "memory_id": "828091b7-ba66-44e1-96a5-f8d4b8e2848e",
+            "content": "SYNTHETIC PROBE: uuid session id + ttl attempt",
+            "role": "user",
+            "session_id": "5ae00e47-3008-437c-ab37-5aae4b44d8c0",
+            "agent_id": None,
+            "memory_metadata": {"probe": "13.5", "expires_at": "2026-10-18T00:00:00Z"},
+            "created_at": "2026-10-17T09:05:59.050155+00:00",
+        }
+    ],
+    "total": 1,
+    "limit": 20,
+    "offset": 0,
+    "has_more": False,
+}
+
+#: Captured live during story 13.5: DELETE on a memory row that no longer
+#: exists answers **500**, not 404, with a 404 hiding inside the detail
+#: string. The only place in this API where the status code lies about what
+#: happened, and the reason `ZeroDBClient.delete_memory` passes a
+#: `reinterpret` hook — see that method's docstring. Reported to AINative.
+LIVE_MEMORY_DELETE_ALREADY_GONE: dict[str, Any] = {
+    "detail": "Failed to delete memory: 404: Memory not found",
+    "error_code": "INTERNAL_ERROR",
+    "next_action": "retry",
+}
+
 
 def test_a_live_table_payload_parses() -> None:
     table = Table.model_validate(LIVE_TABLE)
@@ -194,6 +262,61 @@ def test_a_live_traversal_reads_the_entity_id_out_of_label() -> None:
         "us-house:119-2:452",
     ]
     assert traversal.nodes[1].entity_type == "roll_call"
+
+
+def test_a_live_memory_record_carries_no_ttl_the_request_asked_for() -> None:
+    """The request sent `ttl_seconds` and `expires_at`; the response has neither.
+
+    This is the whole justification for story 13.5's sweep. If ZeroDB ever
+    starts honouring a TTL, this test is where that shows up — the payload
+    would gain a field, and the sweep could then be deleted in favour of it.
+    """
+    assert "ttl_seconds" not in LIVE_MEMORY_RECORD
+    assert "expires_at" not in LIVE_MEMORY_RECORD
+    assert "ttl" not in LIVE_MEMORY_RECORD
+
+    record = MemoryRecord.model_validate(LIVE_MEMORY_RECORD)
+    assert record.memory_id == "828091b7-ba66-44e1-96a5-f8d4b8e2848e"
+    assert record.session_id == "5ae00e47-3008-437c-ab37-5aae4b44d8c0"
+    # The metadata DID survive, which is where the sweep's marker lives.
+    assert record.memory_metadata["expires_at"] == "2026-10-18T00:00:00Z"
+    assert record.created_at == "2026-10-17T09:05:59.050155+00:00"
+
+
+def test_a_live_memory_record_drops_the_all_zeros_embedding() -> None:
+    """110 floats per turn through every list page is pure weight, and nothing
+    in Informed reads them. `extra="ignore"` has to drop them.
+    """
+    record = MemoryRecord.model_validate(LIVE_MEMORY_RECORD)
+    assert not hasattr(record, "embedding")
+
+
+def test_a_live_memory_page_renames_data_and_keeps_offset() -> None:
+    page = MemoryPage.model_validate(LIVE_MEMORY_PAGE)
+
+    assert len(page.memories) == 1
+    assert page.memories[0].memory_id == "828091b7-ba66-44e1-96a5-f8d4b8e2848e"
+    assert page.total == 1
+    # The response says `offset` where the request says `skip`.
+    assert page.offset == 0
+    assert page.has_more is False
+
+
+def test_a_memory_delete_500_that_means_404_becomes_not_found() -> None:
+    """The live "already gone" payload, end to end through the client.
+
+    Not retried: the correction happens inside `_request`'s retry loop, so a
+    row that will never come back costs one call rather than four against a
+    ~60 req/min ceiling.
+    """
+    fake = FakeZeroDBTransport()
+    client = ZeroDBClient(transport=fake, project_id="proj-test", sleep=lambda _: None)
+    fake.always_fail(status=500, body=LIVE_MEMORY_DELETE_ALREADY_GONE)
+
+    with pytest.raises(ZeroDBNotFoundError):
+        client.delete_memory(memory_id="828091b7-ba66-44e1-96a5-f8d4b8e2848e")
+
+    assert len(fake.calls) == 1
 
 
 def test_a_live_ontology_payload_parses() -> None:

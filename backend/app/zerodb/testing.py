@@ -67,6 +67,13 @@ class FakeZeroDBTransport:
     #: reaches a log record.
     API_KEY = "fake-api-key-never-logged"
 
+    #: The project id a test should build its client with when it needs to
+    #: assert on a request PATH (which embeds the project id). Named here so a
+    #: test spells `FakeZeroDBTransport.PROJECT_ID` rather than repeating a
+    #: literal that has to match the client's own; the earlier convention of a
+    #: bare "proj-test" literal still works and is untouched.
+    PROJECT_ID = "proj-test"
+
     calls: list[RecordedCall] = field(default_factory=list)
     tables: dict[str, dict[str, Any]] = field(default_factory=dict)
     rows: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
@@ -82,6 +89,11 @@ class FakeZeroDBTransport:
     events: list[dict[str, Any]] = field(default_factory=list)
     subscriptions: list[dict[str, Any]] = field(default_factory=list)
     ontology: dict[str, Any] = field(default_factory=dict)
+    #: Stored Q&A turns (story 13.5), newest last — the live endpoint returns
+    #: them in write order, which a session transcript depends on. A list
+    #: rather than a dict keyed by id precisely so that order is the fake's
+    #: own behaviour and not an accident of dict insertion.
+    memories: list[dict[str, Any]] = field(default_factory=list)
 
     _queued_failures: list[_Failure] = field(default_factory=list, repr=False)
     _standing_failure: _Failure | None = field(default=None, repr=False)
@@ -92,15 +104,23 @@ class FakeZeroDBTransport:
     # --- failure injection ------------------------------------------------
 
     def fail_next(
-        self, count: int, *, status: int | None = None, exception: BaseException | None = None
+        self,
+        count: int,
+        *,
+        status: int | None = None,
+        exception: BaseException | None = None,
+        body: dict[str, Any] | None = None,
     ) -> None:
         """Fail the next `count` requests, then behave normally.
 
         This is how "retries a transient failure then succeeds" is tested
-        without a real outage.
+        without a real outage. `body` serves a captured real error payload
+        instead of the synthetic one, exactly as `always_fail` does — needed
+        for the live 500-wrapping-404 the memory delete route answers (see
+        `ZeroDBClient.delete_memory`).
         """
         for _ in range(count):
-            self._queued_failures.append(_Failure(status=status, exception=exception))
+            self._queued_failures.append(_Failure(status=status, exception=exception, body=body))
 
     def always_fail(
         self,
@@ -233,6 +253,13 @@ class FakeZeroDBTransport:
             return self._route_files(method, segments, body)
         if "events" in segments:
             return self._route_events(method, segments, body, params)
+        if "memory" in segments and "database" in segments:
+            # `.../database/memory[/{memory_id}]` — story 13.5. Checked AFTER
+            # the graph branch above and scoped to `database`, because the graph
+            # routes live under `/public/memory/v2/graph/...` and so also carry
+            # a "memory" segment; a bare `"memory" in segments` here would
+            # swallow every graph call.
+            return self._route_memory(method, segments, body, params)
 
         return _ok({})
 
@@ -764,6 +791,99 @@ class FakeZeroDBTransport:
         matched = [e for e in self.events if topic is None or e["topic"] == topic]
         # The live API returns a bare list here, not an envelope.
         return _ok(matched)
+
+    # memory ---------------------------------------------------------------
+
+    def _route_memory(
+        self,
+        method: str,
+        segments: list[str],
+        body: dict[str, Any],
+        params: dict[str, Any],
+    ) -> ZeroDBResponse:
+        """`.../database/memory[/{memory_id}]`, story 13.5.
+
+        Mirrors the live shapes measured during that story, including the two
+        that matter most for what the client is allowed to claim:
+
+          * **no TTL is honoured.** A `ttl_seconds` or top-level `expires_at`
+            in the request is accepted and dropped, exactly as the live
+            endpoint does, so a client that started sending one would see its
+            tests keep passing and its retention promise quietly stop being
+            enforced. `memory_metadata`, by contrast, round-trips verbatim.
+          * **`session_id` filtering works server-side here**, unlike
+            `/rows`' filter (which `break_server_side_filter()` reproduces as
+            matching nothing). Modelled faithfully so `app.agent_memory` is
+            not built against a filter it would have to work around.
+
+        `created_at` in the request body is honoured so a test can age a turn
+        without sleeping; the live endpoint ignores it and stamps its own.
+        """
+        index = segments.index("memory")
+        tail = segments[index + 1 :]
+
+        if tail:
+            memory_id = tail[0]
+            existing = next(
+                (item for item in self.memories if item["memory_id"] == memory_id), None
+            )
+            if existing is None:
+                return _not_found(f"Memory record '{memory_id}' not found")
+            if method == "DELETE":
+                self.memories.remove(existing)
+                return _ok({"message": "Memory deleted successfully"})
+            return _ok(existing)
+
+        if method == "POST":
+            record = {
+                "memory_id": str(uuid.uuid4()),
+                "session_id": body.get("session_id"),
+                "agent_id": body.get("agent_id"),
+                "role": body.get("role"),
+                "content": body["content"],
+                "memory_metadata": body.get("memory_metadata"),
+                "created_at": body.get("created_at") or "2026-10-17T12:00:00.000000+00:00",
+                "project_id": self.PROJECT_ID,
+                # The live response carries a long all-zeros embedding for
+                # content stored without one; included so the client's
+                # `extra="ignore"` drop of it is exercised rather than assumed.
+                "embedding": [0.0] * 8,
+            }
+            self.memories.append(record)
+            return _ok(record)
+
+        session_id = params.get("session_id")
+        role = params.get("role")
+        matched = [
+            item
+            for item in self.memories
+            if (session_id is None or item.get("session_id") == session_id)
+            and (role is None or item.get("role") == role)
+        ]
+        skip = int(params.get("skip") or 0)
+        limit = int(params.get("limit") or 20)
+        window = matched[skip : skip + limit]
+        return _ok(
+            {
+                "data": [
+                    {
+                        "id": item["memory_id"],
+                        "memory_id": item["memory_id"],
+                        "content": item["content"],
+                        "role": item.get("role"),
+                        "session_id": item.get("session_id"),
+                        "agent_id": item.get("agent_id"),
+                        "memory_metadata": item.get("memory_metadata"),
+                        "created_at": item.get("created_at"),
+                    }
+                    for item in window
+                ],
+                "total": len(matched),
+                "limit": limit,
+                "offset": skip,
+                "has_more": skip + len(window) < len(matched),
+            }
+        )
 
 
 _ERROR_CODES = {

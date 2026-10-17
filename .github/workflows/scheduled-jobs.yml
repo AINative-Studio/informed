@@ -1,14 +1,15 @@
 name: Scheduled jobs
 
-# Epic 16 infrastructure: the daily trigger for `scripts/run_scheduled_jobs.py`,
+# Epic 16 infrastructure: the periodic trigger (every 3 hours, see `on:` below)
+# for `scripts/run_scheduled_jobs.py`,
 # which is itself job-agnostic — it knows every registered job's own cadence
-# (daily, weekly, hourly) via `app.scheduling.jobs.default_jobs`, and skips
-# whatever is not yet due. Running this workflow daily is enough to serve
-# every job registered today, including the weekly and (future, story 5.6)
-# hourly ones, because "due" is computed from the stored last-run timestamp,
-# not from this workflow's own cadence — see `app.scheduling.registry`'s
-# module docstring. A future job needing sub-daily cadence (the hourly House
-# roll-call sync once story 5.6 ships) should either tighten this schedule or
+# (6-hourly, daily, weekly, hourly) via `app.scheduling.jobs.default_jobs`,
+# and skips whatever is not yet due. Running this workflow every 3 hours
+# reaches every job registered today well within its own interval, because
+# "due" is computed from the stored last-run timestamp, not from this
+# workflow's own cadence — see `app.scheduling.registry`'s module docstring.
+# A future job needing a cadence tighter than 3 hours (the hourly House
+# roll-call sync once story 5.6 ships) should tighten this schedule again or
 # add a second trigger; the runner itself needs no change either way.
 #
 # *** SECRETS REQUIRED BEFORE THIS CAN RUN FOR REAL ***
@@ -42,11 +43,18 @@ name: Scheduled jobs
 
 on:
   schedule:
-    # 06:00 UTC daily. Comfortably serves the daily sweep, the weekly
-    # candidacies refresh and (once credentialed) the hourly roll-call sync
-    # at least once within its own interval; see the top-of-file note on why
-    # this workflow's own cadence does not need to match any one job's.
-    - cron: '0 6 * * *'
+    # Every 3 hours. Tightened from 06:00 daily by story 13.5, which is the
+    # first registered job whose own interval is sub-daily AND whose lateness
+    # has a privacy consequence: `sweep_qa_session_memory` runs every 6 hours
+    # to keep datamodel.md's "Q&A memory | 1 day" true of the database, and a
+    # daily trigger would have let it fire only once per day — stretching a
+    # 1-day retention window toward two. Firing at twice the tightest job's
+    # interval means every job is reached well within its own, and the runner
+    # (not this trigger) still decides what is actually due, so the other five
+    # jobs are simply reported SKIPPED on the ticks they are not due. The
+    # top-of-file note on cadence independence still holds; this is the
+    # "tighten this schedule" path it anticipated.
+    - cron: '0 */3 * * *'
   workflow_dispatch: {}
 
 permissions:
