@@ -3,6 +3,7 @@
 Routes so far:
 
     GET /health                       — liveness and readiness (story 1.1)
+    GET /metrics                      — Prometheus-format request and ingest-lag metrics (16.5)
     GET /v1/ballot                    — districts and sitting officeholders for an address (1.5)
     GET /v1/topics                    — the issue taxonomy as a tree (4.1)
     GET /v1/topics/{id}/stances       — stance cards for one subtopic, randomized (4.1)
@@ -28,10 +29,12 @@ for why: a test overriding the ballot router's client must not have to know
 every other router shares it.
 """
 
+import logging
 import os
 from collections.abc import Callable
+from typing import Annotated
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -40,11 +43,46 @@ from app.ballot import router as ballot_router
 from app.ballot.router import zerodb_client
 from app.corrections import router as corrections_router
 from app.methodology import router as methodology_router
+from app.observability import MetricsMiddleware, MetricsRegistry, render_prometheus_text
+from app.observability.ingest_lag import compute_ingest_lag, render_ingest_lag_prometheus_text
 from app.panel_review import router as panel_review_router
 from app.profiles import router as profiles_router
 from app.ratelimit import RateLimitMiddleware
+from app.scheduling.jobs import default_jobs
 from app.stances import router as stances_router
 from app.topics import router as topics_router
+from app.zerodb.client import ZeroDBClient
+
+logger = logging.getLogger(__name__)
+
+
+def zerodb_client_for_metrics() -> ZeroDBClient | None:
+    """The ZeroDB client `/metrics` reads ingest lag from, or `None`.
+
+    A real `Depends`, not a bare `ZeroDBClient.from_env()` call inside the
+    handler, for the same reason every other router in this file has its own
+    `zerodb_client_for_*`: a test overriding this one dependency should not
+    need live `ZERODB_*` credentials, and should not have to know any other
+    router shares (or doesn't share) a client. See `app.topics.router`'s
+    docstring for the fuller reasoning this pattern follows.
+
+    Returns `None` rather than raising when `ZERODB_*` is not configured
+    (`from_env()`'s own `pydantic.ValidationError`). That matters here
+    specifically because a FastAPI dependency's exception is raised while
+    FastAPI resolves it, BEFORE the `/metrics` handler's own body — and
+    therefore before that handler's try/except around ingest lag ever runs.
+    A deployment that has not set up ZeroDB yet must still be able to scrape
+    request-level metrics (`http_requests_total`,
+    `http_request_duration_seconds`), which need no ZeroDB client at all; the
+    handler checks for `None` and simply skips the ingest-lag gauges rather
+    than failing the whole scrape over a feature the base metrics do not need.
+    """
+    try:
+        return ZeroDBClient.from_env()
+    except Exception as exc:  # noqa: BLE001 - config/validation, not a ZeroDB call
+        logger.warning("metrics: no ZeroDB client available for ingest lag: %s", exc)
+        return None
+
 
 SERVICE_NAME = "informed-api"
 
@@ -119,6 +157,13 @@ def create_app(
         description="Interest-aligned voter intelligence. Evidence over opinion.",
     )
 
+    # One registry per app instance, not a module-level singleton: a test
+    # that builds several apps (the whole test suite does, one per TestClient)
+    # must not have one app's requests show up in another's /metrics, and a
+    # module-level dict would leak exactly that way across tests.
+    metrics_registry = MetricsRegistry()
+    app.state.metrics_registry = metrics_registry
+
     # --- middleware order matters here, in one specific way ---------------
     #
     # Starlette applies `add_middleware` in reverse, so the LAST call is the
@@ -163,10 +208,48 @@ def create_app(
         ],
     )
 
+    # Added last, so Starlette's reverse-order application (see above) makes
+    # this the OUTERMOST layer of all: it times and counts a request even if
+    # the rate limiter refuses it or a CORS preflight short-circuits it. An
+    # operator watching error rate needs refusals represented too — see
+    # `app.observability.middleware.MetricsMiddleware`'s own docstring.
+    app.add_middleware(MetricsMiddleware, registry=metrics_registry)
+
     @app.get("/health", response_model=HealthResponse, tags=["ops"])
     def health() -> HealthResponse:
         """Liveness and readiness probe for CI and the deploy pipeline."""
         return HealthResponse(status="ok", service=SERVICE_NAME, version=__version__)
+
+    @app.get("/metrics", tags=["ops"])
+    def metrics(
+        client: Annotated[ZeroDBClient | None, Depends(zerodb_client_for_metrics)],
+    ) -> Response:
+        """Prometheus text-exposition metrics (story 16.5).
+
+        Two series always present: `http_requests_total` and
+        `http_request_duration_seconds`, from this app instance's own
+        `MetricsRegistry` (reset per process — see that module's docstring
+        for why no shared store exists yet). Plus, best-effort, per-job
+        ingest-lag gauges computed live against `scheduled_jobs`.
+
+        "Best-effort" because a scrape must not fail just because ZeroDB is
+        unreachable or unconfigured in this environment: `client` is `None`
+        when `zerodb_client_for_metrics` could not build one at all (no
+        `ZERODB_*` configured), and any `ZeroDBError` the ingest-lag read
+        itself raises (a transient outage, a missing table) is caught here —
+        either way, the request-metrics half of the response is still
+        returned, rather than turning a ZeroDB hiccup or a missing credential
+        into a 500 that makes the scraper record THIS endpoint's own
+        unavailability instead of what it came to read.
+        """
+        body = render_prometheus_text(metrics_registry)
+        if client is not None:
+            try:
+                reports = compute_ingest_lag(client, [job.name for job in default_jobs()])
+                body += render_ingest_lag_prometheus_text(reports)
+            except Exception as exc:  # noqa: BLE001 - a scrape must never 500 on this half
+                logger.warning("metrics: could not compute ingest lag: %s", exc)
+        return Response(content=body, media_type="text/plain; version=0.0.4; charset=utf-8")
 
     app.include_router(ballot_router)
     app.include_router(topics_router)
@@ -188,4 +271,5 @@ __all__ = [
     "app",
     "create_app",
     "zerodb_client",
+    "zerodb_client_for_metrics",
 ]
