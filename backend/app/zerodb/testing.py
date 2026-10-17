@@ -199,10 +199,11 @@ class FakeZeroDBTransport:
                 params=params,
                 headers={
                     "Authorization": f"Bearer {self.API_KEY}",
-                    # httpx sets the boundary itself for a multipart body, so
-                    # the real transport drops its default JSON Content-Type
-                    # for exactly these requests; the fake records the same.
-                    **({} if multipart else {"Content-Type": "application/json"}),
+                    # httpx derives this from the body, which is why the real
+                    # transport sets no session default: an `application/json`
+                    # default silently replaces the multipart header and its
+                    # boundary. The fake records what httpx would send.
+                    "Content-Type": ("multipart/form-data" if multipart else "application/json"),
                 },
                 files=files,
                 data=data,

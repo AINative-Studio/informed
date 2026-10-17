@@ -59,6 +59,18 @@ Feature: Archive campaign sites (story 9.1)
     When I archive the sample campaign site for that candidacy again
     Then no new file is uploaded by the second capture
 
+  # A re-run must MEND a capture whose content was never stored, not treat the
+  # surviving row as proof the archive is intact. Every capture made before the
+  # file-upload retrievability fix is in exactly this state.
+
+  Scenario: Re-archiving a capture whose stored content is missing repairs it
+    Given I have already archived the sample campaign site for that candidacy once
+    And that capture's archived content has gone missing from storage
+    When I archive the sample campaign site for that candidacy again
+    Then the files are re-uploaded
+    And downloading the archived HTML returns the captured page's exact bytes
+    And exactly 1 promise_sources row exists for that candidacy
+
   Scenario: A genuinely changed site produces a second, distinct promise_sources row
     Given I have already archived the sample campaign site for that candidacy once
     When I archive a changed version of the campaign site for that candidacy

@@ -102,6 +102,14 @@ class HttpxZeroDBTransport:
     The bearer token is held in the httpx client's default headers rather than
     passed per call, so no client method handles the credential and it cannot
     reach a log line through a request argument.
+
+    `Content-Type` is deliberately NOT a session default and is set per
+    request instead. A session-level `application/json` default silently
+    overrides the `multipart/form-data; boundary=...` header httpx generates
+    for a file upload, and ZeroDB then rejects the body as a malformed JSON
+    payload (`422 Field required`) — measured, not theorised, while fixing
+    `ZeroDBClient.upload_file`. Setting it per request means the one request
+    shape that must not carry it cannot inherit it by accident.
     """
 
     def __init__(
@@ -119,7 +127,6 @@ class HttpxZeroDBTransport:
             timeout=timeout_seconds,
             headers={
                 "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
                 "User-Agent": USER_AGENT,
             },
         )
@@ -134,14 +141,12 @@ class HttpxZeroDBTransport:
         files: dict[str, MultipartFile] | None = None,
         data: dict[str, str] | None = None,
     ) -> ZeroDBResponse:
-        headers: dict[str, str] | None = None
-        if files is not None or data is not None:
-            # The client's default Content-Type is application/json; httpx must
-            # be left to set the multipart boundary itself, so the default is
-            # dropped for this one request rather than for the whole session.
-            headers = {"Content-Type": ""}
+        # httpx sets `application/json` itself for a `json=` body and the
+        # multipart header (with its chosen boundary) for a `files=`/`data=`
+        # one, so nothing is set here. Any value would replace the multipart
+        # header and break the upload — see this class's docstring.
         response = self._client.request(
-            method, path, json=json, params=params, files=files, data=data, headers=headers
+            method, path, json=json, params=params, files=files, data=data
         )
         try:
             body: Any | None = response.json()

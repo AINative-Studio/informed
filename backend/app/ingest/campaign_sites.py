@@ -201,6 +201,7 @@ from app.repositories import Repository
 from app.repositories.models import PromiseSource
 from app.repositories.provenance import utc_now_iso, write_provenance
 from app.zerodb.client import ZeroDBClient
+from app.zerodb.errors import ZeroDBError
 
 logger = logging.getLogger(__name__)
 
@@ -577,12 +578,13 @@ class CampaignSiteLoader:
         source_id = f"src:{html_sha256}"
 
         existing = self._sources.get(source_id)
-        if existing is not None:
-            # Idempotent re-run: the same content was already captured and
-            # stored under this exact id. Re-reading the stored row's own
-            # file ids is correct rather than re-uploading, because a
-            # content-addressed id guarantees the stored files are the same
-            # bytes this fetch just produced.
+        if existing is not None and self._archive_is_retrievable(existing, html_sha256):
+            # Idempotent re-run: the same content was already captured, stored
+            # under this exact id, and — checked, not assumed — readable back.
+            # Re-reading the stored row's own file ids is then correct rather
+            # than re-uploading, because the content-addressed id plus a
+            # verified hash mean the stored object is the bytes this fetch just
+            # produced.
             logger.info(
                 "campaign_sites: %s already captured for %s (%s); no new files uploaded",
                 source_id,
@@ -600,6 +602,21 @@ class CampaignSiteLoader:
                 captured_at=existing.captured_at,
                 is_new_capture=False,
                 wayback=WaybackOutcome(ok=False, detail="not re-submitted on a no-op re-run"),
+            )
+
+        if existing is not None:
+            # The row is here but its archive is not readable, so this re-run
+            # is a REPAIR: fall through and re-upload the files. This is the
+            # state every capture made before the file-upload retrievability
+            # fix is in — a `promise_sources` row and file metadata with no
+            # stored object behind either — and re-running this loader is how
+            # such a capture is mended. The row's id is unchanged (same bytes,
+            # same sha256), so the repair is an upsert, not a second capture.
+            logger.warning(
+                "campaign_sites: %s exists for %s but its archive is not "
+                "retrievable; re-uploading the captured files",
+                source_id,
+                candidacy_id,
             )
 
         html_bytes = page.html.encode("utf-8")
@@ -681,6 +698,44 @@ class CampaignSiteLoader:
             is_new_capture=True,
             wayback=wayback,
         )
+
+    def _archive_is_retrievable(self, existing: PromiseSource, html_sha256: str) -> bool:
+        """Can the already-stored archive actually be read back, and is it right?
+
+        An existing `promise_sources` row used to be taken as proof that its
+        archive was intact, on the reasoning that a content-addressed id
+        guarantees the stored files are the same bytes. That reasoning has a
+        hole: it assumes bytes were stored at all. They were not, for every
+        capture made before `ZeroDBClient.upload_file` was fixed to post the
+        file body — so re-running this loader over those captures hit the
+        no-op branch and left them broken, which is the opposite of what a
+        re-run is for.
+
+        So the claim is checked rather than inferred. A missing archive, an
+        unreadable one, or one whose bytes no longer hash to the capture is
+        treated as not retrievable, and `capture` re-uploads.
+        """
+        if not existing.archived_file_id:
+            return False
+        try:
+            archived = self._client.download_file(file_id=existing.archived_file_id)
+        except ZeroDBError as exc:
+            logger.info(
+                "campaign_sites: archive %s is not readable (%s)",
+                existing.archived_file_id,
+                exc,
+            )
+            return False
+        actual = sha256_hex(archived)
+        if actual != html_sha256:
+            logger.warning(
+                "campaign_sites: archive %s hashes to %s, not the captured %s",
+                existing.archived_file_id,
+                actual,
+                html_sha256,
+            )
+            return False
+        return True
 
 
 def _default_wayback_submitter(url: str) -> WaybackOutcome:
