@@ -1,4 +1,4 @@
-"""Nightly data-integrity checks and drift repair (stories 16.2, 16.4).
+"""Nightly data-integrity checks and drift repair (stories 16.2, 16.4, 6.1).
 
 datamodel.md's "Integrity checks" section names five checks to run nightly
 against production. This package is those five, plus the repair mechanism for
@@ -8,11 +8,18 @@ than detection.
 See `app.integrity.checks` for the five check functions and
 `app.integrity.repair` for the drift repair. `app.scheduling.jobs` registers
 both as nightly scheduled jobs.
+
+Story 6.1 widened check 3 ("exactly one `is_current` row per key") to a third
+table, `methodology_versions`, whose key is the whole table rather than a field
+on the row: there is one methodology in force for the application. That is its
+acceptance criterion verbatim, which is why it lives in the existing check
+rather than in a fourth one — see `check_current_uniqueness`.
 """
 
 from app.integrity.checks import (
     CheckReport,
     Violation,
+    check_current_uniqueness,
     check_current_verdict_uniqueness,
     check_member_votes_drift,
     check_provenance_coverage,
@@ -27,6 +34,7 @@ __all__ = [
     "DriftRecord",
     "RepairResult",
     "Violation",
+    "check_current_uniqueness",
     "check_current_verdict_uniqueness",
     "check_member_votes_drift",
     "check_provenance_coverage",

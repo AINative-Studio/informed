@@ -1,4 +1,4 @@
-"""The public methodology page and its changelog (story 12.2).
+"""The methodology page, its changelog, and publishing a version (12.2, 6.1).
 
 prd.md: "Methodology page and changelog; every verdict links to the
 methodology version that produced it."
@@ -7,6 +7,7 @@ Module map:
     models.py  — the published wire shapes (12.2)
     service.py — reads `methodology_versions`, superseded rows included (12.2)
     router.py  — `GET /v1/methodology[/versions|/{version}]`, public (12.2)
+    publish.py — writes a new version and emits `methodology.published` (6.1)
 
 Distinct from `app.profiles.methodology` (story 4.2), which reads the same
 table for an internal purpose: supplying today's tier weights to the profile
@@ -21,6 +22,14 @@ from app.methodology.models import (
     PublishedMethodology,
     version_path,
 )
+from app.methodology.publish import (
+    DEFAULT_EVIDENCE_BLEND,
+    DEFAULT_VOTE_TYPE_WEIGHTS,
+    METHODOLOGY_PUBLISHED_TOPIC,
+    MethodologyPublisher,
+    MethodologyPublishError,
+    default_weights,
+)
 from app.methodology.router import (
     public_methodology_service,
     router,
@@ -29,9 +38,15 @@ from app.methodology.router import (
 from app.methodology.service import PublicMethodologyService
 
 __all__ = [
+    "DEFAULT_EVIDENCE_BLEND",
+    "DEFAULT_VOTE_TYPE_WEIGHTS",
+    "METHODOLOGY_PUBLISHED_TOPIC",
+    "MethodologyPublishError",
+    "MethodologyPublisher",
     "MethodologyVersionsResponse",
     "PublicMethodologyService",
     "PublishedMethodology",
+    "default_weights",
     "public_methodology_service",
     "router",
     "version_path",

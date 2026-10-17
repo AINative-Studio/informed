@@ -89,6 +89,7 @@ import hashlib
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.profiles.methodology import TABLE_NAME as METHODOLOGY_TABLE_NAME
 from app.repositories.models import (
     Candidacy,
     CandidatePosition,
@@ -153,6 +154,11 @@ ARCHIVE_BEARING_TABLES: tuple[str, ...] = (PromiseSource.table_name,)
 #: `promise_sources` ids are `src:<sha256 of the captured bytes>`, so the id
 #: itself is the integrity claim check 6 verifies the archive against.
 CONTENT_ADDRESSED_ID_PREFIX = "src:"
+
+#: Story 6.1's addition to check 3. Spelled as a module constant and imported
+#: from story 4.2's module so the check and the publisher cannot disagree about
+#: which table holds the methodology in force.
+METHODOLOGY_VERSIONS_TABLE = METHODOLOGY_TABLE_NAME
 
 
 @dataclass(frozen=True)
@@ -402,15 +408,60 @@ def _current_uniqueness_violations(
     return violations
 
 
-def check_current_verdict_uniqueness(client: ZeroDBClient) -> CheckReport:
+def _global_current_uniqueness_violations(
+    rows: list[dict[str, Any]], *, table: str
+) -> list[Violation]:
+    """The same check for a table with ONE current row globally (story 6.1).
+
+    `_current_uniqueness_violations` groups by a version key because a verdict
+    is current *per promise* and a position is current *per (person, stance)*.
+    `methodology_versions` has no such key: there is one methodology in force
+    for the whole application, so the group is the table itself.
+
+    An empty table is not a violation. A project that has published no
+    methodology yet has nothing to be wrong about — and story 4.2's
+    `MethodologyVersionService` seeds a row the first time anything reads one,
+    so "empty" is a pre-first-read state rather than a broken one. Reporting it
+    would make the nightly check fail on a freshly bootstrapped environment,
+    which is the kind of false alarm that teaches people to ignore the report.
+    """
+    if not rows:
+        return []
+    current = [row for row in rows if row.get("is_current") is True]
+    if len(current) == 1:
+        return []
+    return [
+        Violation(
+            table=table,
+            row_id=table,
+            detail=(
+                f"{len(current)} row(s) marked is_current across the whole {table} "
+                f"table, expected exactly 1 — there is one methodology in force"
+            ),
+        )
+    ]
+
+
+def check_current_uniqueness(client: ZeroDBClient) -> CheckReport:
     """datamodel.md check 3: exactly one `is_current` row per key.
 
-    Covers both append-only tables the check names: `verdicts` (keyed by
-    `promise_id`) and `candidate_positions` (keyed by `person_id, stance_id`).
-    One function covering both, named for the check as a whole rather than
-    either table alone — `app.scheduling.jobs` and the feature file both treat
+    Covers the two append-only tables the check names — `verdicts` (keyed by
+    `promise_id`) and `candidate_positions` (keyed by `person_id, stance_id`)
+    — plus `methodology_versions`, added by story 6.1, whose key is the whole
+    table rather than a field on the row.
+
+    One function covering all three, named for the check as a whole rather
+    than any one table — `app.scheduling.jobs` and the feature file both treat
     this as a single check, matching how datamodel.md states it as a single
     bullet.
+
+    Why `methodology_versions` belongs here rather than in a check of its own:
+    story 6.1's acceptance criterion ("exactly one current version exists") is
+    *verbatim* this check applied to one more table, and the failure modes are
+    identical — a torn two-request supersede, or a direct write that bypassed
+    `MethodologyPublisher`. A separate check would mean two places to look for
+    the same class of bug, and the nightly job would report the same finding
+    under two names.
     """
     violations: list[Violation] = []
 
@@ -430,11 +481,25 @@ def check_current_verdict_uniqueness(client: ZeroDBClient) -> CheckReport:
         )
     )
 
+    methodologies = paged_rows(client, METHODOLOGY_VERSIONS_TABLE)
+    violations.extend(
+        _global_current_uniqueness_violations(methodologies, table=METHODOLOGY_VERSIONS_TABLE)
+    )
+
     return CheckReport(
         name="is_current_uniqueness",
-        scanned=len(verdicts) + len(positions),
+        scanned=len(verdicts) + len(positions) + len(methodologies),
         violations=tuple(violations),
     )
+
+
+#: Story 16.2 named this function for `verdicts` alone; story 6.1 widened it to
+#: a third table and renamed it to match. The old name is kept as an alias
+#: rather than updated at every call site, because the check's identity (its
+#: reported `name`, `"is_current_uniqueness"`) never changed and a rename
+#: rippling through the scheduled job, the live verification script and two
+#: test modules would be churn with no reader benefit.
+check_current_verdict_uniqueness = check_current_uniqueness
 
 
 # ===========================================================================
@@ -717,7 +782,7 @@ def _expected_sha256(
 ALL_CHECKS = (
     check_references,
     check_verdict_roll_call_mapping,
-    check_current_verdict_uniqueness,
+    check_current_uniqueness,
     check_member_votes_drift,
     check_provenance_coverage,
     check_archive_retrievability,
@@ -758,11 +823,13 @@ def run_all_checks(client: ZeroDBClient) -> CombinedReport:
 __all__ = [
     "ALL_CHECKS",
     "DENORMALIZED_MEMBER_VOTE_FIELDS",
+    "METHODOLOGY_VERSIONS_TABLE",
     "PROMISES_TABLE",
     "VERDICT_VALUES_REQUIRING_MAPPING",
     "CheckReport",
     "CombinedReport",
     "Violation",
+    "check_current_uniqueness",
     "check_current_verdict_uniqueness",
     "check_member_votes_drift",
     "check_provenance_coverage",

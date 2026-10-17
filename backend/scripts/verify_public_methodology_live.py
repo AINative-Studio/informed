@@ -93,7 +93,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app.main import create_app  # noqa: E402
-from app.methodology.models import VERSION_ID_PATTERN  # noqa: E402
+from app.methodology.models import DOCUMENTED_WEIGHT_GROUPS, VERSION_ID_PATTERN  # noqa: E402
 from app.methodology.router import zerodb_client_for_methodology  # noqa: E402
 from app.methodology.service import PublicMethodologyService  # noqa: E402
 from app.profiles.methodology import (  # noqa: E402
@@ -337,13 +337,25 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0915 - a linear script of checks r
             logger.info(
                 "        weights_not_yet_published=%s", body.get("weights_not_yet_published")
             )
+            # Updated by story 6.1, which is the event this check's own failure
+            # message anticipated ("if epic 6 has since published one of these,
+            # this check is the thing to update"). 6.1 published `2026.2` with
+            # all three documented groups, so the live page now correctly
+            # reports NONE as unpublished.
+            #
+            # Re-pointed at the real invariant rather than deleted: what
+            # matters to 12.2 is that the page never claims a weight group it
+            # does not carry, and never silently omits one it does. That holds
+            # whether a version carries one group or three, so this check now
+            # asserts the relationship between the two fields instead of a
+            # snapshot of which groups happened to exist in October 2026.
+            reported_unpublished = set(body.get("weights_not_yet_published") or [])
+            carried = {group for group, weights in (body.get("weights") or {}).items() if weights}
             check(
-                "the HTTP document reports evidence_blend and vote_types as not yet "
-                "published (epic 6's scorer does not exist)",
-                set(body.get("weights_not_yet_published") or [])
-                == {"evidence_blend", "vote_types"},
-                f"reported {body.get('weights_not_yet_published')!r} — if epic 6 has "
-                "since published one of these, this check is the thing to update",
+                "the HTTP document's weights_not_yet_published is exactly the documented "
+                "groups the live version does not carry",
+                reported_unpublished == set(DOCUMENTED_WEIGHT_GROUPS) - carried,
+                f"reported {sorted(reported_unpublished)}, carries {sorted(carried)}",
             )
 
             versions_response = http.get("/v1/methodology/versions")
