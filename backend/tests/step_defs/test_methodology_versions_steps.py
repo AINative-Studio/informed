@@ -14,6 +14,7 @@ single most important thing in this story to not prove for the wrong reason.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from typing import Any
 
@@ -21,7 +22,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pytest_bdd import given, parsers, scenarios, then, when
 
-from app.bootstrap import TABLE_SCHEMAS
+from app.bootstrap import TABLE_SCHEMAS, Bootstrapper
 from app.integrity.checks import check_current_uniqueness, run_all_checks
 from app.main import create_app
 from app.methodology.models import DOCUMENTED_WEIGHT_GROUPS
@@ -58,10 +59,20 @@ def fake() -> FakeZeroDBTransport:
 
 @pytest.fixture
 def zerodb(fake: FakeZeroDBTransport) -> ZeroDBClient:
+    """A fake-backed client with the whole schema bootstrapped.
+
+    The full `Bootstrapper` rather than just `methodology_versions`, the way
+    story 16.2's own steps do it: this story's integrity scenarios run
+    `run_all_checks`, and every other check reads a table of its own. Creating
+    only this story's table would make those checks raise "table not found"
+    and the scenario would fail for a reason that has nothing to do with
+    methodology versions.
+    """
     client = ZeroDBClient(
         transport=fake, project_id="proj-test", backoff_base=0.0, sleep=lambda _: None
     )
-    client.create_table(TABLE_NAME, TABLE_SCHEMAS[TABLE_NAME])
+    Bootstrapper(client, pace=lambda: None).run()
+    assert TABLE_NAME in TABLE_SCHEMAS
     return client
 
 
@@ -155,17 +166,13 @@ def _none_current(zerodb: ZeroDBClient) -> None:
 
 
 @when(parsers.parse('the methodology owner publishes version "{version}"'))
-def _publish(
-    publisher: MethodologyPublisher, seen: dict[str, Any], version: str
-) -> None:
+def _publish(publisher: MethodologyPublisher, seen: dict[str, Any], version: str) -> None:
     seen["published"] = publisher.publish_new_version(version)
 
 
 @when(parsers.parse('the methodology owner tries to publish version "{version}" again'))
 @when(parsers.parse('the methodology owner tries to publish version "{version}"'))
-def _try_publish(
-    publisher: MethodologyPublisher, seen: dict[str, Any], version: str
-) -> None:
+def _try_publish(publisher: MethodologyPublisher, seen: dict[str, Any], version: str) -> None:
     seen["events_before"] = len(_events(publisher.client))
     try:
         seen["published"] = publisher.publish_new_version(version)
@@ -221,9 +228,7 @@ def _nothing_unpublished(zerodb: ZeroDBClient) -> None:
         "and statements {statements:g}"
     )
 )
-def _blend_is(
-    seen: dict[str, Any], votes: float, sponsorships: float, statements: float
-) -> None:
+def _blend_is(seen: dict[str, Any], votes: float, sponsorships: float, statements: float) -> None:
     blend = seen["published"].weights["evidence_blend"]
     assert blend == {
         "votes": votes,
@@ -315,9 +320,12 @@ def _event_is_clean(zerodb: ZeroDBClient) -> None:
     (event,) = _events(zerodb)
     # datamodel.md's payload for this event is `version` and nothing else.
     assert set(event.event_payload) == {"version"}, event.event_payload
-    serialized = event.model_dump_json().lower()
+    # Scanned over the PAYLOAD, not the whole envelope: ZeroDB's own wrapper
+    # field is literally named `event_payload`, so scanning the envelope would
+    # match the word "payload" every time and prove nothing about the contents.
+    serialized = json.dumps(event.event_payload).lower()
     for word in VOTER_WORDS:
-        assert word not in serialized, f"{word!r} appears in a published event"
+        assert word not in serialized, f"{word!r} appears in a published event payload"
 
 
 # --- Then: exactly one current --------------------------------------------

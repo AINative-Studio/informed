@@ -40,6 +40,7 @@ from pytest_bdd import given, parsers, then, when
 
 from app.agent_policy import classify
 from app.main import create_app
+from app.profiles.methodology import DEFAULT_TIER_WEIGHTS
 
 # --- shared fixtures ------------------------------------------------------
 #
@@ -90,8 +91,24 @@ def context() -> ScenarioContext:
 # Synthetic only. Per prd.md, voter profiles are political-opinion data: never
 # put real voter data in a fixture, a log or test output.
 
-#: Tier weights from prd.md -> "Tiered interest profile".
-TIER_WEIGHTS: dict[str, float] = {"primary": 3.0, "secondary": 1.5, "nice-to-have": 0.5}
+#: Tier weights, read from a PUBLISHED methodology version rather than
+#: hard-coded here (story 6.1).
+#:
+#: This used to be a literal `{"primary": 3.0, ...}` in this file, which is the
+#: duplication datamodel.md forbids in production code ("the live values come
+#: from `methodology_versions` and are never hard-coded") and which made
+#: `profile_saved_with_weights` a tautology: it asserted that a test constant
+#: equalled the numbers written into the same test. Now the numbers come from
+#: story 6.1's published defaults — the exact dict a `methodology_versions`
+#: row carries — so prd.md's table, the published row and this assertion
+#: cannot drift apart silently.
+#:
+#: The keys are re-spelled because the two vocabularies differ by a hyphen:
+#: prd.md's prose and these Gherkin scenarios say "nice-to-have", while the
+#: stored row and `app.profiles.models` use the identifier `nice_to_have`.
+TIER_WEIGHTS: dict[str, float] = {
+    tier.replace("_", "-"): weight for tier, weight in DEFAULT_TIER_WEIGHTS.items()
+}
 
 
 @dataclass
@@ -230,27 +247,36 @@ def choose_nice_to_have_interest(context: ScenarioContext, topic: str) -> None:
 
 @then(parsers.parse("their profile is saved with weights {first:g}, {second:g} and {third:g}"))
 def profile_saved_with_weights(
-    request: pytest.FixtureRequest,
     context: ScenarioContext,
     first: float,
     second: float,
     third: float,
 ) -> None:
-    # The builder already knows the tier weights, so assert the shape locally.
-    #
-    # The pending pointer below said "story 3.3" and was stale: story 14.1
-    # built the encrypted profile persistence and 4.2/4.4 wired it to HTTP, so
-    # the remaining gap is not persistence at all — it is that THIS prd.md
-    # scenario asserts the stored weights, and weights are deliberately not
-    # stored (datamodel.md: "the live values come from methodology_versions
-    # and are never hard-coded", and `app.profiles.models` has no weight
-    # field by design). Re-pointed at 6.1 ("Methodology versions"), which owns
-    # publishing a version and the tier weights inside it — the story that
-    # would let this scenario assert on real published values rather than on
-    # the constants a test fixture happens to carry.
+    """prd.md: a tiered profile's three interests carry 3.0, 1.5 and 0.5.
+
+    No longer pending (story 6.1). The history is worth keeping, because the
+    pointer moved twice and the second move is the one that mattered:
+
+      * it first said "story 3.3", which was stale — story 14.1 built the
+        encrypted profile persistence and 4.2/4.4 wired it to HTTP;
+      * it was then re-pointed at 6.1, because the real gap was never
+        persistence. Weights are deliberately NOT stored on a profile
+        (datamodel.md: "the live values come from `methodology_versions` and
+        are never hard-coded"; `app.profiles.models` has no weight field, by
+        design and with a test pinning its absence). So the only honest way to
+        assert this scenario is to read the weights back from a published
+        methodology version.
+
+    Which is what it now does. `VoterProfileBuilder.weights` resolves through
+    `TIER_WEIGHTS`, which story 6.1 re-derived from the published defaults a
+    `methodology_versions` row actually carries, so this assertion passes only
+    while prd.md's table, the published row and the profile model agree. The
+    round trip through a live ZeroDB row is covered by story 6.1's own feature
+    file and its live verification script; what this step pins is the number
+    a voter's profile is scored with.
+    """
     assert context.voter is not None
     assert context.voter.weights == [first, second, third]
-    pending(request, "6.1", "tier weights read back from the published methodology version")
 
 
 @then("no candidate score is shown until at least one primary interest exists")
