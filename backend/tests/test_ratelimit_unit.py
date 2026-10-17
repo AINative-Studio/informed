@@ -23,7 +23,13 @@ from app.ratelimit import (
     client_key,
     policy_for,
 )
-from app.ratelimit.policy import POLICIES, UNLIMITED_PATHS, resolve_template
+from app.ratelimit.policy import (
+    POLICIES,
+    UNLIMITED_PATHS,
+    resolve_template,
+    served_routes,
+    unlimited_routes,
+)
 
 
 class Clock:
@@ -248,6 +254,40 @@ def test_every_write_policy_is_stricter_than_the_public_read_policy() -> None:
 )
 def test_each_public_route_resolves_to_a_policy(method: str, path: str) -> None:
     assert policy_for(method, path) is not None, f"{method} {path} is unlimited"
+
+
+def test_the_route_inventory_finds_every_endpoint_the_app_serves() -> None:
+    """The guard against this file's coverage check going vacuous.
+
+    `app.routes` is NOT a usable inventory on this FastAPI version: each
+    `include_router` becomes an opaque `_IncludedRouter` with no `path`, no
+    `methods` and no nested `routes`, so the obvious loop finds `/health`
+    plus the docs routes and silently skips the other 22 route/method pairs.
+    The first version of this story's coverage assertion did exactly that and
+    passed while proving nothing. `served_routes` reads the OpenAPI schema
+    instead; this test fails if that ever regresses to a near-empty list.
+    """
+    served = served_routes(create_app())
+    assert len(served) >= 20, f"route inventory collapsed to {len(served)}: {served}"
+    paths = {path for _, path in served}
+    for expected in (
+        "/v1/topics",
+        "/v1/corrections",
+        "/v1/profiles/{user_id}",
+        "/v1/profiles/{user_id}/follow/{person_id}",
+        "/v1/methodology",
+    ):
+        assert expected in paths, f"{expected} missing from the inventory"
+
+
+def test_no_route_the_app_serves_is_unlimited() -> None:
+    """The real "every public endpoint is covered" assertion."""
+    assert unlimited_routes(create_app()) == []
+
+
+def test_the_inventory_excludes_the_docs_and_health_routes() -> None:
+    uncovered = unlimited_routes(create_app())
+    assert not [route for route in uncovered if "/health" in route or "/docs" in route]
 
 
 def test_health_is_explicitly_unlimited() -> None:

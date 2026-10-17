@@ -44,8 +44,12 @@ What it proves, in order:
      proves the short-circuit properly, by counting rows over the fake.
   9. **The health probe is never limited**, over far more requests than any
      policy allows — a 429 to a liveness check reads as an outage.
- 10. **Every route the live app actually serves resolves to a policy**, walked
-     from the real route table rather than from a list in a test.
+ 10. **Every route the live app actually serves resolves to a policy**, and
+     the full assignment is printed so a reviewer can read the table rather
+     than trust it. Walked from the app's OpenAPI schema, not `app.routes`:
+     this FastAPI version hides included routers behind an opaque wrapper, so
+     the obvious loop over `app.routes` inspects one route out of 23 and
+     passes vacuously. There is an explicit non-triviality check for that.
 
 !!! NO WRITES, NO CLEANUP NEEDED !!!
 
@@ -78,7 +82,12 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from app.main import create_app  # noqa: E402
 from app.methodology.router import zerodb_client_for_methodology  # noqa: E402
-from app.ratelimit import UNLIMITED_PATHS, policy_for  # noqa: E402
+from app.ratelimit import (  # noqa: E402
+    UNLIMITED_PATHS,
+    policy_for,
+    served_routes,
+    unlimited_routes,
+)
 from app.ratelimit.policy import resolve_template  # noqa: E402
 from app.zerodb import ZeroDBClient  # noqa: E402
 from app.zerodb.errors import ZeroDBError  # noqa: E402
@@ -299,22 +308,38 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0915 - a linear script of checks r
             )
 
             # --- 10. every served route resolves to a policy -------------
-            uncovered: list[str] = []
-            for route in limited.routes:
-                methods = getattr(route, "methods", None)
-                path = getattr(route, "path", "")
-                if not methods or path in UNLIMITED_PATHS:
-                    continue
-                if path.startswith(("/openapi", "/docs", "/redoc")):
-                    continue
-                for method in sorted(methods - {"HEAD", "OPTIONS"}):
-                    if policy_for(method, path) is None:
-                        uncovered.append(f"{method} {path}")
+            # Read from the OpenAPI schema, not from `app.routes`: this
+            # FastAPI version wraps each included router in an opaque
+            # `_IncludedRouter` with no `path` and no `methods`, so walking
+            # `app.routes` sees `/health` and the docs routes and nothing
+            # else. This check's first version did exactly that and passed
+            # while inspecting 1 of 23 route/method pairs. The count assertion
+            # below is the guard against it going quiet again.
+            served = served_routes(limited)
+            logger.info("        live app serves %d route/method pair(s)", len(served))
+            check(
+                "the route inventory is non-trivial (this check is not vacuous)",
+                len(served) >= 20,
+                f"only {len(served)} pair(s) found — see unlimited_routes()'s docstring",
+            )
+            uncovered = unlimited_routes(limited)
             check(
                 "every route the live app serves resolves to a rate-limit policy",
                 not uncovered,
                 f"unlimited route(s): {uncovered}",
             )
+            for method, path in served:
+                if path in UNLIMITED_PATHS:
+                    continue
+                resolved = policy_for(method, path)
+                logger.info(
+                    "          %-6s %-46s %s",
+                    method,
+                    path,
+                    f"{resolved.name} ({resolved.limit}/{resolved.window_seconds}s)"
+                    if resolved
+                    else "UNLIMITED",
+                )
 
             # The correction write is asserted here rather than exercised,
             # for the reason in this module's docstring: five throwaway rows

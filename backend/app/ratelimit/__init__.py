@@ -27,6 +27,8 @@ from app.ratelimit.policy import (
     account_key,
     client_key,
     policy_for,
+    served_routes,
+    unlimited_routes,
 )
 
 __all__ = [
@@ -43,4 +45,6 @@ __all__ = [
     "account_key",
     "client_key",
     "policy_for",
+    "served_routes",
+    "unlimited_routes",
 ]

@@ -38,6 +38,8 @@ from app.ratelimit import (
     RateLimitPolicy,
     account_key,
     policy_for,
+    served_routes,
+    unlimited_routes,
 )
 from app.zerodb import ZeroDBClient
 from app.zerodb.testing import FakeZeroDBTransport
@@ -421,28 +423,23 @@ def writes_stricter_than_reads(write_path: str, read_path: str) -> None:
 
 @then("every public route resolves to a rate-limit policy")
 def every_route_covered(limiter: LimiterContext) -> None:
-    """Walks the live route table, so a route added later cannot slip through.
+    """Walks what the app actually serves, so a later route cannot slip through.
 
-    `UNLIMITED_PATHS` is excluded rather than asserted over: `/health` is
-    deliberately not limited, and the separate "health endpoint is never
-    rate-limited" scenario is what holds that decision in place.
+    Via `unlimited_routes`, which reads the OpenAPI schema. The first version
+    of this step walked `app.routes` and was **vacuous**: this FastAPI version
+    wraps each `include_router` in an opaque `_IncludedRouter` with no `path`
+    and no `methods`, so the loop inspected `/health` and the docs routes and
+    skipped the other 22 route/method pairs entirely — passing while proving
+    nothing. The `served_routes` count below is the guard against that
+    happening again silently.
     """
-    from app.ratelimit import UNLIMITED_PATHS
-
     assert limiter.app is not None
-    uncovered: list[str] = []
-    for route in limiter.app.routes:
-        methods = getattr(route, "methods", None)
-        path = getattr(route, "path", "")
-        if not methods or path in UNLIMITED_PATHS:
-            continue
-        if path.startswith(("/openapi", "/docs", "/redoc")):
-            continue
-        for method in methods:
-            if method in {"HEAD", "OPTIONS"}:
-                continue
-            if policy_for(method, path) is None:
-                uncovered.append(f"{method} {path}")
+    served = served_routes(limiter.app)
+    assert len(served) >= 20, (
+        f"only {len(served)} route/method pairs found; this check has gone "
+        "vacuous again — see unlimited_routes()'s docstring"
+    )
+    uncovered = unlimited_routes(limiter.app)
     assert not uncovered, f"routes with no rate-limit policy: {uncovered}"
 
 

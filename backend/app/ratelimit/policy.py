@@ -344,6 +344,61 @@ def client_key(scope: dict[str, Any], *, trust_forwarded_for: bool) -> str:
     return "unknown-peer"
 
 
+def unlimited_routes(app: Any) -> list[str]:
+    """Every `METHOD /path` the app serves that no policy covers.
+
+    The answer to "is any public endpoint still unlimited", and the thing a
+    later story's new router has to keep empty.
+
+    **Read from the OpenAPI schema, NOT from `app.routes`.** This version of
+    FastAPI wraps each `include_router` in an opaque `_IncludedRouter` object
+    that exposes neither `path` nor `methods` nor a nested `routes` list, so
+    walking `app.routes` finds `/health` and the docs routes and *nothing
+    else*. A check written that way passes while 22 of the app's 23
+    route/method pairs go uninspected — which is exactly what the first
+    version of this story's coverage assertion did. The schema is the
+    authoritative list of served paths and is already built from the real
+    route table, so it cannot drift from what is mounted.
+
+    `UNLIMITED_PATHS` and the docs routes are excluded: they are deliberately
+    not limited, and the health endpoint has its own test saying so.
+    """
+    try:
+        paths: dict[str, dict[str, Any]] = app.openapi().get("paths", {})
+    except Exception:  # pragma: no cover - a non-FastAPI app
+        return []
+
+    uncovered: list[str] = []
+    for path, operations in paths.items():
+        if path in UNLIMITED_PATHS or path.startswith(_DOCS_PREFIXES):
+            continue
+        for method in operations:
+            verb = method.upper()
+            if verb in {"HEAD", "OPTIONS", "PARAMETERS"}:
+                continue
+            if policy_for(verb, path) is None:
+                uncovered.append(f"{verb} {path}")
+    return sorted(uncovered)
+
+
+def served_routes(app: Any) -> list[tuple[str, str]]:
+    """Every `(METHOD, path)` the app serves, from its OpenAPI schema.
+
+    Same reasoning as `unlimited_routes` for why the schema and not
+    `app.routes`. Includes the unlimited paths; callers filter.
+    """
+    try:
+        paths: dict[str, dict[str, Any]] = app.openapi().get("paths", {})
+    except Exception:  # pragma: no cover - a non-FastAPI app
+        return []
+    return sorted(
+        (method.upper(), path)
+        for path, operations in paths.items()
+        for method in operations
+        if method.upper() not in {"HEAD", "OPTIONS", "PARAMETERS"}
+    )
+
+
 def account_key(scope: dict[str, Any]) -> str | None:
     """The per-account identity for one request. Always ``None`` today.
 
@@ -376,5 +431,7 @@ __all__ = [
     "account_key",
     "client_key",
     "policy_for",
+    "served_routes",
+    "unlimited_routes",
     "resolve_template",
 ]
