@@ -7,28 +7,39 @@ endpoints to stop scraping of aggregate sentiment."*
 
 The limits below are set by what a human using the app actually does, with
 enough headroom that nobody real ever meets one, and then low enough that
-bulk collection is slow and visible. Three bands:
+bulk collection is slow and visible. Four bands:
 
-* **Public reads — 60/minute.** A voter opening the app, expanding the
-  topic tree, reading a handful of stance cards and looking up their ballot
-  makes perhaps a dozen calls in their first minute, and the PWA caches
-  (TanStack Query) rather than re-fetching. 60/minute is five times that and
-  still means a scraper needs ten hours to walk a hundred thousand rows from
-  one address instead of ten minutes.
-* **Public writes — 30/minute for the cheap ones.** `POST /v1/topics/suggest`
-  (story 3.5) is an uncredentialed write that runs a semantic search per
-  call, so it is a cost amplifier as well as a write. A voter typing free-text
+* **Published reads — 60/minute** (`PUBLIC_READ`). A voter opening the app,
+  expanding the topic tree, reading a handful of stance cards and looking up
+  their ballot makes perhaps a dozen calls in their first minute, and the PWA
+  caches (TanStack Query) rather than re-fetching. 60/minute is five times
+  that and still means a scraper needs ten hours to walk a hundred thousand
+  rows from one address instead of ten minutes. This is the band prd.md's
+  "scraping of aggregate sentiment" is aimed at.
+* **Reads keyed on a caller-held secret — 30/minute** (`PRIVATE_READ`). A
+  voter's own profile, and a correction's status by tracking token. Stricter
+  than the published reads because both are *enumeration* surfaces: the
+  status lookup is the one place a guessed token gets confirmed, so this
+  allowance is what bounds a guessing run.
+* **Cheap uncredentialed writes — 30/minute** (`PUBLIC_WRITE`).
+  `POST /v1/topics/suggest` (story 3.5) runs a semantic search per call, so
+  it is a cost amplifier as well as a write. A voter typing free-text
   interests during onboarding submits a few; 30/minute is generous for that
-  and caps the amplification.
-* **The correction write — 5/hour.** `POST /v1/corrections` (story 12.4) is
-  the one endpoint whose own router docstring asked to be put behind a
-  limiter first: it is unauthenticated, it writes a row per call, and the row
-  deliberately holds nothing to identify on. A person reporting errors in
-  good faith files one, occasionally a few. Five an hour is well above real
-  use and turns table-filling from a script into a sustained, obvious
-  campaign. It is a 1-hour window rather than a 1-minute one on purpose: a
-  per-minute cap on a write this cheap to repeat still allows 7,200 rows a
-  day.
+  and caps the amplification. Profile saves and the follow/unfollow writes
+  (story 15.1) sit here too.
+* **The correction write — 5/HOUR** (`CORRECTION_WRITE`).
+  `POST /v1/corrections` (story 12.4) is the endpoint whose own router
+  docstring asked to be put behind a limiter first: it is unauthenticated, it
+  writes a row per call, and the row deliberately holds nothing to identify
+  on. A person reporting errors in good faith files one, occasionally a few.
+  Five an hour is well above real use and turns table-filling from a script
+  into a sustained, obvious campaign. A 1-hour window rather than a 1-minute
+  one on purpose: a per-minute cap on a write this cheap to repeat still
+  permits 7,200 rows a day.
+
+The advisory panel's workflow (story 3.3) gets the read/write numbers under
+its own policy names, and `DEFAULT_READ` / `DEFAULT_WRITE` are the fail-closed
+fallback for a route a later story adds and forgets to list.
 
 These are first-deployment numbers, not tuned ones — nothing has production
 traffic to tune against yet. They live in one table so changing them is a
