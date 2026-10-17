@@ -168,7 +168,9 @@ def repair_member_votes_drift(
             continue
 
         vote_id = str(vote_row.get("id"))
-        patch = {field_name: roll_call_value for field_name, (_, roll_call_value) in drifted.items()}
+        patch = {
+            field_name: roll_call_value for field_name, (_, roll_call_value) in drifted.items()
+        }
         if not dry_run:
             client.update_row(MemberVote.table_name, vote_id, patch)
             logger.info(

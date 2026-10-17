@@ -33,7 +33,7 @@ from app.integrity.checks import (
     check_verdict_roll_call_mapping,
     run_all_checks,
 )
-from app.repositories import ProvenanceContext, Repository
+from app.repositories import Repository
 from app.repositories.models import (
     Candidacy,
     CandidatePosition,
@@ -132,7 +132,9 @@ def roll_call_row_with_fields(
     )
 
 
-@given(parsers.parse('the roll_calls row "{roll_call_id}" is corrected to vote_type "{vote_type}"'))
+@given(
+    parsers.parse('the roll_calls row "{roll_call_id}" is corrected to vote_type "{vote_type}"')
+)
 def correct_roll_call_vote_type(zerodb: ZeroDBClient, roll_call_id: str, vote_type: str) -> None:
     zerodb.update_row(RollCall.table_name, roll_call_id, {"vote_type": vote_type})
 
@@ -153,7 +155,9 @@ def correct_roll_call_both(
     zerodb: ZeroDBClient, roll_call_id: str, vote_type: str, bill_id: str
 ) -> None:
     _ensure_bill(zerodb, bill_id)
-    zerodb.update_row(RollCall.table_name, roll_call_id, {"vote_type": vote_type, "bill_id": bill_id})
+    zerodb.update_row(
+        RollCall.table_name, roll_call_id, {"vote_type": vote_type, "bill_id": bill_id}
+    )
 
 
 @given(parsers.parse('a people row "{person_id}"'))
@@ -204,7 +208,12 @@ def member_votes_row_copying(zerodb: ZeroDBClient, roll_call_id: str, person_id:
     )
 
 
-@given(parsers.parse('a member_votes row is written directly with a dangling roll_call_id "{roll_call_id}"'))
+@given(
+    parsers.parse(
+        "a member_votes row is written directly with a dangling roll_call_id "
+        '"{roll_call_id}"'
+    )
+)
 def dangling_member_vote(zerodb: ZeroDBClient, roll_call_id: str) -> None:
     """Bypasses the repository entirely: `Repository.upsert` would refuse
     this (datamodel.md rule 5), so to prove the AUDIT catches a dangling
@@ -257,7 +266,13 @@ def _election_and_district(zerodb: ZeroDBClient) -> tuple[str, str]:
     if zerodb.get_row("bodies", "us-house") is None:
         zerodb.insert_row(
             "bodies",
-            {"id": "us-house", "jurisdiction_id": "us-federal", "name": "House", "chamber": "lower", "seats": 435},
+            {
+                "id": "us-house",
+                "jurisdiction_id": "us-federal",
+                "name": "House",
+                "chamber": "lower",
+                "seats": 435,
+            },
         )
     if zerodb.get_row("districts", district_id) is None:
         zerodb.insert_row(
@@ -288,7 +303,11 @@ def candidacies_row(zerodb: ZeroDBClient, person_id: str) -> None:
     )
 
 
-@given(parsers.parse('a candidacies row is written directly with a dangling person_id "{person_id}"'))
+@given(
+    parsers.parse(
+        'a candidacies row is written directly with a dangling person_id "{person_id}"'
+    )
+)
 def dangling_candidacy(zerodb: ZeroDBClient, person_id: str) -> None:
     election_id, district_id = _election_and_district(zerodb)
     zerodb.insert_row(
@@ -309,8 +328,14 @@ def dangling_candidacy(zerodb: ZeroDBClient, person_id: str) -> None:
 # --- fixture rows: promises, verdicts, candidate_positions ------------------
 
 
-@given(parsers.parse('a promise "{promise_id}" with an approved mapping to roll call "{roll_call_id}"'))
-def promise_with_approved_mapping(zerodb: ZeroDBClient, promise_id: str, roll_call_id: str) -> None:
+@given(
+    parsers.parse(
+        'a promise "{promise_id}" with an approved mapping to roll call "{roll_call_id}"'
+    )
+)
+def promise_with_approved_mapping(
+    zerodb: ZeroDBClient, promise_id: str, roll_call_id: str
+) -> None:
     zerodb.insert_row(
         "promises",
         {
@@ -329,8 +354,14 @@ def promise_with_approved_mapping(zerodb: ZeroDBClient, promise_id: str, roll_ca
     )
 
 
-@given(parsers.parse('a promise "{promise_id}" with an unapproved mapping to roll call "{roll_call_id}"'))
-def promise_with_unapproved_mapping(zerodb: ZeroDBClient, promise_id: str, roll_call_id: str) -> None:
+@given(
+    parsers.parse(
+        'a promise "{promise_id}" with an unapproved mapping to roll call "{roll_call_id}"'
+    )
+)
+def promise_with_unapproved_mapping(
+    zerodb: ZeroDBClient, promise_id: str, roll_call_id: str
+) -> None:
     zerodb.insert_row(
         "promises",
         {
@@ -425,7 +456,12 @@ def force_second_current_verdict(zerodb: ZeroDBClient, promise_id: str) -> None:
     )
 
 
-@given(parsers.parse('every is_current flag for promise "{promise_id}" is force-cleared, bypassing append_version'))
+@given(
+    parsers.parse(
+        'every is_current flag for promise "{promise_id}" is force-cleared, '
+        "bypassing append_version"
+    )
+)
 def force_clear_is_current(zerodb: ZeroDBClient, promise_id: str) -> None:
     for row in zerodb.query_rows(Verdict.table_name, limit=500).rows:
         if row.row_data.get("promise_id") == promise_id:
@@ -479,7 +515,10 @@ def force_second_current_position(zerodb: ZeroDBClient, person_id: str, stance_i
 # --- fixture rows: provenance ------------------------------------------------
 
 
-@given("a roll_calls row with a source_url is written directly through the client, bypassing the repository")
+@given(
+    "a roll_calls row with a source_url is written directly through the client, "
+    "bypassing the repository"
+)
 def sourced_row_bypassing_repo(zerodb: ZeroDBClient, result: dict[str, Any]) -> None:
     row_id = "us-house:119-2:zzz-bypass"
     zerodb.insert_row(
@@ -563,14 +602,20 @@ def references_violation_candidacies(check_result: CheckReport, person_id: str) 
     ), check_result.violations
 
 
-@then(parsers.parse('the verdict roll-call mapping check reports a violation for verdict "{verdict_id}"'))
+@then(
+    parsers.parse(
+        "the verdict roll-call mapping check reports a violation for verdict "
+        '"{verdict_id}"'
+    )
+)
 def mapping_violation_for_verdict_id(check_result: CheckReport, verdict_id: str) -> None:
     assert any(v.row_id == verdict_id for v in check_result.violations), check_result.violations
 
 
 @then(
     parsers.parse(
-        'the verdict roll-call mapping check reports a violation for verdict referencing promise "{promise_id}"'
+        "the verdict roll-call mapping check reports a violation for verdict "
+        'referencing promise "{promise_id}"'
     )
 )
 def mapping_violation_for_promise(check_result: CheckReport, promise_id: str) -> None:
@@ -605,7 +650,9 @@ def is_current_violation_positions(
     matches = [
         v
         for v in check_result.violations
-        if v.table == CandidatePosition.table_name and person_id in v.row_id and stance_id in v.row_id
+        if v.table == CandidatePosition.table_name
+        and person_id in v.row_id
+        and stance_id in v.row_id
     ]
     assert matches, check_result.violations
     assert any(f"{count} row" in v.detail for v in matches), matches
@@ -613,7 +660,8 @@ def is_current_violation_positions(
 
 @then(
     parsers.parse(
-        'the member_votes drift check reports a violation for member_votes row "{row_id}" field "{field}"'
+        "the member_votes drift check reports a violation for member_votes row "
+        '"{row_id}" field "{field}"'
     )
 )
 def drift_violation(check_result: CheckReport, row_id: str, field: str) -> None:

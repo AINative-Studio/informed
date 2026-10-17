@@ -2,12 +2,15 @@
 
 The BDD suite (`tests/features/scheduled_jobs.feature`) pins the registry's
 own mechanics (due/skip/blocked/failed) using synthetic jobs. This file
-covers the three REAL jobs' own wiring logic — the part `app.scheduling.jobs`
-adds on top of the already-tested `app.ingest.*` / `app.corrections.*`
-modules: precondition checks, the per-state/office loop and its
-one-state-failing tolerance, and the house-rollcalls source-error mapping.
-None of this re-tests `fetch_candidates`, `candidacies_from_results`,
-`transform_roll_calls` etc. themselves — those have their own unit suites.
+covers the five REAL jobs' own wiring logic — the part `app.scheduling.jobs`
+adds on top of the already-tested `app.ingest.*` / `app.corrections.*` /
+`app.integrity.*` modules: precondition checks, the per-state/office loop
+and its one-state-failing tolerance, the house-rollcalls source-error
+mapping, and (stories 16.2/16.4) turning an integrity violation into a job
+failure and reporting a drift repair's result. None of this re-tests
+`fetch_candidates`, `candidacies_from_results`, `transform_roll_calls`,
+`run_all_checks` or `repair_member_votes_drift` themselves — those have their
+own unit/BDD suites.
 """
 
 from __future__ import annotations
@@ -35,9 +38,27 @@ def client() -> ZeroDBClient:
 # --- default_jobs() composition ---------------------------------------------
 
 
-def test_default_jobs_registers_exactly_the_three_documented_jobs() -> None:
+def test_default_jobs_registers_exactly_the_five_documented_jobs() -> None:
     names = [job.name for job in jobs_module.default_jobs()]
-    assert names == ["sweep_correction_emails", "load_candidacies", "load_house_rollcalls"]
+    assert names == [
+        "sweep_correction_emails",
+        "load_candidacies",
+        "load_house_rollcalls",
+        "run_nightly_integrity_checks",
+        "repair_member_votes_denormalization",
+    ]
+
+
+def test_integrity_jobs_have_no_precondition() -> None:
+    """Unlike the FEC/Congress.gov jobs, neither integrity job needs an
+    external API key — every check and the repair read/write tables that
+    already exist in any bootstrapped project, even when some are empty.
+    """
+    by_name = {job.name: job for job in jobs_module.default_jobs()}
+    assert by_name["run_nightly_integrity_checks"].precondition is None
+    assert by_name["run_nightly_integrity_checks"].interval == timedelta(days=1)
+    assert by_name["repair_member_votes_denormalization"].precondition is None
+    assert by_name["repair_member_votes_denormalization"].interval == timedelta(days=1)
 
 
 def test_sweep_correction_emails_has_no_precondition() -> None:
@@ -197,3 +218,56 @@ def test_run_load_house_rollcalls_loads_the_most_recent_sample(
     # Fetched in descending order (most recent first), matching the CLI
     # script's own `sorted(numbers, reverse=True)` behaviour.
     assert fetched == sorted(numbers, reverse=True)
+
+
+# --- run_nightly_integrity_checks: violation becomes a job failure (16.2) --
+
+
+def test_run_nightly_integrity_checks_is_clean_against_an_empty_bootstrapped_project(
+    client: ZeroDBClient,
+) -> None:
+    """No violations possible over empty tables — this is check 2/3's
+    documented vacuous-truth case, exercised here at the job level too.
+    """
+    jobs_module.run_nightly_integrity_checks(client)
+
+
+def test_run_nightly_integrity_checks_raises_when_a_check_finds_a_violation(
+    client: ZeroDBClient,
+) -> None:
+    """A dangling member_votes.roll_call_id (check 1), written directly to
+    bypass the repository's own reference guard, must surface as a raised
+    error here — that is what makes `ScheduledJobRunner` record this job as
+    FAILED rather than RAN. The detailed per-check sabotage proofs live in
+    `tests/features/integrity_checks.feature`; this test only pins the
+    found-a-violation -> raises contract at the job boundary.
+    """
+    client.insert_row(
+        "member_votes",
+        {
+            "id": "us-house:119-2:999:B000944",
+            "roll_call_id": "us-house:119-2:999",
+            "person_id": "person:B000944",
+            "position": "yea",
+            "voted_at": "2026-01-01T00:00:00Z",
+            "vote_type": "final_passage",
+            "bill_id": None,
+            "topic_ids": [],
+            "is_bundled": False,
+        },
+    )
+    with pytest.raises(ZeroDBError, match="violation"):
+        jobs_module.run_nightly_integrity_checks(client)
+
+
+# --- repair_member_votes_denormalization: reports, idempotent (16.4) ------
+
+
+def test_run_repair_member_votes_drift_is_a_noop_against_an_empty_project(
+    client: ZeroDBClient,
+) -> None:
+    """Does not raise, and (vacuously) repairs nothing — mirrors
+    `test_run_sweep_correction_emails_runs_clean_against_an_empty_project`'s
+    own posture toward an empty table.
+    """
+    jobs_module.run_repair_member_votes_drift(client)
