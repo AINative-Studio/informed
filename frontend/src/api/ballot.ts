@@ -28,9 +28,39 @@ export interface Officeholder {
   district_id?: string | null;
 }
 
+/**
+ * One candidate in one race (story 2.4; mirrors
+ * `backend/app/ballot/models.py`'s `BallotCandidate`).
+ *
+ * `candidacy_id` is null until a `candidacies` row exists for this person in
+ * this race (story 2.6) — see the backend model's docstring for why null
+ * rather than a fabricated id. It is what story 14.6's share affordance in
+ * `BallotPage` keys on: a candidate with no `candidacy_id` has no summary
+ * card to share yet.
+ */
+export interface BallotCandidate {
+  person_id: string;
+  name: string;
+  party: string | null;
+  is_incumbent: boolean;
+  candidacy_id: string | null;
+}
+
+/** One contest on this voter's ballot (mirrors `backend/app/ballot/models.py`'s `Race`). */
+export interface Race {
+  id: string;
+  body_id: string;
+  office_name: string;
+  district_id: string;
+  district_name: string;
+  election_id: string | null;
+  candidates: BallotCandidate[];
+}
+
 export interface Ballot {
   district: DistrictSummary;
   officeholders: Officeholder[];
+  races?: Race[];
 }
 
 export const HOUSE_BODY_ID = 'us-house';

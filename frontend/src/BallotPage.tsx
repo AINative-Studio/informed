@@ -31,6 +31,7 @@ import {
   fetchBallot,
 } from './api/ballot';
 import { ProfileSaveError, followPerson, unfollowPerson } from './api/profiles';
+import { SummaryCardError, fetchSummaryCard, shareTextFor } from './api/summaryCard';
 
 export function BallotPage() {
   const inputId = useId();
@@ -103,16 +104,50 @@ export function BallotPage() {
   );
 }
 
+/**
+ * `person_id` -> `candidacy_id`, for story 14.6's Share button.
+ *
+ * Built from `ballot.races`, which is where `candidacy_id` actually lives
+ * (`BallotCandidate`, not `Officeholder`) — see `app.ballot.models`'s
+ * docstring for why the two lists describe the same people today but carry
+ * different fields. A person absent from every race (races is optional and
+ * may not be present yet) simply has no entry, which is exactly "no
+ * candidacy_id known yet" — the state the Share button already treats as
+ * "don't show the button".
+ */
+function candidacyIdsByPerson(ballot: Ballot): Map<string, string> {
+  const byPerson = new Map<string, string>();
+  for (const race of ballot.races ?? []) {
+    for (const candidate of race.candidates) {
+      if (candidate.candidacy_id) {
+        byPerson.set(candidate.person_id, candidate.candidacy_id);
+      }
+    }
+  }
+  return byPerson;
+}
+
 /** The district and its two chambers. */
 function Delegation({ ballot }: { ballot: Ballot }) {
   const house = ballot.officeholders.filter((person) => person.body_id === HOUSE_BODY_ID);
   const senate = ballot.officeholders.filter((person) => person.body_id === SENATE_BODY_ID);
+  const candidacyIds = candidacyIdsByPerson(ballot);
 
   return (
     <section aria-label="Your representatives">
       <h2>{ballot.district.name}</h2>
-      <Chamber heading="House" members={house} emptyMessage="We don't have this district's representative yet." />
-      <Chamber heading="Senate" members={senate} emptyMessage="We don't have this state's senators yet." />
+      <Chamber
+        heading="House"
+        members={house}
+        candidacyIds={candidacyIds}
+        emptyMessage="We don't have this district's representative yet."
+      />
+      <Chamber
+        heading="Senate"
+        members={senate}
+        candidacyIds={candidacyIds}
+        emptyMessage="We don't have this state's senators yet."
+      />
     </section>
   );
 }
@@ -127,10 +162,12 @@ function Delegation({ ballot }: { ballot: Ballot }) {
 function Chamber({
   heading,
   members,
+  candidacyIds,
   emptyMessage,
 }: {
   heading: string;
   members: Officeholder[];
+  candidacyIds: Map<string, string>;
   emptyMessage: string;
 }) {
   const headingId = useId();
@@ -142,14 +179,23 @@ function Chamber({
         <p>{emptyMessage}</p>
       ) : (
         <ul aria-labelledby={headingId}>
-          {members.map((person) => (
-            <li key={person.person_id}>
-              {person.name}
-              {person.party ? <span> ({person.party})</span> : null}
-              {' '}
-              <FollowButton person={person} />
-            </li>
-          ))}
+          {members.map((person) => {
+            const candidacyId = candidacyIds.get(person.person_id);
+            return (
+              <li key={person.person_id}>
+                {person.name}
+                {person.party ? <span> ({person.party})</span> : null}
+                {' '}
+                <FollowButton person={person} />
+                {candidacyId ? (
+                  <>
+                    {' '}
+                    <ShareButton name={person.name} candidacyId={candidacyId} />
+                  </>
+                ) : null}
+              </li>
+            );
+          })}
         </ul>
       )}
     </>
@@ -203,6 +249,54 @@ function FollowButton({ person }: { person: Officeholder }) {
         {isFollowing ? `Unfollow ${person.name}` : `Follow ${person.name}`}
       </button>
       {error ? <span role="alert">{error}</span> : null}
+    </>
+  );
+}
+
+/**
+ * Share a candidate's summary card (story 14.6).
+ *
+ * "As a voter, I want to share a candidate summary without revealing my
+ * interests, so that I can discuss it safely." The button fetches
+ * `GET /v1/candidates/{candidacy_id}/summary-card` — an endpoint that takes
+ * no profile, user or voter identity of any kind (see
+ * `app.summary_card.router`'s module docstring) — and shows the resulting
+ * plain-text summary. Nothing from this voter's own profile is in scope
+ * anywhere in this component: there is no profile read here to leak from.
+ *
+ * Minimal and functional, matching `FollowButton`'s posture: a shareable
+ * URL/text, not an image or a native share-sheet integration, which
+ * ui-prd.md's full design spec can build on later.
+ */
+function ShareButton({ name, candidacyId }: { name: string; candidacyId: string }) {
+  const [shareText, setShareText] = useState<string | null>(null);
+  const [isPending, setIsPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function onShare() {
+    setError(null);
+    setIsPending(true);
+    try {
+      const card = await fetchSummaryCard(candidacyId);
+      setShareText(shareTextFor(card));
+    } catch (caught) {
+      setError(
+        caught instanceof SummaryCardError
+          ? caught.message
+          : 'We could not build a summary to share just now. Please try again.',
+      );
+    } finally {
+      setIsPending(false);
+    }
+  }
+
+  return (
+    <>
+      <button type="button" onClick={onShare} disabled={isPending}>
+        {`Share ${name}`}
+      </button>
+      {error ? <span role="alert">{error}</span> : null}
+      {shareText ? <p>{shareText}</p> : null}
     </>
   );
 }

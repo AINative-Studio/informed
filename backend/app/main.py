@@ -12,6 +12,9 @@ Routes so far:
     /v1/methodology[/*]               — the published methodology and its changelog (12.2)
     POST /v1/corrections              — report an error on any claim, no account (12.4)
     GET  /v1/corrections/{token}      — the reporter checks their own status (12.4)
+    GET  /v1/candidates/{id}/summary-card — shareable, candidate-data-only card (14.6)
+    POST /v1/analytics/events         — record a coarse, non-identifying usage event (14.7)
+    GET  /v1/analytics/aggregate      — k-anonymous aggregate count, k >= 50 (14.7)
 
 The remaining endpoints in prd.md's Core API table (`/v1/candidates/{id}/
 alignment`, `/v1/candidates/{id}/promise-record`, `/v1/agent/ask`) each mount
@@ -39,6 +42,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from app import __version__
+from app.analytics import router as analytics_router
 from app.ballot import router as ballot_router
 from app.ballot.router import zerodb_client
 from app.corrections import router as corrections_router
@@ -50,6 +54,7 @@ from app.profiles import router as profiles_router
 from app.ratelimit import RateLimitMiddleware
 from app.scheduling.jobs import default_jobs
 from app.stances import router as stances_router
+from app.summary_card import router as summary_card_router
 from app.topics import router as topics_router
 from app.zerodb.client import ZeroDBClient
 
@@ -258,6 +263,8 @@ def create_app(
     app.include_router(panel_review_router)
     app.include_router(methodology_router)
     app.include_router(corrections_router)
+    app.include_router(summary_card_router)
+    app.include_router(analytics_router)
 
     return app
 
