@@ -96,9 +96,7 @@ def test_aggregate_result_never_carries_a_count_field_when_insufficient() -> Non
     `AggregateResult(sufficient=False, count=5)` is nonsensical and the model
     itself refuses it."""
     with pytest.raises(Exception):  # noqa: B017, PT011 - pydantic ValidationError
-        AggregateResult(
-            event_type="x", sufficient=False, count=5, threshold=K_ANONYMITY_THRESHOLD
-        )
+        AggregateResult(event_type="x", sufficient=False, count=5, threshold=K_ANONYMITY_THRESHOLD)
 
 
 def test_aggregate_result_refuses_sufficient_with_no_count() -> None:
