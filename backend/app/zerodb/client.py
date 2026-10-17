@@ -963,6 +963,23 @@ class ZeroDBClient:
         response = self._request("GET", f"/projects/{self._project_id}/files/{file_id}/content")
         return response.content
 
+    def get_file(self, *, file_id: str) -> StoredFile:
+        """Read one file's metadata without downloading it.
+
+        `GET /projects/{id}/database/files/{file_id}`. This is the half that
+        answers "what does the archive claim about itself" — notably
+        `file_metadata["sha256"]` — so a reader can verify downloaded bytes
+        against the recorded hash. A metadata row with no stored object
+        behind it answers fine here and 404s on `download_file`, which is
+        exactly how the two are told apart.
+
+        Raises:
+            ZeroDBNotFoundError: if no file with that id exists.
+        """
+        self._require(file_id, "file_id")
+        response = self._request("GET", f"/projects/{self._project_id}/database/files/{file_id}")
+        return self._parse(StoredFile, response)
+
     def generate_presigned_url(
         self,
         *,

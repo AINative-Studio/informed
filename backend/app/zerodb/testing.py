@@ -845,6 +845,16 @@ class FakeZeroDBTransport:
             self.files[file_id] = envelope
             return _ok(envelope)
 
+        if method == "GET" and segments[-2] == "files":
+            # `.../database/files/{file_id}` — metadata only, no bytes. Answers
+            # fine for a file registered through the metadata-only route, which
+            # is precisely how `get_file` and `download_file` tell the two
+            # apart.
+            file_id = segments[-1]
+            if file_id not in self.files:
+                return _not_found(f"File '{file_id}' not found")
+            return _ok(self.files[file_id])
+
         return _ok({"total": len(self.files), "data": list(self.files.values())})
 
     # events ---------------------------------------------------------------

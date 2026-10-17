@@ -1,4 +1,4 @@
-"""The five nightly integrity checks datamodel.md names (story 16.2).
+"""The nightly integrity checks (story 16.2, plus one).
 
 datamodel.md, "Integrity checks" (written test-first, run in CI and nightly
 against production):
@@ -13,6 +13,28 @@ against production):
      any drift triggers a re-copy.
   5. Every NoSQL row with a `source_url` has a matching `provenance_log`
      entry, so no evidence goes untraced.
+
+And a sixth, **not** from that list:
+
+  6. Every row naming an archived file can fetch that file back, and its
+     bytes hash to what the row records.
+
+===============================================================================
+WHY THERE IS A SIXTH CHECK
+===============================================================================
+
+Because a bug these checks exist to catch got past all five of them.
+`ZeroDBClient.upload_file` posted file metadata to ZeroDB's metadata-only
+route and never sent the file body, so story 9.1's three real campaign-site
+archives had correct `promise_sources` rows, correct file metadata and
+correct sha256 values with **no stored object behind any of them** — every
+download answered 404. Checks 1-5 passed on that data, because each asks a
+question about rows and none asks whether the evidence a row cites can
+actually be fetched. It was found by story 9.3 stumbling into it.
+
+So check 6 asks that question. It is the most expensive of the six (it
+downloads every archived file), which is appropriate for a nightly run and
+not for a request path. See `check_archive_retrievability`.
 
 ===============================================================================
 WHAT "CORRECTLY BUILT BUT CURRENTLY VACUOUS" MEANS FOR CHECKS 2 AND 3
@@ -63,6 +85,7 @@ docstring for the follow-up this names explicitly.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -71,11 +94,13 @@ from app.repositories.models import (
     CandidatePosition,
     MemberVote,
     Person,
+    PromiseSource,
     RollCall,
     Verdict,
 )
 from app.repositories.provenance import PROVENANCE_TABLE, check_app_tree
 from app.zerodb.client import ZeroDBClient
+from app.zerodb.errors import ZeroDBError
 
 #: `promises` is a real table in datamodel.md ("Promises, verdicts and
 #: positions": id `prm:{uuid}`; fields include `mappings[]` of
@@ -117,6 +142,17 @@ DENORMALIZED_MEMBER_VOTE_FIELDS: tuple[str, ...] = (
     "topic_ids",
     "is_bundled",
 )
+
+#: Tables whose rows name an archived file that a citation depends on
+#: (check 6). Only `promise_sources` today — datamodel.md's Files section also
+#: lists bill text and debate transcripts, and whichever table holds those
+#: belongs here the moment a story writes one, which is why this is a tuple
+#: rather than a hardcoded single name.
+ARCHIVE_BEARING_TABLES: tuple[str, ...] = (PromiseSource.table_name,)
+
+#: `promise_sources` ids are `src:<sha256 of the captured bytes>`, so the id
+#: itself is the integrity claim check 6 verifies the archive against.
+CONTENT_ADDRESSED_ID_PREFIX = "src:"
 
 
 @dataclass(frozen=True)
@@ -543,18 +579,148 @@ def check_provenance_coverage(client: ZeroDBClient) -> CheckReport:
 
 
 # ===========================================================================
+# Check 6: archived files are actually retrievable
+# ===========================================================================
+
+
+def check_archive_retrievability(client: ZeroDBClient) -> CheckReport:
+    """Every row naming an archived file can fetch it back, and the bytes match.
+
+    **NOT one of datamodel.md's original five.** It exists because of the bug
+    it would have caught, and that provenance is the argument for it:
+
+    `ZeroDBClient.upload_file` used to POST file *metadata* to ZeroDB's
+    metadata-only route and never send the file body. Story 9.1's three real
+    campaign-site archives therefore had correct `promise_sources` rows,
+    correct file metadata and correct sha256 values behind which **no object
+    existed** — every download answered 404. Checks 1 to 5 all passed on that
+    data, because every one of them asks about rows and none asks whether the
+    evidence a row cites can be fetched. The gap was found by a later story
+    stumbling into it, which is the failure mode this whole module exists to
+    prevent.
+
+    So this check asks the question none of the five can: for every row with
+    an `archived_file_id`, does `download_file` return anything, and do those
+    bytes hash to what the row claims?
+
+    Three distinct violations, each a different kind of broken:
+
+      * **no archived_file_id** — a row in a table whose rows archive
+        something, naming nothing. A citation with no evidence at all.
+      * **unreadable** — the metadata row exists and the object does not. The
+        exact state the pre-fix `upload_file` produced.
+      * **hash mismatch** — the object reads back but is not what the row
+        says it is. Worse than missing: a citation that silently points at the
+        wrong evidence, which `verify_quote_span` downstream would then quote
+        from.
+
+    The hash comes from the row's own id (`src:<sha256>`) where the table uses
+    content-addressed ids, and otherwise from the file's
+    `file_metadata["sha256"]`. A row with neither is checked for readability
+    only, and that is said in the detail rather than passed off as a full
+    check.
+
+    This check DOWNLOADS every archived file, so it is the most expensive of
+    the six — appropriate for a nightly run, and the reason it pages rather
+    than reading everything at once.
+    """
+    violations: list[Violation] = []
+    scanned = 0
+
+    for table in ARCHIVE_BEARING_TABLES:
+        for row in paged_rows(client, table):
+            scanned += 1
+            row_id = str(row.get("id"))
+            file_id = str(row.get("archived_file_id") or "")
+            if not file_id:
+                violations.append(
+                    Violation(
+                        table=table,
+                        row_id=row_id,
+                        detail="names no archived_file_id, so its evidence cannot be fetched",
+                    )
+                )
+                continue
+
+            try:
+                archived = client.download_file(file_id=file_id)
+            except ZeroDBError as exc:
+                violations.append(
+                    Violation(
+                        table=table,
+                        row_id=row_id,
+                        detail=(
+                            f"archived file {file_id} cannot be read back ({exc}) — the "
+                            "metadata row exists with no stored object behind it"
+                        ),
+                    )
+                )
+                continue
+
+            expected = _expected_sha256(client, row, row_id, file_id)
+            if expected is None:
+                violations.append(
+                    Violation(
+                        table=table,
+                        row_id=row_id,
+                        detail=(
+                            f"archived file {file_id} reads back ({len(archived)} bytes) but "
+                            "records no sha256, so its contents cannot be verified"
+                        ),
+                    )
+                )
+                continue
+
+            actual = hashlib.sha256(archived).hexdigest()
+            if actual != expected:
+                violations.append(
+                    Violation(
+                        table=table,
+                        row_id=row_id,
+                        detail=(
+                            f"archived file {file_id} holds bytes hashing to {actual}, not "
+                            f"the recorded {expected} — the citation points at the wrong content"
+                        ),
+                    )
+                )
+
+    return CheckReport(name="archive_retrievability", scanned=scanned, violations=tuple(violations))
+
+
+def _expected_sha256(
+    client: ZeroDBClient, row: dict[str, Any], row_id: str, file_id: str
+) -> str | None:
+    """The hash this row's archive should have, or None if none is recorded.
+
+    Prefers the row's own content-addressed id, because that is the claim the
+    rest of the system keys on (a `promise_sources` id IS its capture's
+    sha256), and falls back to the file's stored `file_metadata`.
+    """
+    if row_id.startswith(CONTENT_ADDRESSED_ID_PREFIX):
+        return row_id.removeprefix(CONTENT_ADDRESSED_ID_PREFIX)
+    try:
+        stored = client.get_file(file_id=file_id)
+    except ZeroDBError:
+        return None
+    recorded = stored.file_metadata.get("sha256")
+    return str(recorded) if recorded else None
+
+
+# ===========================================================================
 # Running them all together
 # ===========================================================================
 
-#: Every check, in datamodel.md's documented order. One list, so the nightly
-#: job, the combined-report test and a future paging integration all iterate
-#: the same five functions rather than each keeping its own copy.
+#: Every check, datamodel.md's five in its documented order plus the archive
+#: retrievability check. One list, so the nightly job, the combined-report
+#: test and a future paging integration all iterate the same functions rather
+#: than each keeping its own copy.
 ALL_CHECKS = (
     check_references,
     check_verdict_roll_call_mapping,
     check_current_verdict_uniqueness,
     check_member_votes_drift,
     check_provenance_coverage,
+    check_archive_retrievability,
 )
 
 

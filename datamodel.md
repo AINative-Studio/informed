@@ -226,6 +226,7 @@ The user tables and the public-record tables are kept apart by design. No table,
 - Exactly one `is_current = true` row exists per (promise) in `verdicts` and per (person, stance) in `candidate_positions`.
 - The denormalized fields on `member_votes` match their `roll_calls` row; any drift triggers a re-copy.
 - Every NoSQL row with a `source_url` has a matching `provenance_log` entry, so no evidence goes untraced.
+- Every row naming an `archived_file_id` can fetch that file back, and its bytes hash to what the row records. *Added after the story-9.1 file-retrievability bug got past all five checks above: those archives had correct rows, correct metadata and correct sha256 values with no stored object behind any of them, because each of the five asks a question about rows and none asks whether the evidence a row cites can actually be fetched. This check downloads every archived file, so it belongs in the nightly run and not on a request path.*
 
 **Open questions**
 
