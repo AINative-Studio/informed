@@ -52,7 +52,7 @@ Feature: Anonymous mode, export and delete (stories 14.3, 14.4)
     And they choose anonymous mode
     And they assign "Prescription drug pricing" to primary with a stance
     And they mark it as a dealbreaker
-    And they assign "Broadband access" to secondary
+    And they assign "Broadband access" to secondary with a stance
     And they save anonymously
     Then they see a confirmation that their profile was saved in this browser only
     And no request that could write to the server was made
@@ -67,9 +67,14 @@ Feature: Anonymous mode, export and delete (stories 14.3, 14.4)
     Then "Prescription drug pricing" already shows as primary
     And no request that could write to the server was made
 
+  # A complete, valid profile first: "no consent is required" is only a
+  # meaningful claim about a save that is otherwise ready to go. Without a
+  # primary interest the save button is disabled for a different reason
+  # entirely, and the scenario would pass while proving nothing.
   Scenario: Anonymous mode never asks for consent to store, because nothing is stored
     When they switch to the full profile editor
     And they choose anonymous mode
+    And they assign "Prescription drug pricing" to primary with a stance
     Then no account consent checkbox is required before saving
 
   Scenario: Clearing an anonymous profile leaves nothing in this browser

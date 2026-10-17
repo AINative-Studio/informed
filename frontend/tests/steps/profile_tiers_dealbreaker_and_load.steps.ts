@@ -1,112 +1,28 @@
 /**
  * Steps for the frontend tiers/dealbreaker/load feature (stories 4.2, 4.3, 4.4).
  *
- * `/v1/topics`, `/v1/topics/{id}/stances`, `/v1/profiles/methodology`,
- * `/v1/profiles` and `/v1/profiles/{user_id}` are intercepted with
- * Playwright's `route`, exactly as `quick_onboarding.steps.ts` intercepts
- * its own three endpoints: the preview server serves static files only, and
- * the backend's own BDD suite
- * (`backend/tests/features/profile_tiers_dealbreaker_and_load.feature`)
- * already proves those endpoints against ZeroDB. What is left to prove here
- * is that the browser drives the tier-editing screen correctly against
- * whatever those endpoints return.
+ * Every `/v1/...` call the editor makes is intercepted with Playwright's
+ * `route` — the preview server serves static files only, and the backend's own
+ * BDD suite (`backend/tests/features/profile_tiers_dealbreaker_and_load.feature`)
+ * already proves those endpoints against ZeroDB. What is left to prove here is
+ * that the browser drives the tier-editing screen correctly against whatever
+ * they return.
+ *
+ * The route handlers themselves live in `anonymous_mode.steps.ts` and are
+ * shared (see `watchAndStub` there). They moved when stories 14.2 and 14.4
+ * added `/v1/profiles/consent`, the export and the delete to the same screen:
+ * Cucumber keeps one step registry, both features open the editor through the
+ * same Gherkin phrase, and two near-duplicate stubs would drift until the one
+ * that fell behind made its feature fail for an unrelated reason.
  */
-import { Before, Given, Then, When } from '@cucumber/cucumber';
+import { Given, Then, When } from '@cucumber/cucumber';
 import { expect } from '@playwright/test';
 
+import { setStoredProfile, watchAndStub } from './anonymous_mode.steps';
 import { world } from './common.steps';
 
-const TOPICS = {
-  locale: 'en-US',
-  taxonomy_version: 1,
-  topics: [
-    {
-      id: 'en-US:healthcare:v1',
-      name: 'Healthcare',
-      subtopics: [
-        { id: 'en-US:prescription-drug-pricing:v1', name: 'Prescription drug pricing' },
-        { id: 'en-US:medicare:v1', name: 'Medicare' },
-      ],
-    },
-    {
-      id: 'en-US:technology-and-telecommunications:v1',
-      name: 'Technology and telecommunications',
-      subtopics: [{ id: 'en-US:broadband-access:v1', name: 'Broadband access' }],
-    },
-  ],
-};
-
-const WEIGHTS = {
-  methodology_version: '2026.1',
-  weights: { primary: 3.0, secondary: 1.5, nice_to_have: 0.5 },
-};
-
-function stancesFor(topicId: string) {
-  return {
-    topic_id: topicId,
-    options: [
-      { id: `${topicId}:option-a`, label: 'Option A', description: 'Describes option A.' },
-      { id: `${topicId}:option-b`, label: 'Option B', description: 'Describes option B.' },
-    ],
-  };
-}
-
-/** Mutated by the "already saved a profile" Given to control the load stub. */
-let storedProfileResponse: unknown = null;
-
-// Reset per scenario, BEFORE any step body runs — including a "Given they
-// have already saved a profile..." step, which must survive into the route
-// stubs that "switch to the full profile editor" registers afterwards.
-// Resetting inside `stubProfileEditorApis` itself (which runs on that later
-// step) would wipe out a value this hook already reset and an earlier Given
-// had set, which is exactly the bug this ordering avoids.
-Before(() => {
-  storedProfileResponse = null;
-});
-
-async function stubProfileEditorApis(): Promise<void> {
-  await world.page.route('**/v1/topics', async (route) => {
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(TOPICS) });
-  });
-  await world.page.route('**/v1/profiles/methodology', async (route) => {
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(WEIGHTS) });
-  });
-  await world.page.route('**/v1/topics/*/stances', async (route) => {
-    const url = new URL(route.request().url());
-    const topicId = decodeURIComponent(url.pathname.split('/')[3] ?? '');
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify(stancesFor(topicId)),
-    });
-  });
-  await world.page.route('**/v1/profiles', async (route) => {
-    if (route.request().method() === 'POST') {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ version: 1, locale: 'en-US', updated_at: '2026-10-16T00:00:00Z' }),
-      });
-      return;
-    }
-    await route.continue();
-  });
-  // GET /v1/profiles/{user_id} — the load endpoint. A glob route is matched
-  // most-recently-registered-first in Playwright, and `**/v1/profiles/*`
-  // would otherwise also catch `**/v1/profiles/methodology` (registered
-  // above) since `methodology` matches `*` too — so this uses a regex that
-  // excludes that one literal segment, rather than relying on route order.
-  await world.page.route(/\/v1\/profiles\/(?!methodology$)[^/]+$/, async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify(storedProfileResponse),
-    });
-  });
-}
-
 Given('they switch to the full profile editor', async () => {
-  await stubProfileEditorApis();
+  await watchAndStub();
   await world.page.getByRole('button', { name: /edit my full profile/i }).click();
   await world.page.getByText('Prescription drug pricing').waitFor();
 });
@@ -179,7 +95,7 @@ Given(
   async (topicName: string) => {
     const topicId =
       topicName === 'Medicare' ? 'en-US:medicare:v1' : 'en-US:prescription-drug-pricing:v1';
-    storedProfileResponse = {
+    setStoredProfile({
       interests: [
         {
           topic_id: topicId,
@@ -192,7 +108,7 @@ Given(
       ],
       evidence_mode: 'blend',
       followed_person_ids: [],
-    };
+    });
   },
 );
 
