@@ -458,7 +458,9 @@ python backend/scripts/run_scheduled_jobs.py
 What it does: `app.scheduling.jobs.default_jobs()` lists every registered job
 with its own cadence (`sweep_correction_emails` daily, `load_candidacies`
 weekly, `load_house_rollcalls` hourly — registered now, ahead of story 5.6,
-at the cadence that story specifies). `app.scheduling.registry.ScheduledJobRunner`
+at the cadence that story specifies — the two nightly integrity jobs, and
+`sweep_qa_session_memory` every 6 hours).
+`app.scheduling.registry.ScheduledJobRunner`
 checks each job's last-successful-run timestamp, stored in a new
 `scheduled_jobs` ZeroDB table (`app.bootstrap` creates it like every other
 infrastructure table), and runs only the ones that are due. One job's failure
@@ -469,7 +471,7 @@ reported `BLOCKED`, distinct from a genuine `FAILED`, so a run log reads
 correctly either way.
 
 **This script is what any real scheduler calls — it is not itself a
-scheduler.** `.github/workflows/scheduled-jobs.yml` wires a daily GitHub
+scheduler.** `.github/workflows/scheduled-jobs.yml` wires a 3-hourly GitHub
 Actions `schedule:` trigger to it, which is enough cadence to serve every
 registered job (the runner, not the trigger, decides what is actually due).
 That workflow targets a `prod` GitHub Environment carrying `ZERODB_WORKSPACE_ID`
@@ -484,6 +486,56 @@ scheduled tick fails fast on a missing credential rather than silently doing
 nothing or faking a green run. `workflow_dispatch` is enabled on it so a human
 can trigger a manual run once the secrets are in place, without waiting for
 the next scheduled tick.
+
+### Q&A session memory: a 1-day window ZeroDB cannot enforce (story 13.5)
+
+datamodel.md's retention table says `Q&A memory | 1 day | Never written in
+anonymous mode`. **ZeroDB's memory API has no TTL field of any kind**, measured
+live: the request schema is
+`{agent_id, session_id, role, content, memory_metadata, project_id, embedding}`,
+and a request sending `ttl_seconds` and a top-level `expires_at` anyway returns
+200 and silently drops both. `/api/v1/memory/decay-config` is a decay-rate and
+LRU-eviction knob, not time-based retention, and 500s on a live GET.
+
+So the window is enforced by this codebase, twice over:
+
+- **A read guard.** `SessionMemoryService.recall` never returns a turn past its
+  window, even while ZeroDB still holds the row. This is what makes the promise
+  true to the voter at every instant — a sweep that runs late, fails, or has
+  not fired yet cannot cause an expired question to re-enter a conversation.
+- **A sweep.** `sweep_qa_session_memory`, registered in the runner above at a
+  **6-hour** interval. Not daily: a daily sweep of a 1-day window lets a turn
+  survive up to 48 hours, which would make "retention: 1 day" false of the
+  database for a full extra day. Six hours bounds the overshoot at a
+  quarter-day.
+
+  **One wrinkle to know about:** `INGEST_LAG_ALERT_THRESHOLD_SECONDS` is also
+  6 hours, so this job's own interval sits exactly at the alert threshold and
+  `job_ingest_lag_over_threshold{job="sweep_qa_session_memory"}` will read 1
+  whenever the runner is even slightly late — which, with the GitHub Actions
+  trigger firing **daily**, is most of the time. That is noise rather than a
+  bug in either component: the single fixed threshold is deliberate (story
+  16.5 argues why a per-job one needs a product decision), and the read guard
+  means a late sweep is never voter-visible. It is the clearest case yet for
+  the per-job thresholds `docs/observability.md` already flags as worth
+  revisiting — and for raising the workflow's `schedule:` cadence above daily,
+  which costs nothing since the runner, not the trigger, decides what is due.
+
+To run it by hand, or to see what it would delete first:
+
+```sh
+set -a; . local.env; set +a
+python backend/scripts/run_scheduled_jobs.py   # runs it when due, with the rest
+```
+
+Anonymous mode is a separate mechanism: `remember()` checks the flag *before*
+building a request, so an anonymous session makes **no ZeroDB call at all** — a
+write that happened and was then deleted would still have been a write. The
+`anonymous` argument is required rather than defaulted, so a caller that
+forgets it gets a `TypeError`, not the writing path.
+
+Nothing in this path ever logs a question. Counts and rule names only, the same
+posture the correction-email sweep takes toward addresses.
 
 ### If ZeroDB calls 402 with `storage_limit_exceeded`
 
