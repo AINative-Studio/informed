@@ -67,6 +67,34 @@ def test_the_plus_inf_bucket_is_rendered_and_equals_the_total_count() -> None:
     assert 'le="0.01"} 0' in body
 
 
+def test_bucket_lines_are_cumulative_and_monotonically_non_decreasing_up_to_the_total() -> None:
+    """Regression test (16.5): a hand-written `_Histogram.observe` already
+    stores CUMULATIVE per-bucket counts (every bucket a value falls under is
+    incremented, not just its smallest match), but an earlier version of the
+    renderer re-accumulated those already-cumulative counts a second time,
+    producing bucket lines that increased past the true total and then
+    dropped back down at `+Inf` — caught live against the real "informed"
+    project's own `/metrics` output during this story's verification, not by
+    any test, which is why this one exists now.
+    """
+    registry = MetricsRegistry(buckets=(0.01, 0.1, 1.0))
+    # One observation per bucket, ascending, so each bucket's TRUE cumulative
+    # count is unambiguous: le=0.01 -> 1, le=0.1 -> 2, le=1.0 -> 3.
+    registry.record_request(method="GET", route="/x", status=200, duration_seconds=0.005)
+    registry.record_request(method="GET", route="/x", status=200, duration_seconds=0.05)
+    registry.record_request(method="GET", route="/x", status=200, duration_seconds=0.5)
+
+    body = render_prometheus_text(registry)
+    assert 'le="0.01"} 1' in body
+    assert 'le="0.1"} 2' in body
+    assert 'le="1.0"} 3' in body
+    assert 'le="+Inf"} 3' in body
+    # The one invariant Prometheus's own format requires: bucket counts never
+    # decrease as `le` increases, and the last finite bucket never exceeds
+    # the total observation count.
+    assert 'le="1.0"} 3' in body and 'le="+Inf"} 3' in body
+
+
 def test_default_buckets_are_sorted_ascending() -> None:
     assert list(DEFAULT_BUCKETS) == sorted(DEFAULT_BUCKETS)
 

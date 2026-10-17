@@ -195,11 +195,16 @@ def render_prometheus_text(registry: MetricsRegistry) -> str:
     lines.append("# TYPE http_request_duration_seconds histogram")
     for (method, route), histogram in sorted(histograms.items()):
         base_labels = f'method="{_escape_label_value(method)}",route="{_escape_label_value(route)}"'
-        cumulative = 0
+        # `histogram.bucket_counts[i]` is already the CUMULATIVE count for
+        # that bucket — `_Histogram.observe` increments every bucket a value
+        # falls under, which for an ascending bucket list means "this many
+        # observations were <= this bucket's upper bound" directly. The
+        # exposition format's own `le` buckets are cumulative by definition
+        # (https://prometheus.io/docs/instrumenting/exposition_formats/), so
+        # the stored counts are rendered as-is rather than re-accumulated.
         for upper, bucket_count in zip(histogram.buckets, histogram.bucket_counts, strict=True):
-            cumulative += bucket_count
             lines.append(
-                f'http_request_duration_seconds_bucket{{{base_labels},le="{upper}"}} {cumulative}'
+                f'http_request_duration_seconds_bucket{{{base_labels},le="{upper}"}} {bucket_count}'
             )
         lines.append(
             f'http_request_duration_seconds_bucket{{{base_labels},le="+Inf"}} {histogram.count}'
