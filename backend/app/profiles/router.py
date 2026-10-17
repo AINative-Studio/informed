@@ -23,27 +23,44 @@ replaces "trust the caller's `user_id`" with "read it off a verified session",
 and this endpoint's `VoterProfileService` call does not change at all — only
 where `user_id` comes from does.
 
-Why `consent` is a required field rather than a free-standing endpoint
-========================================================================
+Consent: the gate (story 4.1) and the record (story 14.2)
+==========================================================
 
 ui-prd.md 2.2: "Before any interest is saved to an account, show the GDPR
 special-category consent language and the anonymous-mode alternative, side by
 side, as an actual choice — not a pre-checked box. This blocks profile save."
-Story 14.2 ("Consent at onboarding") owns the actual consent screen, its copy,
-and any record of *when* and *to what wording* a voter agreed — none of that
-exists yet, and none of it is invented here. What this story owes is the one
-thing that would otherwise let a client bypass the gate entirely: the save
-endpoint itself must refuse a write that does not carry an explicit, true
-`consent` flag. A request missing it, or carrying `consent: false`, is a 422
-naming consent — the same shape of error as a missing or blank address in
-`GET /v1/ballot` — because in both cases the caller sent something unusable
-and theirs to fix, not a server failure.
 
-This is deliberately a conservative design for 14.2 to build on, not a
-pre-emption of it: 14.2 can add a `consent_version` or `consented_at` field to
-this same request later without this story's gate changing shape, because the
-gate is "no consent, no write" and that rule does not get weaker as it gets
-more detailed.
+Story 4.1 built the **gate**: `POST /v1/profiles` requires `consent: true` and
+refuses anything else with a 422 naming consent — the same shape of error as a
+missing address in `GET /v1/ballot`, because the caller sent something unusable
+and theirs to fix. That satisfied "no save without it" and explicitly deferred
+the rest, predicting that "14.2 can add a `consent_version` field to this same
+request later without this story's gate changing shape". That is exactly what
+happened, and the gate did not change shape:
+
+  * `GET /v1/profiles/consent` publishes the wording a voter is being asked to
+    agree to, its version, and — in the same payload, so a client cannot show
+    one without the other — the anonymous-mode alternative.
+  * `POST /v1/profiles` now also takes `consent_version`, the version the
+    client actually displayed, and an unknown version is a 422 rather than a
+    stored record pointing at wording nobody can reproduce.
+  * Each save appends an auditable record to the append-only consent ledger.
+    See `app.profiles.consent`'s module docstring for the table's design and
+    why it holds neither a user id nor an interest.
+
+Export and delete (story 14.4)
+===============================
+
+`GET /v1/profiles/{user_id}/export` returns the voter's own profile decrypted,
+as one JSON document, with its consent history. `DELETE /v1/profiles/{user_id}`
+deletes the row, shreds the data key and records the withdrawal. Both are the
+"one action" prd.md promises, and both run through `VoterProfileService` —
+14.1 already built the mechanism; this story gives it an address.
+
+Decrypting for the export is not a weakening of 14.1. That story's encryption
+protects the profile from whoever holds the database, which is a different
+party from the person whose profile it is: an export the voter cannot read
+would satisfy no data-subject right at all.
 
 Anonymous mode: refused here, intentionally
 =============================================
@@ -62,11 +79,18 @@ row that was never written. The *working* anonymous path is client-side only
 
 from __future__ import annotations
 
+import time
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from app.profiles.consent import (
+    CURRENT_CONSENT_VERSION,
+    ConsentOffer,
+    UnknownConsentVersionError,
+    consent_offer,
+)
 from app.profiles.crypto import ProfileKeyring, ProfileRootKey, RootKeyMissingError
 from app.profiles.methodology import MethodologyVersionService
 from app.profiles.service import AnonymousModeError, PersonNotFoundError, VoterProfileService
@@ -139,6 +163,20 @@ class SaveProfileRequest(BaseModel):
             "signal. False or omitted is refused with a 422, never silently "
             "treated as consent withheld — the save simply does not happen."
         )
+    )
+    consent_version: str = Field(
+        default=CURRENT_CONSENT_VERSION,
+        min_length=1,
+        description=(
+            "The version of the consent wording this client actually showed "
+            "the voter — read it from GET /v1/profiles/consent and echo it "
+            "back here (story 14.2). A version this release cannot resolve is "
+            "refused with a 422: a stored record naming wording nobody can "
+            "reproduce would read as proof of consent while proving nothing. "
+            "Defaulted to the current version so story 4.1's existing clients "
+            "keep working, but a client that renders the consent screen should "
+            "always send the version it rendered."
+        ),
     )
     profile: dict[str, Any] = Field(
         description=(
@@ -247,6 +285,114 @@ class FollowResponse(BaseModel):
     )
 
 
+class ConsentRecordResponse(BaseModel):
+    """One consent event as it appears in an export (story 14.2).
+
+    Mirrors `app.profiles.consent.ConsentRecord` minus `profile_ref`: the HMAC
+    is how the server finds the row, and echoing it into a document the voter
+    downloads and may forward would publish a stable per-voter handle for no
+    benefit to the reader — they already know whose export it is.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    consent_version: str = Field(description="Which version of the wording was agreed")
+    action: str = Field(description='"granted" or "withdrawn"')
+    lawful_basis: str = Field(description="The GDPR basis claimed, e.g. Article 9(2)(a)")
+    recorded_at: str = Field(description="When this event was recorded, ISO-8601 UTC")
+
+
+class ProfileExportResponse(BaseModel):
+    """The body of `GET /v1/profiles/{user_id}/export` (story 14.4).
+
+    A self-describing document rather than a bare profile: a file in a
+    downloads folder has to say what it is, which version it captured and when
+    — see `VoterProfileService.export_document`'s docstring for each field and
+    for why `key_ref` is deliberately absent.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    exported_at: str = Field(description="When this export was produced, ISO-8601 UTC")
+    version: int = Field(description="The profile version this export captured")
+    updated_at: str | None = Field(description="When that version was saved")
+    locale: str
+    jurisdiction_ids: list[str]
+    profile: dict[str, Any] = Field(
+        description=(
+            "The voter's own decrypted interests: interests (topic_id, "
+            "stance_id, tier, intensity, dealbreaker, note), evidence_mode, "
+            "followed_person_ids and the change-date history."
+        )
+    )
+    consent: list[ConsentRecordResponse] = Field(
+        description="The append-only consent history for this profile, oldest first"
+    )
+
+
+class DeleteProfileResponse(BaseModel):
+    """What `DELETE /v1/profiles/{user_id}` returns (story 14.4).
+
+    Named booleans rather than a bare 204, because the acceptance criterion is
+    two distinct guarantees ("removes the row and shreds the key") and a voter
+    tapping an irreversible button deserves a response that states both
+    happened rather than an empty body they have to trust. `elapsed_seconds`
+    is reported for the same reason the criterion mentions a minute: the
+    number is observable rather than asserted in a release note.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    deleted: bool = Field(description="The profile row is gone (true even if it was already gone)")
+    key_shredded: bool = Field(
+        description=(
+            "The wrapped data key is destroyed, so any retained ciphertext is "
+            "permanently undecryptable — see app.profiles.crypto's "
+            "ProfileKeyring.shred for exactly what that claims and what it "
+            "does not."
+        )
+    )
+    consent_withdrawal_recorded: bool = Field(
+        description=(
+            "A 'withdrawn' event was appended to the append-only consent "
+            "ledger (story 14.2). The ledger holds no interests and no user "
+            "id; see app.profiles.service.VoterProfileService.delete."
+        )
+    )
+    elapsed_seconds: float = Field(description="How long the deletion took, measured server-side")
+
+
+@router.get(
+    "/profiles/consent",
+    response_model=ConsentOffer,
+    summary="The consent language a voter is asked to agree to (story 14.2)",
+    description=(
+        "Publishes the GDPR special-category consent wording, its version, "
+        "and the anonymous-mode alternative — all in one payload, so a client "
+        "cannot render the ask without the alternative beside it (ui-prd.md "
+        "2.2: 'side by side, as an actual choice'). Echo `consent_version` "
+        "back on POST /v1/profiles so the stored record names the wording "
+        "this voter actually saw.\n\n"
+        "Needs no identity: an anonymous voter reads this to decide whether "
+        "to have an account at all, and reading it writes nothing."
+    ),
+    responses={404: {"description": "No such consent version in this release"}},
+)
+def get_consent_offer(version: str | None = None) -> ConsentOffer:
+    """The consent wording, current by default.
+
+    `version` is accepted so a client can re-display the exact wording an old
+    record names — the reason superseded versions are never removed from
+    `CONSENT_VERSIONS`. An unknown version is a 404 rather than a silent
+    fallback to the current one: quietly showing different text than was asked
+    for is how a voter ends up looking at wording they never agreed to.
+    """
+    try:
+        return consent_offer(version)
+    except UnknownConsentVersionError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
 @router.get(
     "/profiles/methodology",
     response_model=TierWeightsResponse,
@@ -347,7 +493,16 @@ def save_profile(
             body.profile,
             locale=body.locale,
             jurisdiction_ids=body.jurisdiction_ids,
+            consent_version=body.consent_version,
         )
+    except UnknownConsentVersionError as exc:
+        # 422, not 404: the *request* is the thing that cannot be processed.
+        # The usual cause is a PWA cached across a release showing last
+        # version's wording, and the message tells the client to re-read
+        # GET /v1/profiles/consent and ask again.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
     except AnonymousModeError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
@@ -441,6 +596,94 @@ def unfollow_person(
     return FollowResponse(followed_person_ids=profile.followed_person_ids)
 
 
+@router.get(
+    "/profiles/{user_id}/export",
+    response_model=ProfileExportResponse,
+    summary="Export everything stored for one voter, as JSON (story 14.4)",
+    description=(
+        "prd.md: 'One-tap export and permanent deletion.' Returns the voter's "
+        "own decrypted interests, the stored row's metadata, and the "
+        "append-only consent history, as one JSON document — the audit trail "
+        "travels with the data rather than needing a second request.\n\n"
+        "Decrypted on purpose: story 14.1's encryption protects the profile "
+        "from whoever holds the database, which is not the same party as the "
+        "person whose profile it is. An export the voter cannot read would "
+        "satisfy no data-subject right at all.\n\n"
+        "A voter with no stored profile gets a 404 — unlike GET "
+        "/v1/profiles/{user_id}, which answers `null` with a 200. The two "
+        "differ deliberately: a load asks 'is there a profile to edit', where "
+        "'no' is an ordinary answer, while an export asks for a document, and "
+        "an empty document is not one."
+    ),
+    responses={404: {"description": "No profile is stored for this voter"}},
+)
+def export_profile(
+    service: Annotated[VoterProfileService, Depends(profile_service)],
+    user_id: str,
+) -> ProfileExportResponse:
+    document = service.export_document(user_id)
+    if document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                "there is no stored profile to export. If you use Informed in "
+                "anonymous mode your profile lives only in this browser and "
+                "was never sent to us, so there is nothing here to export."
+            ),
+        )
+    return ProfileExportResponse.model_validate(document)
+
+
+@router.delete(
+    "/profiles/{user_id}",
+    response_model=DeleteProfileResponse,
+    summary="Permanently delete one voter's profile and shred its key (14.4)",
+    description=(
+        "prd.md: 'One-tap export and permanent deletion.' datamodel.md: "
+        "'Deleting a profile deletes the row and shreds the data key.' Both "
+        "happen here, plus a 'withdrawn' event appended to the append-only "
+        "consent ledger (story 14.2) — see "
+        "app.profiles.service.VoterProfileService.delete for why the ledger "
+        "survives the deletion and why that is still the data-minimising "
+        "answer.\n\n"
+        "Irreversible: the data key is 32 random bytes that were never "
+        "derivable from anything, so once its wrap is gone no retained "
+        "ciphertext — not a backup, not a snapshot — can be decrypted again, "
+        "by anyone, including Informed's operators holding the root key. A "
+        "client MUST confirm with the voter before calling this.\n\n"
+        "Idempotent, and a 200 for a voter who never had a profile: 'it is "
+        "gone' is the true answer in both cases, and a 404 would leave a "
+        "voter who tapped delete twice wondering whether their data is still "
+        "there."
+    ),
+)
+def delete_profile(
+    service: Annotated[VoterProfileService, Depends(profile_service)],
+    user_id: str,
+) -> DeleteProfileResponse:
+    """Delete, then verify the deletion rather than reporting it on faith.
+
+    `service.delete` is idempotent and raises nothing on a missing row, so a
+    bare "deleted: true" would be true of a call that did nothing at all. The
+    two reads after it are what make the response's claims checkable: the
+    profile is actually unloadable, and the key wrap is actually gone. That is
+    three ZeroDB calls for the delete and two for the verification, which is
+    why the measured elapsed time is reported — story 14.4's "completes in
+    under 1 minute" is then observable per call rather than assumed.
+    """
+    started = time.monotonic()
+    service.delete(user_id)
+    elapsed = time.monotonic() - started
+    return DeleteProfileResponse(
+        deleted=service.version_of(user_id) == 0,
+        key_shredded=not service.has_data_key(user_id),
+        consent_withdrawal_recorded=any(
+            record.action == "withdrawn" for record in service.consent_history(user_id)
+        ),
+        elapsed_seconds=round(elapsed, 3),
+    )
+
+
 def _safe_error_summary(exc: ValidationError) -> str:
     """A validation error's field names and counts, never its values.
 
@@ -457,13 +700,19 @@ def _safe_error_summary(exc: ValidationError) -> str:
 
 
 __all__ = [
+    "ConsentRecordResponse",
+    "DeleteProfileResponse",
     "FollowResponse",
     "LoadedInterest",
     "LoadedProfile",
+    "ProfileExportResponse",
     "SaveProfileRequest",
     "SaveProfileResponse",
     "TierWeightsResponse",
+    "delete_profile",
+    "export_profile",
     "follow_person",
+    "get_consent_offer",
     "get_tier_weights",
     "load_profile",
     "methodology_service",

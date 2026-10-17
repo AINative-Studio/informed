@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import time
 from typing import Any
 
 import pytest
@@ -18,6 +19,12 @@ from pydantic import ValidationError
 
 from app.bootstrap import TABLE_SCHEMAS
 from app.profiles import PROFILE_TABLES
+from app.profiles.consent import (
+    CONSENT_TABLE,
+    CURRENT_CONSENT_VERSION,
+    LAWFUL_BASIS,
+    UnknownConsentVersionError,
+)
 from app.profiles.crypto import ProfileKeyring, ProfileRootKey
 from app.profiles.models import (
     MAX_HISTORY_ENTRIES,
@@ -680,3 +687,174 @@ def test_an_over_long_history_is_trimmed_rather_than_rejected() -> None:
     assert len(parsed.history) == MAX_HISTORY_ENTRIES
     # The OLDEST are dropped, which is also the privacy-preferring direction.
     assert parsed.history[-1].version == MAX_HISTORY_ENTRIES + 20
+
+
+# ---------------------------------------------------------------------------
+# Stories 14.2 and 14.4: the consent record, the one-action export document,
+# and the delete that is checkable rather than merely reported.
+# ---------------------------------------------------------------------------
+
+
+def test_a_save_records_consent_at_the_current_version(
+    service: VoterProfileService, keyring: ProfileKeyring
+) -> None:
+    """Story 14.2. Story 4.1's boolean gate demonstrated nothing after the
+    request ended; this is the record that does."""
+    service.save(USER, profile())
+    history = service.consent_history(USER)
+    assert len(history) == 1
+    assert history[0].action == "granted"
+    assert history[0].consent_version == CURRENT_CONSENT_VERSION
+    assert history[0].lawful_basis == LAWFUL_BASIS
+    # Keyed by the same HMAC the profile row uses, never by the user id.
+    assert history[0].profile_ref == keyring.row_id(USER)
+
+
+def test_a_save_with_an_unknown_consent_version_writes_nothing(
+    service: VoterProfileService, client: ZeroDBClient
+) -> None:
+    """Validated before the key is minted, like the payload itself: a stale
+    client must not leave a profile behind whose consent record points at
+    wording nobody can reproduce."""
+    with pytest.raises(UnknownConsentVersionError):
+        service.save(USER, profile(), consent_version="1999.0")
+    assert client.query_rows("voter_profiles", limit=10).rows == []
+    assert client.query_rows("voter_profile_keys", limit=10).rows == []
+    assert client.query_rows(CONSENT_TABLE, limit=10).rows == []
+
+
+def test_anonymous_mode_records_no_consent(
+    service: VoterProfileService, client: ZeroDBClient
+) -> None:
+    """Story 14.3's guarantee extended to 14.2's new table: an anonymous
+    voter leaves no row ANYWHERE, consent ledger included. A naive 14.2 would
+    have recorded consent before noticing the voter is anonymous."""
+    with pytest.raises(AnonymousModeError):
+        service.save(None, profile())
+    assert client.query_rows(CONSENT_TABLE, limit=10).rows == []
+    assert service.consent_history(None) == []
+    assert service.current_consent(None) is None
+
+
+def test_deleting_records_a_withdrawal_naming_the_granted_version(
+    service: VoterProfileService,
+) -> None:
+    """The withdrawal names the version that was GRANTED, so the ledger reads
+    as a pair rather than attributing the withdrawal to whatever wording is
+    current at delete time."""
+    service.save(USER, profile())
+    service.delete(USER)
+    history = service.consent_history(USER)
+    assert [record.action for record in history] == ["granted", "withdrawn"]
+    assert history[-1].consent_version == history[0].consent_version
+    # And there is no live consent afterwards.
+    assert service.current_consent(USER) is None
+
+
+def test_deleting_a_never_saved_profile_still_records_the_request(
+    service: VoterProfileService,
+) -> None:
+    """ "Someone asked us to erase a profile, there was nothing to erase" is
+    exactly the fact a later "but I deleted it" complaint needs."""
+    service.delete("synthetic-user-never-saved")
+    history = service.consent_history("synthetic-user-never-saved")
+    assert [record.action for record in history] == ["withdrawn"]
+    assert history[0].consent_version == CURRENT_CONSENT_VERSION
+
+
+def test_the_consent_ledger_survives_the_deletion_of_the_profile(
+    service: VoterProfileService, client: ZeroDBClient
+) -> None:
+    """Deliberate, and argued in `VoterProfileService.delete`'s docstring: the
+    ledger holds no political opinion and no identity, and it is the only
+    proof that the processing was lawful and that the voter withdrew."""
+    service.save(USER, profile())
+    service.delete(USER)
+    assert client.query_rows("voter_profiles", limit=10).rows == []
+    assert client.query_rows("voter_profile_keys", limit=10).rows == []
+    rows = client.query_rows(CONSENT_TABLE, limit=10).rows
+    assert len(rows) == 2
+    # Nothing in the surviving rows is an interest or a user id.
+    blob = json.dumps([row.row_data for row in rows])
+    assert "test-topic-0" not in blob
+    assert USER not in blob
+
+
+def test_has_data_key_reports_the_stored_state_not_the_call(
+    service: VoterProfileService,
+) -> None:
+    """`shred()` is idempotent and silent, so its return value proves nothing
+    about the stored state — only a read does, which is what the delete
+    endpoint's `key_shredded` is built on."""
+    assert service.has_data_key(USER) is False
+    service.save(USER, profile())
+    assert service.has_data_key(USER) is True
+    service.delete(USER)
+    assert service.has_data_key(USER) is False
+
+
+def test_the_export_document_is_self_describing(service: VoterProfileService) -> None:
+    """Story 14.4: one action returns everything, with enough metadata that a
+    file in a downloads folder says what it is."""
+    service.save(USER, profile(), locale="en-US", jurisdiction_ids=["us"])
+    document = service.export_document(USER)
+    assert document is not None
+    assert document["version"] == 1
+    assert document["locale"] == "en-US"
+    assert document["jurisdiction_ids"] == ["us"]
+    assert document["exported_at"].endswith("Z")
+    assert document["updated_at"].endswith("Z")
+    assert document["profile"]["interests"][0]["topic_id"] == "test:test-topic-0:v1"
+
+
+def test_the_export_document_carries_the_consent_history(
+    service: VoterProfileService,
+) -> None:
+    service.save(USER, profile())
+    document = service.export_document(USER)
+    assert document is not None
+    assert len(document["consent"]) == 1
+    assert document["consent"][0]["action"] == "granted"
+    assert document["consent"][0]["consent_version"] == CURRENT_CONSENT_VERSION
+
+
+def test_the_export_document_withholds_the_hmac_handle_and_the_key_ref(
+    service: VoterProfileService, keyring: ProfileKeyring
+) -> None:
+    """An export is a file a voter may forward. The HMAC is a stable per-voter
+    join key and `key_ref` is Informed's own infrastructure detail; neither
+    serves the reader."""
+    service.save(USER, profile())
+    document = service.export_document(USER)
+    assert document is not None
+    assert "key_ref" not in document
+    blob = json.dumps(document)
+    assert keyring.row_id(USER) not in blob
+    for record in document["consent"]:
+        assert set(record) == {"consent_version", "action", "lawful_basis", "recorded_at"}
+
+
+def test_the_export_document_of_an_absent_profile_is_none(
+    service: VoterProfileService,
+) -> None:
+    assert service.export_document("synthetic-user-never-saved") is None
+    assert service.export_document(None) is None
+
+
+def test_the_export_document_is_gone_after_a_delete(service: VoterProfileService) -> None:
+    service.save(USER, profile())
+    service.delete(USER)
+    assert service.export_document(USER) is None
+
+
+def test_a_delete_completes_far_inside_one_minute(service: VoterProfileService) -> None:
+    """Story 14.4's "completes in under 1 minute", measured rather than
+    assumed. Against the fake this is microseconds; the point of the
+    assertion is that it is a *measurement* in the suite, and the live run
+    (`scripts/verify_consent_export_delete_live.py`) makes the same one
+    against the real API where the number is meaningful."""
+    service.save(USER, profile())
+    started = time.monotonic()
+    service.delete(USER)
+    elapsed = time.monotonic() - started
+    assert elapsed < 60.0, f"delete took {elapsed:.3f}s"

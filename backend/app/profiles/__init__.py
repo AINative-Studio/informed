@@ -17,8 +17,24 @@ and the only place a decrypted profile exists: everything above it works with
     load round trip; this story adds the HTTP route onto it.
   * `methodology` — story 4.2's tier-weight reader: `GET /v1/profiles/methodology`
     reads live from `methodology_versions` rather than a hard-coded constant.
+  * `consent` — story 14.2's append-only GDPR special-category consent ledger
+    and the versioned consent wording. The record of *what* a voter agreed to
+    and *when*, which story 4.1's `consent: true` request flag could not be.
 """
 
+from app.profiles.consent import (
+    CONSENT_TABLE,
+    CONSENT_VERSIONS,
+    CURRENT_CONSENT_VERSION,
+    LAWFUL_BASIS,
+    ConsentLedger,
+    ConsentOffer,
+    ConsentRecord,
+    ConsentText,
+    UnknownConsentVersionError,
+    consent_offer,
+    consent_record_id,
+)
 from app.profiles.crypto import (
     KEY_WRAP_TABLE,
     ProfileCipher,
@@ -34,13 +50,19 @@ from app.profiles.methodology import (
 )
 from app.profiles.models import Interest, InterestProfile, VoterProfileRow
 from app.profiles.router import (
+    ConsentRecordResponse,
+    DeleteProfileResponse,
     FollowResponse,
     LoadedInterest,
     LoadedProfile,
+    ProfileExportResponse,
     SaveProfileRequest,
     SaveProfileResponse,
     TierWeightsResponse,
+    delete_profile,
+    export_profile,
     follow_person,
+    get_consent_offer,
     profile_service,
     router,
     unfollow_person,
@@ -52,14 +74,27 @@ from app.profiles.service import AnonymousModeError, PersonNotFoundError, VoterP
 #: `app.bootstrap.TABLE_SCHEMAS` about which tables the feature needs — a
 #: disagreement that shows up as a 404 from the real API and as a green test
 #: against a fake that invented the table.
-PROFILE_TABLES = (VoterProfileRow.table_name, KEY_WRAP_TABLE)
+#: Story 14.2 adds the consent ledger to that list. Three tables now, still
+#: named in one place so a fixture, the bootstrap schema and the live
+#: verification script cannot disagree about which the feature needs.
+PROFILE_TABLES = (VoterProfileRow.table_name, KEY_WRAP_TABLE, CONSENT_TABLE)
 
 __all__ = [
+    "CONSENT_TABLE",
+    "CONSENT_VERSIONS",
+    "CURRENT_CONSENT_VERSION",
     "DEFAULT_METHODOLOGY_VERSION",
     "DEFAULT_TIER_WEIGHTS",
     "KEY_WRAP_TABLE",
+    "LAWFUL_BASIS",
     "PROFILE_TABLES",
     "AnonymousModeError",
+    "ConsentLedger",
+    "ConsentOffer",
+    "ConsentRecord",
+    "ConsentRecordResponse",
+    "ConsentText",
+    "DeleteProfileResponse",
     "FollowResponse",
     "Interest",
     "InterestProfile",
@@ -69,15 +104,22 @@ __all__ = [
     "MethodologyVersionService",
     "PersonNotFoundError",
     "ProfileCipher",
+    "ProfileExportResponse",
     "ProfileKeyring",
     "ProfileRootKey",
     "RootKeyMissingError",
     "SaveProfileRequest",
     "SaveProfileResponse",
     "TierWeightsResponse",
+    "UnknownConsentVersionError",
     "VoterProfileRow",
     "VoterProfileService",
+    "consent_offer",
+    "consent_record_id",
+    "delete_profile",
+    "export_profile",
     "follow_person",
+    "get_consent_offer",
     "profile_service",
     "router",
     "unfollow_person",

@@ -29,13 +29,21 @@ import { useQuery } from '@tanstack/react-query';
 import { useEffect, useId, useMemo, useState } from 'react';
 
 import {
+  type DeleteProfileResult,
   type Interest,
   type InterestProfilePayload,
   type LoadedProfile,
+  type ProfileExport,
   ProfileLoadError,
   ProfileSaveError,
+  clearAnonymousProfile,
+  deleteProfile,
+  exportProfile,
+  fetchConsentOffer,
   fetchTierWeights,
+  loadAnonymousProfile,
   loadProfile,
+  saveAnonymousProfile,
   saveProfile,
 } from '../api/profiles';
 import { type StanceOption, fetchStances } from '../api/stances';
@@ -84,9 +92,28 @@ const TIER_LABELS: Record<EditorTier, string> = {
   nice_to_have: 'Nice-to-have',
 };
 
+/**
+ * Where this voter's profile goes (stories 14.2, 14.3).
+ *
+ * `'account'` is the encrypted, server-stored path and needs explicit
+ * consent; `'anonymous'` keeps the profile in this browser and makes no write
+ * to the server at all. A single piece of state rather than two booleans, so
+ * "consented but anonymous" and "neither chosen" are not representable.
+ */
+export type StorageMode = 'account' | 'anonymous';
+
 export function ProfileEditor() {
   const topicsQuery = useQuery({ queryKey: ['topics'], queryFn: ({ signal }) => fetchTopics(signal) });
   const weightsQuery = useQuery({ queryKey: ['tier-weights'], queryFn: ({ signal }) => fetchTierWeights(signal) });
+  // Story 14.2: the wording comes from the server, versioned, so the consent
+  // record names text that can be reproduced later. Never hard-coded here —
+  // the same rule the tier weights follow, for a stronger reason: wording
+  // compiled into the client cannot be resolved from a stored record.
+  const consentQuery = useQuery({
+    queryKey: ['consent-offer'],
+    queryFn: ({ signal }) => fetchConsentOffer(undefined, signal),
+    staleTime: Number.POSITIVE_INFINITY,
+  });
 
   const userId = useMemo(() => ensureDemoUserId(), []);
   const profileQuery = useQuery({
@@ -105,23 +132,76 @@ export function ProfileEditor() {
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
+  // --- Stories 14.3 and 14.4 state ---------------------------------------
+  const [storageMode, setStorageMode] = useState<StorageMode>('account');
+  const [exportState, setExportState] = useState<ProfileExport | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const [deleteStage, setDeleteStage] = useState<'idle' | 'confirming' | 'deleting'>('idle');
+  const [deleteResult, setDeleteResult] = useState<DeleteProfileResult | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
   // Load an existing profile once (story 4.4: "come back to it"). Guarded so
   // a later refetch of the same query (e.g. after a save invalidated it)
   // does not clobber in-progress edits.
   const [hydrated, setHydrated] = useState(false);
   useEffect(() => {
-    if (hydrated || !profileQuery.data) return;
+    if (hydrated || storageMode !== 'account' || !profileQuery.data) return;
     setSelections(selectionsFromLoadedProfile(profileQuery.data, allSubtopics));
     setHydrated(true);
-  }, [hydrated, profileQuery.data, allSubtopics]);
+  }, [hydrated, storageMode, profileQuery.data, allSubtopics]);
   useEffect(() => {
     // A voter with no saved profile still counts as "hydrated" once the load
     // finished (data is `null`, not undefined) — otherwise the effect above
     // waits forever for data that will never arrive.
-    if (!hydrated && profileQuery.isSuccess && profileQuery.data === null) {
+    if (!hydrated && storageMode === 'account' && profileQuery.isSuccess && profileQuery.data === null) {
       setHydrated(true);
     }
-  }, [hydrated, profileQuery.isSuccess, profileQuery.data]);
+  }, [hydrated, storageMode, profileQuery.isSuccess, profileQuery.data]);
+
+  // Story 14.3: anonymous mode hydrates from this browser instead, so the
+  // "survives a reload" half of the acceptance criterion holds on the same
+  // code path the account mode uses — one editor, two stores, never a second
+  // reduced-function screen. Keyed on `storageMode` rather than done once at
+  // mount because the choice is made after the component is already up.
+  const [anonymousHydrated, setAnonymousHydrated] = useState(false);
+  useEffect(() => {
+    if (storageMode !== 'anonymous' || anonymousHydrated) return;
+    const stored = loadAnonymousProfile();
+    if (stored) {
+      setSelections(
+        selectionsFromLoadedProfile(
+          {
+            interests: stored.profile.interests,
+            evidence_mode: stored.profile.evidence_mode ?? 'blend',
+            followed_person_ids: stored.profile.followed_person_ids ?? [],
+          },
+          allSubtopics,
+        ),
+      );
+    }
+    setAnonymousHydrated(true);
+  }, [storageMode, anonymousHydrated, allSubtopics]);
+
+  /**
+   * Switching mode resets the per-mode result messages.
+   *
+   * A stale "Saved to your account (version 2)" still on screen after a
+   * switch to anonymous mode would be a privacy claim about the wrong store,
+   * which is exactly the kind of thing a voter choosing anonymous mode is
+   * reading the screen to check.
+   */
+  function onStorageModeChange(mode: StorageMode) {
+    setStorageMode(mode);
+    setSaveMessage(null);
+    setSaveError(null);
+    setExportState(null);
+    setExportError(null);
+    setDeleteStage('idle');
+    setDeleteResult(null);
+    setDeleteError(null);
+    if (mode === 'anonymous') setConsent(false);
+  }
 
   function selectionFor(topic: { id: string; name: string }): TopicSelection {
     return (
@@ -154,7 +234,14 @@ export function ProfileEditor() {
   const tierError = validateTiers(active);
   const hasPrimary = active.some((selection) => selection.tier === 'primary');
   const missingStance = active.some((selection) => selection.stanceId === null);
-  const canSave = hasPrimary && !missingStance && !tierError && consent && !isSaving;
+  // Consent gates the ACCOUNT path only (stories 14.2, 14.3). Anonymous mode
+  // asks for none because there is nothing to consent to: no row is written
+  // anywhere, so there is no special-category processing to find a lawful
+  // basis for. Requiring a consent tick to write to the voter's own browser
+  // would be theatre, and worse, it would imply something was stored.
+  const needsConsent = storageMode === 'account';
+  const canSave =
+    hasPrimary && !missingStance && !tierError && (!needsConsent || consent) && !isSaving;
 
   function profilePayload(): InterestProfilePayload {
     const interests: Interest[] = active.map((selection) => ({
@@ -169,9 +256,39 @@ export function ProfileEditor() {
 
   async function onSave() {
     setSaveError(null);
+
+    // Story 14.3: the anonymous branch returns before any network call can be
+    // reached. Written as an early return rather than a ternary inside the
+    // try block so there is no code path on which an anonymous save could
+    // fall through to `saveProfile` — the property the tests assert by
+    // counting non-GET requests.
+    if (storageMode === 'anonymous') {
+      try {
+        saveAnonymousProfile(profilePayload());
+        setSaveMessage(
+          'Saved in this browser only. Nothing about your politics was sent to Informed.',
+        );
+      } catch {
+        // `localStorage` can throw (private browsing, quota). Surfaced rather
+        // than swallowed: silently dropping the profile is the one failure
+        // mode ui-prd.md's "real, equally-functional path" cannot tolerate.
+        setSaveError(
+          'This browser would not let us store your profile, so nothing was saved. ' +
+            'Check whether private browsing or site data is blocked.',
+        );
+      }
+      return;
+    }
+
     setIsSaving(true);
     try {
-      const response = await saveProfile(userId, profilePayload(), { consent: true });
+      const response = await saveProfile(userId, profilePayload(), {
+        consent: true,
+        // The version this component actually rendered (story 14.2). Passing
+        // the fetched value rather than a local constant is what makes the
+        // stored consent record resolvable back to text the voter saw.
+        consentVersion: consentQuery.data?.consent_version,
+      });
       setSaveMessage(`Saved to your account (version ${response.version}).`);
     } catch (error) {
       setSaveError(
@@ -182,6 +299,63 @@ export function ProfileEditor() {
     } finally {
       setIsSaving(false);
     }
+  }
+
+  /** Story 14.4: fetch the export document and offer it as a file. */
+  async function onExport() {
+    setExportError(null);
+    setExportState(null);
+    setIsExporting(true);
+    try {
+      setExportState(await exportProfile(userId));
+    } catch (error) {
+      setExportError(
+        error instanceof ProfileLoadError
+          ? error.message
+          : 'We could not export your profile just now. Please try again.',
+      );
+    } finally {
+      setIsExporting(false);
+    }
+  }
+
+  /**
+   * Story 14.4's delete, behind a confirmation.
+   *
+   * The confirmation is a separate render stage rather than `window.confirm`:
+   * it has to state WHAT is irreversible (the key shred, which no backup can
+   * undo), and a native dialog cannot be styled, cannot be read by the BDD
+   * suite the way a rendered warning can, and is suppressed outright in some
+   * embedded browsers — a destructive action silently losing its guard is
+   * the worst available failure.
+   */
+  async function onConfirmDelete() {
+    setDeleteError(null);
+    setDeleteStage('deleting');
+    try {
+      const result = await deleteProfile(userId);
+      setDeleteResult(result);
+      // The editor must not keep showing interests that no longer exist
+      // anywhere, so the local state is cleared to match the server.
+      setSelections({});
+      setSaveMessage(null);
+      setExportState(null);
+      setDeleteStage('idle');
+    } catch (error) {
+      setDeleteError(
+        error instanceof ProfileSaveError
+          ? error.message
+          : 'We could not delete your profile just now. Nothing has been deleted.',
+      );
+      setDeleteStage('idle');
+    }
+  }
+
+  /** Story 14.3's browser-side equivalent of delete: forget, locally. */
+  function onClearAnonymous() {
+    clearAnonymousProfile();
+    setSelections({});
+    setSaveMessage('Cleared. Nothing of your profile remains in this browser.');
   }
 
   if (topicsQuery.isPending || weightsQuery.isPending || profileQuery.isPending) {
@@ -228,10 +402,21 @@ export function ProfileEditor() {
 
       <ProfileSummary selections={active} weights={weights} />
 
-      <label>
-        <input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} />
-        I consent to saving my interests to my account
-      </label>
+      <StorageModeChoice
+        mode={storageMode}
+        onChange={onStorageModeChange}
+        anonymousAlternative={consentQuery.data?.anonymous_alternative}
+      />
+
+      {storageMode === 'account' ? (
+        <ConsentPanel
+          offer={consentQuery.data}
+          isPending={consentQuery.isPending}
+          isError={consentQuery.isError}
+          consent={consent}
+          onConsentChange={setConsent}
+        />
+      ) : null}
 
       {saveError ? <p role="alert">{saveError}</p> : null}
       {saveMessage ? <p role="status">{saveMessage}</p> : null}
@@ -239,6 +424,258 @@ export function ProfileEditor() {
       <button type="button" onClick={onSave} disabled={!canSave}>
         {isSaving ? 'Saving…' : 'Save my profile'}
       </button>
+
+      {storageMode === 'anonymous' ? (
+        <button type="button" onClick={onClearAnonymous}>
+          Clear my profile from this browser
+        </button>
+      ) : (
+        <PrivacyActions
+          onExport={onExport}
+          isExporting={isExporting}
+          exportState={exportState}
+          exportError={exportError}
+          deleteStage={deleteStage}
+          deleteResult={deleteResult}
+          deleteError={deleteError}
+          onAskDelete={() => {
+            setDeleteError(null);
+            setDeleteResult(null);
+            setDeleteStage('confirming');
+          }}
+          onConfirmDelete={onConfirmDelete}
+          onCancelDelete={() => setDeleteStage('idle')}
+        />
+      )}
+    </section>
+  );
+}
+
+/**
+ * The account-or-anonymous choice (stories 14.2, 14.3).
+ *
+ * Radios, not a checkbox labelled "stay anonymous": ui-prd.md 2.2 requires
+ * the alternative to be "side by side, as an actual choice — not a pre-checked
+ * box", and two radios are the only control that renders two options as peers.
+ * The anonymous option's own description comes from the server's consent offer
+ * (`anonymous_alternative`), so the wording a voter weighs against consent is
+ * the same wording the consent record's version names.
+ */
+function StorageModeChoice({
+  mode,
+  onChange,
+  anonymousAlternative,
+}: {
+  mode: StorageMode;
+  onChange: (mode: StorageMode) => void;
+  anonymousAlternative?: string;
+}) {
+  return (
+    <fieldset>
+      <legend>Where should this profile live?</legend>
+      <label>
+        <input
+          type="radio"
+          name="storage-mode"
+          value="account"
+          checked={mode === 'account'}
+          onChange={() => onChange('account')}
+        />
+        Save to my account, encrypted
+      </label>
+      <label>
+        <input
+          type="radio"
+          name="storage-mode"
+          value="anonymous"
+          checked={mode === 'anonymous'}
+          onChange={() => onChange('anonymous')}
+        />
+        Stay anonymous — nothing leaves this device
+      </label>
+      {anonymousAlternative ? <p>{anonymousAlternative}</p> : null}
+    </fieldset>
+  );
+}
+
+/**
+ * The GDPR special-category consent ask (story 14.2).
+ *
+ * Every word of it is the server's, from `GET /v1/profiles/consent`, so the
+ * version recorded in the consent ledger resolves to text that can be
+ * reproduced later. A render failure here disables the save rather than
+ * falling back to wording of the client's own: consenting to text the ledger
+ * cannot name would make the record unverifiable, which is the one outcome
+ * the whole versioning scheme exists to prevent.
+ */
+function ConsentPanel({
+  offer,
+  isPending,
+  isError,
+  consent,
+  onConsentChange,
+}: {
+  offer?: {
+    consent_version: string;
+    summary: string;
+    what_is_stored: string[];
+    your_rights: string[];
+  };
+  isPending: boolean;
+  isError: boolean;
+  consent: boolean;
+  onConsentChange: (value: boolean) => void;
+}) {
+  if (isPending) return <p>Loading the consent information…</p>;
+  if (isError || !offer) {
+    return (
+      <p role="alert">
+        We could not load the consent information just now, so nothing can be saved to an
+        account. You can still use anonymous mode, or try again.
+      </p>
+    );
+  }
+  // The wrapper carries NO `aria-label`, deliberately. Its heading already
+  // names the section for a screen reader, and any wrapper label containing
+  // the word "consent" would make `getByLabelText(/consent/i)` ambiguous
+  // between this section and the checkbox — which is the control both a
+  // screen-reader user and a test actually mean by "consent".
+  return (
+    <section>
+      <h3>Before we store anything in your account</h3>
+      <p>{offer.summary}</p>
+      <ul>
+        {offer.what_is_stored.map((item) => (
+          <li key={item}>{item}</li>
+        ))}
+      </ul>
+      <h4>Your rights</h4>
+      <ul>
+        {offer.your_rights.map((item) => (
+          <li key={item}>{item}</li>
+        ))}
+      </ul>
+      <label>
+        <input
+          type="checkbox"
+          checked={consent}
+          onChange={(event) => onConsentChange(event.target.checked)}
+        />
+        I consent to saving my interests to my account
+      </label>
+      <p>Consent version {offer.consent_version}</p>
+    </section>
+  );
+}
+
+/**
+ * Export and permanent delete (story 14.4) — prd.md's "one-tap export and
+ * permanent deletion", rendered only on the account path because anonymous
+ * mode has nothing stored to export or erase (its browser-side equivalent is
+ * the "clear from this browser" button beside it).
+ *
+ * The export is offered as a download link built from a blob URL rather than
+ * triggered automatically: a file appearing in a downloads folder without the
+ * voter choosing a moment is startling, and the document contains their
+ * political opinions in plaintext.
+ */
+function PrivacyActions({
+  onExport,
+  isExporting,
+  exportState,
+  exportError,
+  deleteStage,
+  deleteResult,
+  deleteError,
+  onAskDelete,
+  onConfirmDelete,
+  onCancelDelete,
+}: {
+  onExport: () => void;
+  isExporting: boolean;
+  exportState: ProfileExport | null;
+  exportError: string | null;
+  deleteStage: 'idle' | 'confirming' | 'deleting';
+  deleteResult: DeleteProfileResult | null;
+  deleteError: string | null;
+  onAskDelete: () => void;
+  onConfirmDelete: () => void;
+  onCancelDelete: () => void;
+}) {
+  /**
+   * The export document as a URL the browser can save to a file.
+   *
+   * A blob URL where the browser supports one, falling back to a `data:` URL
+   * where it does not. The fallback is not only for test environments: some
+   * embedded and privacy-hardened browsers withhold `createObjectURL`, and an
+   * export button that throws — taking the whole editor's render down with it,
+   * which is exactly what happened before this guard — is a far worse outcome
+   * than a longer URL. Either way the voter's political opinions stay in this
+   * document and are never uploaded anywhere to be turned into a link.
+   */
+  const downloadUrl = useMemo(() => {
+    if (!exportState) return null;
+    const json = JSON.stringify(exportState, null, 2);
+    if (typeof URL.createObjectURL === 'function') {
+      return URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+    }
+    return `data:application/json;charset=utf-8,${encodeURIComponent(json)}`;
+  }, [exportState]);
+
+  // A blob URL pins its data in memory for the document's lifetime, so each
+  // superseded one is revoked when a new export replaces it. A data: URL has
+  // nothing to revoke, and `revokeObjectURL` may not exist at all on a browser
+  // that lacked `createObjectURL`.
+  useEffect(() => {
+    if (!downloadUrl?.startsWith('blob:') || typeof URL.revokeObjectURL !== 'function') return;
+    return () => URL.revokeObjectURL(downloadUrl);
+  }, [downloadUrl]);
+
+  return (
+    <section aria-label="My data">
+      <h3>My data</h3>
+
+      <button type="button" onClick={onExport} disabled={isExporting}>
+        {isExporting ? 'Preparing your export…' : 'Export my profile'}
+      </button>
+      {exportError ? <p role="alert">{exportError}</p> : null}
+      {exportState && downloadUrl ? (
+        <p>
+          <a href={downloadUrl} download="informed-profile-export.json">
+            Download my profile as JSON
+          </a>{' '}
+          (version {exportState.version}, {exportState.consent.length} consent record
+          {exportState.consent.length === 1 ? '' : 's'})
+        </p>
+      ) : null}
+
+      {deleteStage === 'idle' ? (
+        <button type="button" onClick={onAskDelete}>
+          Delete my profile
+        </button>
+      ) : (
+        <div role="group" aria-label="Confirm deletion">
+          <p>
+            This is permanent and cannot be undone. Your profile is deleted and its encryption
+            key is destroyed, so no copy or backup can ever be read again — by anyone, including
+            Informed.
+          </p>
+          <button type="button" onClick={onConfirmDelete} disabled={deleteStage === 'deleting'}>
+            {deleteStage === 'deleting' ? 'Deleting…' : 'Yes, delete my profile permanently'}
+          </button>
+          <button type="button" onClick={onCancelDelete} disabled={deleteStage === 'deleting'}>
+            Cancel — keep my profile
+          </button>
+        </div>
+      )}
+      {deleteError ? <p role="alert">{deleteError}</p> : null}
+      {deleteResult ? (
+        <p role="status">
+          Your profile and its encryption key were permanently deleted
+          {deleteResult.consent_withdrawal_recorded ? ', and your consent withdrawal recorded' : ''}
+          , in {deleteResult.elapsed_seconds} seconds.
+        </p>
+      ) : null}
     </section>
   );
 }
