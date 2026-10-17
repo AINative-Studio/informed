@@ -38,7 +38,7 @@ def client() -> ZeroDBClient:
 # --- default_jobs() composition ---------------------------------------------
 
 
-def test_default_jobs_registers_exactly_the_six_documented_jobs() -> None:
+def test_default_jobs_registers_exactly_the_seven_documented_jobs() -> None:
     names = [job.name for job in jobs_module.default_jobs()]
     assert names == [
         "sweep_correction_emails",
@@ -46,11 +46,26 @@ def test_default_jobs_registers_exactly_the_six_documented_jobs() -> None:
         "load_house_rollcalls",
         "run_nightly_integrity_checks",
         "repair_member_votes_denormalization",
+        # Story 12.5. Daily, beside the integrity checks it mirrors in shape:
+        # fails the job (not a request) if any live issue_topics/stances row
+        # lacks an approved-or-grandfathered panel decision at its current
+        # version.
+        "run_panel_gate_check",
         # Story 13.5. Registered from day one rather than left to a human with
         # a script, which is the gap story 12.4's own module docstring
         # documented at length before this registry existed.
         "sweep_qa_session_memory",
     ]
+
+
+def test_the_panel_gate_check_runs_daily_with_no_precondition() -> None:
+    """No precondition, unlike `load_candidacies`/`load_house_rollcalls`: the
+    panel gate needs only the ZeroDB credentials every job already has via
+    `ZeroDBClient.from_env()`, not a separate third-party API key.
+    """
+    job = next(j for j in jobs_module.default_jobs() if j.name == "run_panel_gate_check")
+    assert job.precondition is None
+    assert job.interval == timedelta(days=1)
 
 
 def test_the_qa_memory_sweep_runs_every_six_hours_with_no_precondition() -> None:
@@ -275,6 +290,64 @@ def test_run_nightly_integrity_checks_raises_when_a_check_finds_a_violation(
     )
     with pytest.raises(ZeroDBError, match="violation"):
         jobs_module.run_nightly_integrity_checks(client)
+
+
+# --- run_panel_gate_check: unapproved wording becomes a job failure (12.5) -
+
+
+def test_run_panel_gate_check_passes_once_the_corpus_is_grandfathered(
+    client: ZeroDBClient,
+) -> None:
+    """The real, current shape of the live corpus: fully seeded and fully
+    grandfathered, nothing yet panel-approved. Mirrors
+    `scripts/check_panel_gate.py`'s own baseline fixture.
+    """
+    from app.panel_review.service import PanelReviewService
+    from app.seed_stances import StanceSeeder
+    from app.seed_taxonomy import TaxonomySeeder
+
+    TaxonomySeeder(client, pace=lambda: None).run()
+    StanceSeeder(client, pace=lambda: None).run()
+    PanelReviewService(client).grandfather_existing_corpus()
+
+    jobs_module.run_panel_gate_check(client)  # must not raise
+
+
+def test_run_panel_gate_check_raises_on_a_stance_with_no_panel_review_at_all(
+    client: ZeroDBClient,
+) -> None:
+    """A stance written directly to storage, bypassing `PanelReviewService`
+    entirely, with no ledger entry of any kind — not even grandfathered —
+    must surface as a raised error here, exactly as
+    `run_nightly_integrity_checks` raises on a found violation. This is the
+    job-boundary half of story 12.5's sabotage proof; the detailed gate
+    scenarios live in `tests/features/panel_gate_in_release.feature`.
+    """
+    from app.panel_review.service import PanelReviewService
+    from app.repositories import Repository
+    from app.repositories.models import Stance
+    from app.seed_stances import WORDING_VERSION, StanceSeeder
+    from app.seed_taxonomy import TaxonomySeeder
+
+    TaxonomySeeder(client, pace=lambda: None).run()
+    StanceSeeder(client, pace=lambda: None).run()
+    PanelReviewService(client).grandfather_existing_corpus()
+
+    stances: Repository[Stance] = Repository(client=client, model=Stance)
+    stances.upsert(
+        {
+            "id": "en-US:prescription-drug-pricing:v1:job-boundary-sabotage",
+            "topic_id": "en-US:prescription-drug-pricing:v1",
+            "label": "Job-boundary sabotage card: never reviewed by any panel",
+            "description": "Written directly to storage to prove run_panel_gate_check "
+            "raises when the gate finds an unreviewed row.",
+            "direction_code": "0",
+            "wording_version": WORDING_VERSION,
+        }
+    )
+
+    with pytest.raises(ZeroDBError, match="unapproved"):
+        jobs_module.run_panel_gate_check(client)
 
 
 # --- repair_member_votes_denormalization: reports, idempotent (16.4) ------

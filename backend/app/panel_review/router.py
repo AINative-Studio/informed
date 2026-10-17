@@ -50,6 +50,30 @@ would be a change with no behavioural difference and a real risk: any
 environment whose backfill had not run would serve an empty taxonomy and no
 stance cards. See `app.panel_review.service`'s module docstring for the full
 argument, and this story's PR for the open question.
+
+**Story 12.5 revisited this question and chose not to switch it, for a
+reason sharper than "the only approvals are grandfathered".** The real blocker
+is operational, not editorial: nothing in this codebase orchestrates
+"seed the corpus, THEN run the grandfathering backfill" as one guaranteed
+step. `scripts/bootstrap.py` does not call
+`scripts/backfill_panel_review.py`, and no deploy workflow does either — the
+backfill is a separate, manually-run script. Today, with the ungated path
+live, a freshly seeded environment serves voters correctly the moment
+`seed_taxonomy.py`/`seed_stances.py` finish; switching to the gated path
+would make that same environment serve an EMPTY taxonomy until a human
+remembers to run a second, unenforced script, with nothing in CI or at
+deploy time to catch the gap before a voter does. Story 12.5's own release
+gate (`app.panel_review.gate.check_panel_gate`, registered as the nightly
+`run_panel_gate_check` job once ZeroDB credentials exist — see
+`scripts/check_panel_gate.py`'s module docstring) would EVENTUALLY catch a
+missed backfill and fail loudly, but "caught within a day, nightly" is not
+the same guarantee as "the voter-facing app was never dark in the first
+place" — and the second is what an un-backfilled fresh environment would
+risk today if this switch were made. Making the switch safe is therefore an
+operational-hardening story of its own (teach `bootstrap.py` or a deploy
+workflow to run the backfill immediately after seeding, so the two can never
+drift apart), not something a CI/release-gate story should decide as a side
+effect. Until that ordering is enforced somewhere, this stays unswitched.
 """
 
 from __future__ import annotations
