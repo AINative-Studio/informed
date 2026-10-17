@@ -26,7 +26,8 @@ def test_routes_are_only_the_ones_built_so_far(client: TestClient) -> None:
     story 12.4 adds the public correction form and the reporter's status
     lookup; story 14.2 adds the published consent language and story 14.4 the
     one-action export and delete. Story 14.6 adds the shareable,
-    candidate-data-only summary card.
+    candidate-data-only summary card; story 14.7 adds the privacy-safe
+    analytics event recorder and its k-anonymous aggregate read.
 
     Replaces story 1.1's "health is the only route" assertion, whose own
     docstring named 1.5 as the story that would change it, and that story's
@@ -102,6 +103,11 @@ def test_routes_are_only_the_ones_built_so_far(client: TestClient) -> None:
         # docstring — so its presence here is one more public, candidate-data-
         # only endpoint alongside /v1/methodology and /v1/corrections.
         "/v1/candidates/{candidacy_id}/summary-card",
+        # Story 14.7: privacy-safe analytics. Recording takes no identity
+        # parameter, and the aggregate read reveals a count only at or above
+        # the k-anonymity threshold — see `app.analytics`'s module docstrings.
+        "/v1/analytics/events",
+        "/v1/analytics/aggregate",
     }
 
     # Story 12.4's deliberate omission, asserted rather than only described:

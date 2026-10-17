@@ -65,9 +65,7 @@ def record_event(analytics_ctx: AnalyticsContext, event_type: str, bucket: str) 
     analytics_ctx.last_recorded = analytics_ctx.service.record(event_type, bucket=bucket)
 
 
-@given(
-    parsers.parse('{count:d} "{event_type}" events have been recorded in bucket "{bucket}"')
-)
+@given(parsers.parse('{count:d} "{event_type}" events have been recorded in bucket "{bucket}"'))
 def record_many_events(
     analytics_ctx: AnalyticsContext, count: int, event_type: str, bucket: str
 ) -> None:
@@ -77,9 +75,7 @@ def record_many_events(
 
 
 @when(
-    parsers.parse(
-        'the team requests the aggregate count for "{event_type}" in bucket "{bucket}"'
-    )
+    parsers.parse('the team requests the aggregate count for "{event_type}" in bucket "{bucket}"')
 )
 def request_aggregate(analytics_ctx: AnalyticsContext, event_type: str, bucket: str) -> None:
     assert analytics_ctx.service is not None
@@ -136,7 +132,9 @@ def check_no_disallowed_packages(analytics_ctx: AnalyticsContext) -> None:
     assert analytics_ctx.dependency_findings == []
 
 
-@then("no script tag pointing at a known third-party analytics domain exists in the frontend source")
+@then(
+    "no script tag pointing at a known third-party analytics domain exists in the frontend source"
+)
 def check_no_tracker_scripts(analytics_ctx: AnalyticsContext) -> None:
     assert analytics_ctx.script_findings == []
 
