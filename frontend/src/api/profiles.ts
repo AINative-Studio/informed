@@ -28,6 +28,20 @@
  *     `saveProfile`: the backend still writes through the same encrypted
  *     `VoterProfileService`, this is just the ergonomic call shape for a
  *     single follow/unfollow action.
+ *
+ * Stories 14.2 and 14.4 add three more, and one field:
+ *
+ *   * `fetchConsentOffer` — `GET /v1/profiles/consent` (story 14.2). The
+ *     consent wording, its version, and the anonymous-mode alternative, in one
+ *     payload. Needs no identity and writes nothing.
+ *   * `saveProfile`'s `consentVersion` option — the version the client
+ *     actually rendered, echoed back so the stored consent record names
+ *     wording this voter really saw. Omitted rather than defaulted when the
+ *     caller has none; see that option's own comment.
+ *   * `exportProfile` — `GET /v1/profiles/{user_id}/export` (story 14.4).
+ *     Everything stored for this voter, decrypted, with its consent history.
+ *   * `deleteProfile` — `DELETE /v1/profiles/{user_id}` (story 14.4).
+ *     Irreversible; the caller owns the confirmation step.
  */
 
 import { apiUrl } from './ballot';
@@ -51,6 +65,56 @@ export interface SaveProfileResponse {
   version: number;
   locale: string;
   updated_at: string;
+}
+
+/**
+ * Mirrors `backend/app/profiles/consent.ConsentOffer` (story 14.2).
+ *
+ * The consent wording and the anonymous-mode alternative arrive together, in
+ * one object, deliberately — see that module's docstring and ui-prd.md 2.2
+ * ("side by side, as an actual choice"). A component that renders the ask has
+ * the alternative already in hand, so it cannot accidentally show a
+ * consent-or-nothing screen.
+ */
+export interface ConsentOffer {
+  consent_version: string;
+  summary: string;
+  what_is_stored: string[];
+  anonymous_alternative: string;
+  your_rights: string[];
+  lawful_basis: string;
+}
+
+/** One consent event as it appears in an export (story 14.2). */
+export interface ConsentRecord {
+  consent_version: string;
+  action: 'granted' | 'withdrawn';
+  lawful_basis: string;
+  recorded_at: string;
+}
+
+/** Mirrors `backend/app/profiles/router.py`'s `ProfileExportResponse` (14.4). */
+export interface ProfileExport {
+  exported_at: string;
+  version: number;
+  updated_at: string | null;
+  locale: string;
+  jurisdiction_ids: string[];
+  profile: {
+    interests: Interest[];
+    evidence_mode: 'votes' | 'promises' | 'blend';
+    followed_person_ids: string[];
+    history?: { version: number; changed_at: string }[];
+  };
+  consent: ConsentRecord[];
+}
+
+/** Mirrors `backend/app/profiles/router.py`'s `DeleteProfileResponse` (14.4). */
+export interface DeleteProfileResult {
+  deleted: boolean;
+  key_shredded: boolean;
+  consent_withdrawal_recorded: boolean;
+  elapsed_seconds: number;
 }
 
 /** Mirrors `backend/app/profiles/router.py`'s `LoadedProfile`. */
@@ -88,7 +152,20 @@ export class ProfileSaveError extends Error {
 export async function saveProfile(
   userId: string,
   profile: InterestProfilePayload,
-  options: { consent: true; locale?: string; jurisdictionIds?: string[] },
+  options: {
+    consent: true;
+    /**
+     * The version of the consent wording this client actually rendered, read
+     * from `fetchConsentOffer` and echoed back (story 14.2). Omitted — not
+     * defaulted here — when the caller has no version to report: the backend
+     * defaults the field so story 4.1's callers keep working, and a client
+     * that invented a version string would put wording it never showed into
+     * an audit record. See `app.profiles.consent`'s module docstring.
+     */
+    consentVersion?: string;
+    locale?: string;
+    jurisdictionIds?: string[];
+  },
   signal?: AbortSignal,
 ): Promise<SaveProfileResponse> {
   const url = apiUrl(API_BASE_URL, '/v1/profiles', window.location.origin);
@@ -99,6 +176,9 @@ export async function saveProfile(
     body: JSON.stringify({
       user_id: userId,
       consent: options.consent,
+      ...(options.consentVersion === undefined
+        ? {}
+        : { consent_version: options.consentVersion }),
       profile,
       locale: options.locale ?? 'en-US',
       jurisdiction_ids: options.jurisdictionIds ?? [],
@@ -162,6 +242,110 @@ export async function fetchTierWeights(signal?: AbortSignal): Promise<TierWeight
     );
   }
   return (await response.json()) as TierWeightsResponse;
+}
+
+/**
+ * The consent wording a voter is asked to agree to (story 14.2).
+ *
+ * `GET /v1/profiles/consent`. Needs no identity and writes nothing — an
+ * anonymous voter reads this to decide whether to have an account at all.
+ *
+ * Pass `version` to re-display the exact wording an old consent record names;
+ * omit it for the current version. An unknown version is a 404 from the
+ * backend rather than a silent fallback, deliberately: quietly showing
+ * different text than was asked for is how a voter ends up reading wording
+ * they never agreed to.
+ */
+export async function fetchConsentOffer(
+  version?: string,
+  signal?: AbortSignal,
+): Promise<ConsentOffer> {
+  const url = apiUrl(API_BASE_URL, '/v1/profiles/consent', window.location.origin);
+  if (version !== undefined) url.searchParams.set('version', version);
+  const response = await fetch(url.toString(), {
+    signal,
+    headers: { accept: 'application/json' },
+  });
+  if (!response.ok) {
+    throw new ProfileLoadError(
+      'We could not load the consent information just now. Please try again — ' +
+        'nothing has been saved.',
+      response.status,
+    );
+  }
+  return (await response.json()) as ConsentOffer;
+}
+
+/**
+ * Export everything stored for one voter, as one JSON document (story 14.4).
+ *
+ * `GET /v1/profiles/{user_id}/export`. Returns the voter's own decrypted
+ * interests plus the append-only consent history, so the audit trail travels
+ * with the data rather than needing a second request.
+ *
+ * A 404 means nothing is stored — the backend's deliberate difference from
+ * `loadProfile`'s `null`-with-200 (a load asks "is there a profile to edit",
+ * where no is an ordinary answer; an export asks for a document, and an empty
+ * document is not one). The message for that case names anonymous mode, so a
+ * voter who never had an account does not read it as data loss.
+ */
+export async function exportProfile(userId: string, signal?: AbortSignal): Promise<ProfileExport> {
+  const url = apiUrl(
+    API_BASE_URL,
+    `/v1/profiles/${encodeURIComponent(userId)}/export`,
+    window.location.origin,
+  );
+  const response = await fetch(url.toString(), {
+    signal,
+    headers: { accept: 'application/json' },
+  });
+  if (!response.ok) {
+    throw new ProfileLoadError(
+      response.status === 404
+        ? 'There is nothing stored for you to export. If you use Informed in ' +
+          'anonymous mode your profile lives only in this browser and was ' +
+          'never sent to us.'
+        : 'We could not export your profile just now. Please try again.',
+      response.status,
+    );
+  }
+  return (await response.json()) as ProfileExport;
+}
+
+/**
+ * Permanently delete one voter's profile and shred its key (story 14.4).
+ *
+ * `DELETE /v1/profiles/{user_id}`. Irreversible: the data key is 32 random
+ * bytes that were never derivable from anything, so once its wrap is gone no
+ * retained ciphertext can be decrypted again by anyone, Informed's operators
+ * included. **A caller MUST confirm with the voter before calling this** — see
+ * `ProfileEditor`'s delete flow, which is where that confirmation lives.
+ *
+ * Idempotent on the backend, and a 200 (not a 404) for a voter who never had a
+ * profile: "it is gone" is the true answer in both cases.
+ */
+export async function deleteProfile(
+  userId: string,
+  signal?: AbortSignal,
+): Promise<DeleteProfileResult> {
+  const url = apiUrl(
+    API_BASE_URL,
+    `/v1/profiles/${encodeURIComponent(userId)}`,
+    window.location.origin,
+  );
+  const response = await fetch(url.toString(), {
+    method: 'DELETE',
+    signal,
+    headers: { accept: 'application/json' },
+  });
+  if (!response.ok) {
+    throw new ProfileSaveError(
+      'We could not delete your profile just now. Nothing has been deleted — ' +
+        'please try again.',
+      response.status,
+    );
+  }
+  return (await response.json()) as DeleteProfileResult;
 }
 
 /** Mirrors `backend/app/profiles/router.py`'s `FollowResponse`. */
