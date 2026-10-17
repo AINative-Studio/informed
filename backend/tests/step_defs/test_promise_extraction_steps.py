@@ -253,7 +253,9 @@ def _has_four_parts(fake: FakeZeroDBTransport) -> None:
 @then(parsers.parse('that promise has direction "{direction}"'))
 def _has_direction(fake: FakeZeroDBTransport, direction: str) -> None:
     row = _single_promise(fake)
-    assert row["direction"] == direction, f"direction is {row['direction']!r}, expected {direction!r}"
+    assert row["direction"] == direction, (
+        f"direction is {row['direction']!r}, expected {direction!r}"
+    )
 
 
 @then("that promise is marked testable")

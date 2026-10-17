@@ -26,15 +26,39 @@ from app.ingest.promise_extraction import (
     EXTRACTION_PROMPT_TEMPLATE,
     STUB_EXTRACTOR_VERSION,
     ExtractedCommitment,
+    PromiseExtractionError,
+    PromiseExtractionPipeline,
     QuoteSpanError,
     RuleBasedStubExtractor,
     dedupe_key,
+    extract_text_if_html,
     passages_with_context,
     promise_id_for,
     segment_sentences,
     verify_quote_span,
 )
 from app.repositories.models import Promise
+from app.zerodb import ZeroDBClient
+from app.zerodb.testing import FakeZeroDBTransport
+
+
+def _fake_client(*, bootstrap: bool = False) -> ZeroDBClient:
+    """A client over story 1.2's in-memory fake. No network, no credential."""
+    transport = FakeZeroDBTransport()
+    transport.break_server_side_filter()
+    client = ZeroDBClient(
+        transport=transport, project_id="proj-test", backoff_base=0.0, sleep=lambda _: None
+    )
+    if bootstrap:
+        from app.bootstrap import Bootstrapper
+
+        Bootstrapper(client, pace=lambda: None).run()
+    return client
+
+
+def _unused_client() -> ZeroDBClient:
+    """For constructor-guard tests that must raise before any request."""
+    return _fake_client()
 
 # ---------------------------------------------------------------------------
 # segment_sentences
@@ -136,7 +160,10 @@ def test_passages_with_context_default_neighbour_count() -> None:
 
 
 def test_verify_quote_span_accepts_a_verbatim_substring() -> None:
-    verify_quote_span("I will vote to cap insulin.", source_text="Yesterday: I will vote to cap insulin. OK.")
+    verify_quote_span(
+        "I will vote to cap insulin.",
+        source_text="Yesterday: I will vote to cap insulin. OK.",
+    )
 
 
 def test_verify_quote_span_rejects_a_paraphrase() -> None:
@@ -199,9 +226,7 @@ def test_specific_checkable_commitments_are_testable(
         "I will always stand up for what is right.",
     ],
 )
-def test_aspirational_rhetoric_is_not_testable(
-    stub: RuleBasedStubExtractor, sentence: str
-) -> None:
+def test_rhetoric_is_not_testable(stub: RuleBasedStubExtractor, sentence: str) -> None:
     assert _only(stub, sentence).testable is False
 
 
@@ -533,6 +558,71 @@ def test_a_testable_promise_must_carry_an_action_and_an_object() -> None:
         Promise.model_validate(_promise_row(testable=True, object=None))
     with pytest.raises(ValidationError):
         Promise.model_validate(_promise_row(testable=True, action=None))
+
+
+def test_the_stub_identifies_a_body_as_the_actor_when_the_speaker_is_absent(
+    stub: RuleBasedStubExtractor,
+) -> None:
+    """The implicit-actor case the prompt reasons through, as behaviour.
+
+    "Congress must act" commits a body, not the speaker. Attributing it to
+    the speaker would record a promise they did not make and then score them
+    for breaking it.
+    """
+    found = stub("Congress must vote to repeal the cap on deductions.", context="")
+    assert found and found[0].actor == "congress"
+
+
+def test_the_stub_leaves_the_actor_unset_when_the_passage_names_none(
+    stub: RuleBasedStubExtractor,
+) -> None:
+    found = stub("Time to repeal the $10,000 cap.", context="")
+    assert found and found[0].actor is None
+
+
+def test_the_stub_downgrades_to_non_testable_rather_than_inventing_an_object(
+    stub: RuleBasedStubExtractor,
+) -> None:
+    """The crude splitter failing is not a licence to fabricate.
+
+    When the commitment verb is the last thing in the passage there is no
+    object text to take, and `Promise` refuses a testable row with no object.
+    The honest answer is to keep the quote and mark it non-testable -- never
+    to invent an object so the row validates.
+    """
+    found = stub("Insulin costs $35 too much, and I will vote to", context="")
+    assert found, "the quote should still be kept"
+    assert found[0].testable is False
+    assert found[0].object is None
+
+
+# ---------------------------------------------------------------------------
+# the pipeline's own guards
+# ---------------------------------------------------------------------------
+
+
+def test_the_pipeline_refuses_a_blank_extractor_version() -> None:
+    """Without it, nothing distinguishes stub rows from real ones."""
+    with pytest.raises(ValueError, match="extractor_version"):
+        PromiseExtractionPipeline(
+            _unused_client(), extractor=RuleBasedStubExtractor(), extractor_version="   "
+        )
+
+
+def test_the_pipeline_refuses_a_source_that_is_not_on_file() -> None:
+    """A promise must cite an archived source that actually exists."""
+    client = _fake_client(bootstrap=True)
+    pipeline = PromiseExtractionPipeline(
+        client, extractor=RuleBasedStubExtractor(), extractor_version=STUB_EXTRACTOR_VERSION
+    )
+    with pytest.raises(PromiseExtractionError, match="no promise_sources row"):
+        pipeline.extract_from_source("src:nothing-here", source_text="I will vote to cap it.")
+
+
+def test_extract_text_if_html_parses_markup_and_passes_plain_text_through() -> None:
+    assert "Cap insulin" in extract_text_if_html("<p>Cap insulin at $35</p>")
+    plain = "I will vote to cap insulin at $35 per month."
+    assert extract_text_if_html(plain) == plain
 
 
 def test_a_non_testable_promise_is_never_qa_pending() -> None:
