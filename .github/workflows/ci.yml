@@ -53,6 +53,19 @@ jobs:
       - name: Unit and BDD tests
         run: pytest -rxX --cov=app --cov-report=term-missing
 
+      # Story 12.5: unapproved taxonomy/stance wording blocked from release.
+      # Runs app.panel_review.gate.check_panel_gate against a self-contained
+      # in-memory fixture (seeded, grandfathered, then self-checked with a
+      # sabotage row that MUST be caught) — no ZeroDB credentials needed, so
+      # this runs on every push/PR and proves the gate's pass AND fail paths
+      # are both sound. Checking the real, live panel_reviews ledger needs
+      # live credentials this workflow does not have; see
+      # scripts/check_panel_gate.py's module docstring for the --live mode
+      # and the deployment-readiness gap, which matches
+      # scheduled-jobs.yml's documented pattern for the same limitation.
+      - name: Panel gate check (story 12.5)
+        run: python scripts/check_panel_gate.py
+
   frontend:
     name: Frontend (Vitest + Playwright/Cucumber)
     runs-on: ubuntu-latest

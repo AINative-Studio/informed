@@ -1,6 +1,6 @@
 """The real job registry: every periodic task this codebase needs, named once.
 
-Six jobs today, one per story that flagged the scheduling gap:
+Seven jobs today, one per story that flagged the scheduling gap:
 
   * `sweep_correction_emails` — story 12.4's 90-day contact-email retention
     sweep. Daily. The most urgent of the three (see `app.corrections.retention`'s
@@ -26,6 +26,16 @@ Six jobs today, one per story that flagged the scheduling gap:
     the moment it is found (rather than only reporting it) is the point of
     16.4's acceptance criterion, and running it right after the check means
     one nightly invocation both reports and heals.
+  * `run_panel_gate_check` — story 12.5's release gate
+    (`app.panel_review.gate`). Nightly, beside the integrity checks it
+    mirrors in shape: fails the job if any live `issue_topics`/`stances` row
+    lacks an in-force `approved`-or-`grandfathered` panel decision at its
+    current version. No precondition: like the integrity checks, it needs
+    only the ZeroDB credentials this runner already has. This is the LIVE
+    half of story 12.5 — the half `.github/workflows/ci.yml` cannot run
+    because it has no ZeroDB credentials; see
+    `scripts/check_panel_gate.py`'s module docstring for the CI-safe half
+    and for why `grandfathered` passes deliberately rather than by omission.
   * `sweep_qa_session_memory` — story 13.5's 1-day Q&A memory retention. Every
     6 hours, not daily: a daily sweep of a 1-day window lets a turn survive up
     to 48 hours, which would make datamodel.md's "retention: 1 day" false of
@@ -83,6 +93,7 @@ from app.ingest.house_rollcalls import (
 )
 from app.integrity.checks import run_all_checks
 from app.integrity.repair import repair_member_votes_drift
+from app.panel_review.gate import check_panel_gate
 from app.scheduling.registry import JobRegistration
 from app.seed_elections import UPCOMING_ELECTIONS, ElectionSeeder
 from app.zerodb.client import ZeroDBClient
@@ -294,6 +305,40 @@ def run_repair_member_votes_drift(client: ZeroDBClient) -> None:
     logger.info("repair_member_votes_denormalization: %s", result.summary())
 
 
+# --- story 12.5: run_panel_gate_check ---------------------------------------
+
+
+def run_panel_gate_check(client: ZeroDBClient) -> None:
+    """Fail this job if any live issue_topics/stances row lacks a panel decision.
+
+    Delegates entirely to `app.panel_review.gate.check_panel_gate`, which
+    never raises on its own findings (same contract as `run_all_checks`
+    above) — this function is where a violation becomes a job FAILURE rather
+    than a quietly-logged report, exactly as `run_nightly_integrity_checks`
+    does for datamodel.md's checks.
+
+    This is the LIVE half of story 12.5's release gate — the half that needs
+    real ZeroDB credentials and so cannot run in `.github/workflows/ci.yml`
+    today (see `scripts/check_panel_gate.py`'s module docstring). Registering
+    it here means the day a `prod` GitHub Environment with ZeroDB credentials
+    exists, this job starts protecting the real corpus with no further code
+    change — the same "flip a flag once credentials exist" posture
+    `load_candidacies`/`load_house_rollcalls` already document for their own
+    missing API keys.
+
+    Grandfathered rows do not fail this job — see
+    `app.panel_review.gate`'s module docstring for why that is a deliberate
+    tolerance of a known, visible debt rather than a gap in this check.
+    """
+    report = check_panel_gate(client)
+    logger.info("panel gate check: %s", report.summary())
+    if not report.ok:
+        violation_lines = "; ".join(str(v) for v in report.violations)
+        raise ZeroDBError(
+            f"panel gate check found {len(report.violations)} unapproved row(s): {violation_lines}"
+        )
+
+
 # --- story 13.5: sweep_qa_session_memory ------------------------------------
 
 
@@ -356,6 +401,17 @@ def default_jobs() -> list[JobRegistration]:
             run=run_repair_member_votes_drift,
         ),
         JobRegistration(
+            # Story 12.5: unapproved taxonomy/stance wording blocked from
+            # release. Daily, like the integrity checks it sits beside — this
+            # is a standing-debt monitor (did anything slip past the review
+            # workflow since yesterday), not a request-path gate, so a day's
+            # latency on catching a bypass is the same trade
+            # run_nightly_integrity_checks already makes.
+            name="run_panel_gate_check",
+            interval=timedelta(days=1),
+            run=run_panel_gate_check,
+        ),
+        JobRegistration(
             # Every 6 hours rather than daily. A daily sweep of a 1-day window
             # means a turn can survive up to 48 hours — its own day, plus up to
             # a day waiting for the sweep — which would make datamodel.md's
@@ -385,6 +441,7 @@ __all__ = [
     "run_load_candidacies",
     "run_load_house_rollcalls",
     "run_nightly_integrity_checks",
+    "run_panel_gate_check",
     "run_repair_member_votes_drift",
     "run_sweep_correction_emails",
     "run_sweep_qa_session_memory",
