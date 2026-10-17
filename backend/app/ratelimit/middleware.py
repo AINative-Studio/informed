@@ -69,6 +69,7 @@ lockout.
 
 from __future__ import annotations
 
+import json
 import math
 import time
 from collections import deque
@@ -79,6 +80,7 @@ from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.ratelimit.policy import (
+    POLICIES,
     RateLimitPolicy,
     account_key,
     client_key,
@@ -107,6 +109,11 @@ REFUSAL_DETAIL = (
     "data from bulk collection. Wait for the period given in the Retry-After "
     "header and try again."
 )
+
+#: The refusal body, serialized once. Shaped `{"detail": ...}` to match
+#: FastAPI's own `HTTPException` responses, so a client's error handling does
+#: not need a special case for a 429 raised below the framework.
+REFUSAL_BODY = json.dumps({"detail": REFUSAL_DETAIL}).encode()
 
 
 @dataclass(frozen=True)
@@ -231,20 +238,19 @@ class RateLimitMiddleware:
         if now - self._last_sweep < SWEEP_INTERVAL_SECONDS:
             return
         self._last_sweep = now
-        windows = {policy.name: policy.window_seconds for policy in (*self._policies(),)}
+        windows = {policy.name: policy.window_seconds for policy in POLICIES}
         dead = [
             bucket_key
             for bucket_key, hits in self._hits.items()
+            # A bucket is dead when its newest timestamp has aged out of that
+            # policy's own window — so the 1-hour correction bucket is not
+            # swept on the 1-minute reads' schedule. An unknown policy name
+            # (a bucket from a `check()` with an ad-hoc policy, as the tests
+            # make) falls back to the sweep interval.
             if not hits or hits[-1] <= now - windows.get(bucket_key[1], SWEEP_INTERVAL_SECONDS)
         ]
         for bucket_key in dead:
             del self._hits[bucket_key]
-
-    @staticmethod
-    def _policies() -> tuple[RateLimitPolicy, ...]:
-        from app.ratelimit.policy import POLICIES
-
-        return POLICIES
 
     def tracked_keys(self) -> int:
         """How many buckets are held. For the memory assertions."""
@@ -257,8 +263,16 @@ class RateLimitMiddleware:
     # --- the ASGI surface -------------------------------------------------
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http" or self.app is None:
-            assert self.app is not None, "a decision-only limiter cannot serve requests"
+        if self.app is None:  # pragma: no cover - the decision-only form
+            raise RuntimeError(
+                "RateLimitMiddleware(app=None) can only answer check()/identity(); "
+                "it has no application to forward a request to."
+            )
+
+        # Lifespan and websocket scopes have no method, no path and no client
+        # to limit. Passing them straight through is also what keeps startup
+        # and shutdown working: a lifespan message is not a request.
+        if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
 
@@ -318,11 +332,15 @@ class RateLimitMiddleware:
             self._route_cache[concrete] = resolved
         return resolved
 
-    async def _refuse(self, decision: RateLimitDecision, send: Send) -> None:
-        """Send the 429. prd.md's "challenge on abuse", at the protocol level."""
-        import json
+    @staticmethod
+    async def _refuse(decision: RateLimitDecision, send: Send) -> None:
+        """Send the 429. prd.md's "challenge on abuse", at the protocol level.
 
-        body = json.dumps({"detail": REFUSAL_DETAIL}).encode()
+        The body is the same every time and is serialized once at import
+        (`REFUSAL_BODY`): a scraper's whole point is volume, so the refusal
+        path should not re-encode the same JSON thousands of times.
+        """
+        body = REFUSAL_BODY
         await send(
             {
                 "type": "http.response.start",
