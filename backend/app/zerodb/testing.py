@@ -104,15 +104,25 @@ class FakeZeroDBTransport:
     # --- failure injection ------------------------------------------------
 
     def fail_next(
-        self, count: int, *, status: int | None = None, exception: BaseException | None = None
+        self,
+        count: int,
+        *,
+        status: int | None = None,
+        exception: BaseException | None = None,
+        body: dict[str, Any] | None = None,
     ) -> None:
         """Fail the next `count` requests, then behave normally.
 
         This is how "retries a transient failure then succeeds" is tested
-        without a real outage.
+        without a real outage. `body` serves a captured real error payload
+        instead of the synthetic one, exactly as `always_fail` does — needed
+        for the live 500-wrapping-404 the memory delete route answers (see
+        `ZeroDBClient.delete_memory`).
         """
         for _ in range(count):
-            self._queued_failures.append(_Failure(status=status, exception=exception))
+            self._queued_failures.append(
+                _Failure(status=status, exception=exception, body=body)
+            )
 
     def always_fail(
         self,

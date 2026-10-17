@@ -32,7 +32,11 @@ import uuid
 import pytest
 
 from app.zerodb import ZeroDBClient
-from app.zerodb.errors import ZeroDBValidationError
+from app.zerodb.errors import (
+    ZeroDBNotFoundError,
+    ZeroDBServerError,
+    ZeroDBValidationError,
+)
 from app.zerodb.testing import FakeZeroDBTransport
 
 SESSION = "11111111-1111-4111-8111-111111111111"
@@ -194,3 +198,73 @@ def test_a_fresh_uuid_is_an_acceptable_session_id(client: ZeroDBClient) -> None:
     session = str(uuid.uuid4())
     record = client.store_memory(session_id=session, content="q", role="user")
     assert record.session_id == session
+
+
+# --- the live 500-wrapping-404 on a repeat delete -------------------------
+#
+# Measured live during story 13.5 (and the reason the first run of
+# `scripts/verify_evidence_graph_and_memory_live.py` reported a cleanup
+# failure for rows that were in fact already gone): deleting a memory row that
+# no longer exists answers **500**, not 404, with the body
+#
+#     {"detail": "Failed to delete memory: 404: Memory not found", ...}
+#
+# — a 404 wrapped in a 500. Left alone, the client's retry policy treats that
+# as transient, burns four attempts on a row that will never come back, and
+# raises `ZeroDBServerError`, so every caller that legitimately races a delete
+# (the retention sweep against a concurrent sweep, `forget_session` against
+# the sweep, a cleanup script after either) sees a hard failure instead of
+# "already gone".
+
+
+def test_a_repeat_delete_raises_not_found_rather_than_a_server_error(
+    client: ZeroDBClient, transport: FakeZeroDBTransport
+) -> None:
+    transport.fail_next(
+        1,
+        status=500,
+        body={
+            "detail": "Failed to delete memory: 404: Memory not found",
+            "error_code": "INTERNAL_ERROR",
+            "next_action": "retry",
+        },
+    )
+    with pytest.raises(ZeroDBNotFoundError):
+        client.delete_memory(memory_id=SESSION)
+
+
+def test_a_repeat_delete_is_not_retried(
+    client: ZeroDBClient, transport: FakeZeroDBTransport
+) -> None:
+    """Four attempts on a row that will never come back is four wasted calls
+    against a 60 req/min ceiling.
+    """
+    transport.always_fail(
+        status=500,
+        body={
+            "detail": "Failed to delete memory: 404: Memory not found",
+            "error_code": "INTERNAL_ERROR",
+            "next_action": "retry",
+        },
+    )
+    with pytest.raises(ZeroDBNotFoundError):
+        client.delete_memory(memory_id=SESSION)
+    assert len(transport.calls) == 1
+
+
+def test_a_genuine_server_error_on_delete_is_still_a_server_error(
+    client: ZeroDBClient, transport: FakeZeroDBTransport
+) -> None:
+    """The narrowing must not swallow a real 500. Only a body that says the
+    row is not found is reinterpreted.
+    """
+    transport.always_fail(
+        status=500,
+        body={
+            "detail": "database connection pool exhausted",
+            "error_code": "INTERNAL_ERROR",
+            "next_action": "retry",
+        },
+    )
+    with pytest.raises(ZeroDBServerError):
+        client.delete_memory(memory_id=SESSION)

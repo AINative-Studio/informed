@@ -57,6 +57,7 @@ natural key are the repository layer's job in story 1.4.
 
 import logging
 import random
+import re
 import time
 import uuid
 from collections.abc import Callable, Sequence
@@ -1088,10 +1089,39 @@ class ZeroDBClient:
         `sweep_expired_session_memory` treats as "already deleted" rather than
         a failure — a sweep that crashed because a row it had just listed was
         deleted by a concurrent run would be worse than useless.
+
+        **That requires translating a real ZeroDB bug.** Measured live during
+        story 13.5: deleting a memory row that no longer exists answers **500**,
+        not 404, with the body
+
+            {"detail": "Failed to delete memory: 404: Memory not found", ...}
+
+        — a 404 wrapped in a 500, and the only place in this client where a
+        status code lies about what happened. Left alone it costs twice: the
+        retry policy treats 500 as transient and burns four attempts against a
+        ~60 req/min ceiling on a row that will never come back, and the caller
+        gets `ZeroDBServerError` where "already gone" is the truth. It cost
+        exactly that in the first run of
+        `scripts/verify_evidence_graph_and_memory_live.py`, which reported a
+        cleanup failure for rows that had in fact been deleted.
+
+        So this method passes `_memory_not_found` to `_request`'s `reinterpret`
+        hook, which corrects the error to a non-transient
+        `ZeroDBNotFoundError` BEFORE the retry decision — so the call is not
+        retried at all, and the caller sees "already gone". Narrowly: only a
+        500 whose detail says the memory was not found is reinterpreted, so a
+        genuine 500 ("connection pool exhausted") is still a retried
+        `ZeroDBServerError` —
+        `test_a_genuine_server_error_on_delete_is_still_a_server_error` pins
+        that boundary. Reported to AINative alongside the `/rows` filter bug
+        datamodel.md already tracks; delete this translation, and the
+        `reinterpret` hook with it, when the endpoint answers 404.
         """
         self._require_uuid(memory_id, "memory_id")
         self._request(
-            "DELETE", f"/projects/{self._project_id}/database/memory/{memory_id}"
+            "DELETE",
+            f"/projects/{self._project_id}/database/memory/{memory_id}",
+            reinterpret=_memory_not_found,
         )
 
     # =====================================================================
@@ -1105,12 +1135,23 @@ class ZeroDBClient:
         *,
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
+        reinterpret: Callable[[ZeroDBError], ZeroDBError | None] | None = None,
     ) -> ZeroDBResponse:
         """Send a request, retrying transient failures with capped backoff.
 
         A transient failure is a 5xx, a 429, or a transport error (DNS, TCP,
         TLS, timeout). A 4xx is the caller's mistake and is raised on the first
         attempt: retrying a rejected payload only multiplies the rejection.
+
+        `reinterpret` lets ONE caller correct a status code that lies. It is
+        consulted on every error, BEFORE the transient check, and whatever it
+        returns replaces the error — so a non-transient replacement ends the
+        retry loop immediately. The only use today is
+        `delete_memory`, whose endpoint answers 500 for a row that is merely
+        gone (see that method's docstring for the measured payload). Keeping
+        the correction here rather than in the caller's `except` is what makes
+        the retry loop see the truth: an `except` outside this method can only
+        re-label an error after four attempts have already been spent.
 
         Nothing about the payload, the headers or the credential is logged — a
         request body may hold a voter's encrypted profile, and prd.md forbids
@@ -1135,6 +1176,8 @@ class ZeroDBClient:
                 if response.is_success:
                     return response
                 error = self._error_for(response, method, path)
+                if reinterpret is not None:
+                    error = reinterpret(error) or error
                 if not error.transient:
                     raise error
                 last_error = error
@@ -1378,6 +1421,33 @@ class ZeroDBClient:
 
     def __exit__(self, *exc_info: object) -> None:
         self.close()
+
+
+#: The live memory-delete endpoint's "already gone" payload, which arrives as a
+#: 500 rather than a 404. Matched on the detail text because that is the only
+#: place the truth appears — the status and the `error_code`
+#: (`INTERNAL_ERROR`) both say "server failure". See
+#: `ZeroDBClient.delete_memory`.
+_MEMORY_NOT_FOUND_DETAIL = re.compile(r"\b404\b.*\bmemory not found\b", re.IGNORECASE)
+
+
+def _memory_not_found(error: ZeroDBError) -> ZeroDBError | None:
+    """Correct a memory-delete 500 that actually means 404.
+
+    Returns a non-transient `ZeroDBNotFoundError` when the error is that one,
+    and `None` (meaning "leave it alone") for every other error — including a
+    genuine 500, which stays a retried `ZeroDBServerError`.
+    """
+    if isinstance(error, ZeroDBServerError) and _MEMORY_NOT_FOUND_DETAIL.search(error.message):
+        corrected = ZeroDBNotFoundError(
+            "the memory record does not exist (ZeroDB reported this as a 500; see "
+            "ZeroDBClient.delete_memory)",
+            status_code=404,
+            error_code="NOT_FOUND",
+        )
+        corrected.__cause__ = error
+        return corrected
+    return None
 
 
 def _matches(row_data: dict[str, Any], filter: dict[str, Any]) -> bool:  # noqa: A002
