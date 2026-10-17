@@ -22,8 +22,11 @@ from app.summary_card.service import CandidacyNotFoundError, SummaryCardService
 from app.zerodb.client import ZeroDBClient
 from app.zerodb.testing import FakeZeroDBTransport
 
-CANDIDACY_ID = "election:district:person"
 PERSON_ID = "person:zzz-summary-card-unit"
+#: Derived from Candidacy's natural key (election_id, district_id, person_id)
+#: with the person_id prefix kept intact, exactly as datamodel.md documents
+#: `{election_id}:{district_id}:{person_id}` — see `Candidacy`'s docstring.
+CANDIDACY_ID = f"election:district:{PERSON_ID}"
 
 
 @pytest.fixture
@@ -40,27 +43,48 @@ def client() -> ZeroDBClient:
     ):
         zerodb.create_table(table, TABLE_SCHEMAS[table])
     Repository(client=zerodb, model=Jurisdiction).upsert(
-        {"id": "us-federal", "name": "United States", "country_code": "US", "level": "federal",
-         "adapter_name": "us-federal"}
+        {
+            "id": "us-federal",
+            "name": "United States",
+            "country_code": "US",
+            "level": "federal",
+            "adapter_name": "us-federal",
+        }
     )
     zerodb.upsert_row(
         "bodies",
         "us-house",
-        {"id": "us-house", "jurisdiction_id": "us-federal", "name": "U.S. House",
-         "chamber": "lower", "seats": 435},
+        {
+            "id": "us-house",
+            "jurisdiction_id": "us-federal",
+            "name": "U.S. House",
+            "chamber": "lower",
+            "seats": 435,
+        },
     )
     Repository(client=zerodb, model=Election).upsert(
-        {"id": "election", "jurisdiction_id": "us-federal", "name": "Test General",
-         "election_date": "2026-11-03", "kind": "general"}
+        {
+            "id": "election",
+            "jurisdiction_id": "us-federal",
+            "name": "Test General",
+            "election_date": "2026-11-03",
+            "kind": "general",
+        }
     )
     Repository(client=zerodb, model=District).upsert(
-        {"id": "district", "body_id": "us-house", "name": "Test District 9",
-         "state": "ZZ", "valid_from": "2025-01-03"}
+        {
+            "id": "district",
+            "body_id": "us-house",
+            "name": "Test District 9",
+            "state": "ZZ",
+            "valid_from": "2025-01-03",
+        }
     )
-    Repository(client=zerodb, model=Person).upsert({"id": PERSON_ID, "canonical_name": "Pat Rivera"})
+    Repository(client=zerodb, model=Person).upsert(
+        {"id": PERSON_ID, "canonical_name": "Pat Rivera"}
+    )
     Repository(client=zerodb, model=Candidacy).upsert(
         {
-            "id": CANDIDACY_ID,
             "election_id": "election",
             "district_id": "district",
             "person_id": PERSON_ID,

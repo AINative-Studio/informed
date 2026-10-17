@@ -25,7 +25,8 @@ def test_routes_are_only_the_ones_built_so_far(client: TestClient) -> None:
     page and its changelog; story 15.1 adds the follow/unfollow endpoints;
     story 12.4 adds the public correction form and the reporter's status
     lookup; story 14.2 adds the published consent language and story 14.4 the
-    one-action export and delete.
+    one-action export and delete. Story 14.6 adds the shareable,
+    candidate-data-only summary card.
 
     Replaces story 1.1's "health is the only route" assertion, whose own
     docstring named 1.5 as the story that would change it, and that story's
@@ -96,6 +97,11 @@ def test_routes_are_only_the_ones_built_so_far(client: TestClient) -> None:
         # mark an inconvenient correction `rejected`.
         "/v1/corrections",
         "/v1/corrections/{tracking_token}",
+        # Story 14.6: the shareable summary card. Takes no profile, user or
+        # voter identity of any kind — see `app.summary_card.router`'s module
+        # docstring — so its presence here is one more public, candidate-data-
+        # only endpoint alongside /v1/methodology and /v1/corrections.
+        "/v1/candidates/{candidacy_id}/summary-card",
     }
 
     # Story 12.4's deliberate omission, asserted rather than only described:

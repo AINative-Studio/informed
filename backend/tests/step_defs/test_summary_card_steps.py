@@ -10,7 +10,7 @@ which real candidacies happen to be loaded.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import pytest
@@ -23,7 +23,7 @@ from app.profiles.crypto import ProfileKeyring, ProfileRootKey
 from app.profiles.service import VoterProfileService
 from app.repositories.base import Repository
 from app.repositories.models import Candidacy, District, Election, Jurisdiction, Person
-from app.summary_card.router import summary_card_service, zerodb_client_for_summary_card
+from app.summary_card.router import zerodb_client_for_summary_card
 from app.zerodb.client import ZeroDBClient
 from app.zerodb.testing import FakeZeroDBTransport
 
@@ -42,8 +42,11 @@ _REFERENCE_TABLES = (
     "bodies",
 )
 
-CANDIDACY_ID = "election:district:person"
 PERSON_ID = "person:zzz-summary-card-pat-rivera"
+#: Derived from Candidacy's natural key, exactly as datamodel.md documents
+#: `{election_id}:{district_id}:{person_id}` with the person_id prefix kept
+#: intact (see `app.repositories.models.Candidacy`'s docstring).
+CANDIDACY_ID = f"election:district:{PERSON_ID}"
 DISTRICT_ID = "ocd-division/country:us/state:zz/cd:9"
 
 
@@ -74,39 +77,70 @@ def _fresh_client() -> ZeroDBClient:
 def seed_store(card_ctx: SummaryCardContext) -> SummaryCardContext:
     card_ctx.client = _fresh_client()
     Repository(client=card_ctx.client, model=Jurisdiction).upsert(
-        {"id": "us-federal", "name": "United States", "country_code": "US", "level": "federal",
-         "adapter_name": "us-federal"}
+        {
+            "id": "us-federal",
+            "name": "United States",
+            "country_code": "US",
+            "level": "federal",
+            "adapter_name": "us-federal",
+        }
     )
     card_ctx.client.upsert_row(
         "bodies",
         "us-house",
-        {"id": "us-house", "jurisdiction_id": "us-federal", "name": "U.S. House",
-         "chamber": "lower", "seats": 435},
+        {
+            "id": "us-house",
+            "jurisdiction_id": "us-federal",
+            "name": "U.S. House",
+            "chamber": "lower",
+            "seats": 435,
+        },
     )
     Repository(client=card_ctx.client, model=Election).upsert(
-        {"id": "election", "jurisdiction_id": "us-federal", "name": "Test General",
-         "election_date": "2026-11-03", "kind": "general"}
+        {
+            "id": "election",
+            "jurisdiction_id": "us-federal",
+            "name": "Test General",
+            "election_date": "2026-11-03",
+            "kind": "general",
+        }
     )
     Repository(client=card_ctx.client, model=District).upsert(
-        {"id": "district", "body_id": "us-house", "name": "Test District",
-         "state": "ZZ", "valid_from": "2025-01-03"}
+        {
+            "id": "district",
+            "body_id": "us-house",
+            "name": "Test District",
+            "state": "ZZ",
+            "valid_from": "2025-01-03",
+        }
     )
     return card_ctx
 
 
 @given(
     parsers.parse(
-        'a candidacy "{candidacy_id}" for "{name}", party "{party}", in a known district'
+        'a candidacy "{candidacy_label}" for "{name}", party "{party}", in a known district'
     )
 )
-def seed_candidacy(card_ctx: SummaryCardContext, candidacy_id: str, name: str, party: str) -> None:
+def seed_candidacy(
+    card_ctx: SummaryCardContext, candidacy_label: str, name: str, party: str
+) -> None:
+    """Seed one candidacy.
+
+    `candidacy_label` is the Gherkin's human-readable placeholder for "some
+    candidacy id" — it is not written as-is, because `Candidacy`'s id is
+    *derived* from its natural key (election_id, district_id, person_id;
+    see that model's docstring) and the repository refuses a supplied id
+    that disagrees with what it derives. `CANDIDACY_ID`, which every
+    assertion step below also uses, is the id that derivation actually
+    produces for this fixture's election/district/person.
+    """
     assert card_ctx.client is not None
     Repository(client=card_ctx.client, model=Person).upsert(
         {"id": PERSON_ID, "canonical_name": name}
     )
     Repository(client=card_ctx.client, model=Candidacy).upsert(
         {
-            "id": candidacy_id,
             "election_id": "election",
             "district_id": "district",
             "person_id": PERSON_ID,
@@ -151,13 +185,15 @@ def _api_for(card_ctx: SummaryCardContext) -> TestClient:
     return card_ctx.api
 
 
-@when(parsers.parse('a voter requests the summary card for that candidacy'))
+@when(parsers.parse("a voter requests the summary card for that candidacy"))
 def request_card(card_ctx: SummaryCardContext) -> None:
     api = _api_for(card_ctx)
     card_ctx.response = api.get(f"/v1/candidates/{CANDIDACY_ID}/summary-card")
 
 
-@when("a voter requests the summary card for that candidacy, however they try to pass their profile")
+@when(
+    "a voter requests the summary card for that candidacy, however they try to pass their profile"
+)
 def request_card_trying_to_leak_profile(card_ctx: SummaryCardContext) -> None:
     api = _api_for(card_ctx)
     # Every plausible way a caller might try to smuggle identity through:
@@ -229,8 +265,7 @@ def check_endpoint_schema_has_no_identity_param(card_ctx: SummaryCardContext) ->
     identity_like = {
         name
         for name in param_names
-        if name != "candidacy_id"
-        and ("user" in name or "profile" in name or "voter" in name)
+        if name != "candidacy_id" and ("user" in name or "profile" in name or "voter" in name)
     }
     assert not identity_like
 
