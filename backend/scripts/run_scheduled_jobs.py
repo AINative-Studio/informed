@@ -38,11 +38,13 @@ Exit codes:
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from app.observability.logging_config import configure_logging  # noqa: E402
 from app.scheduling.jobs import default_jobs  # noqa: E402
 from app.scheduling.registry import JobStatus, ScheduledJobRunner  # noqa: E402
 from app.zerodb import ZeroDBClient  # noqa: E402
@@ -50,9 +52,11 @@ from app.zerodb.errors import ZeroDBError  # noqa: E402
 
 
 def main() -> int:
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
-    )
+    # Structured JSON logs (story 16.5), consistently with the API process —
+    # a scheduled run's own "job X failed" line is as useful to an
+    # aggregator as a request log line, and gets the same plaintext-leak
+    # guard for free. `LOG_LEVEL` matches `.env.example`'s convention.
+    configure_logging(level=os.getenv("LOG_LEVEL", "INFO").upper())
     logger = logging.getLogger("run_scheduled_jobs")
 
     client = ZeroDBClient.from_env()
