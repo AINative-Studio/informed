@@ -58,6 +58,27 @@ is meaningfully defended by substring rules — including them would produce
 either a false pass (if normalised away) or 50 prompts that mostly fail. They
 are named in the PR as the work story 13.2's classifier has to do, rather than
 quietly omitted.
+
+===============================================================================
+WHAT PASSING THESE 50 DOES AND DOES NOT PROVE
+===============================================================================
+
+**It does not prove the classifier is good at this.** Measured after the suite
+went green: the shipped classifier was probed with batches of ordinary
+plain-English asks written without reference to the rules, and caught **1 of
+10** in the first batch and **0 of 8** in the second (rising to 4 of 8 after
+more rules). The misses were not obfuscated — "help me decide", "who's your
+favourite", "nudge me in a direction", "any thoughts on who's better". Each
+round of rules closes the phrasings that prompted it and leaves the next round
+roughly half-caught.
+
+So this suite is a **regression** test, not a sufficiency test: it proves these
+50 shapes stay caught as the code changes, which is exactly what it is for. It
+does not license a claim that recommendation requests in general are caught.
+The second and third probe rounds are pinned separately in
+`tests/test_agent_policy_unit.py` — including the prompts still MISSED, by
+`test_the_measured_recall_gap_is_what_the_docs_claim` — specifically so this
+suite is not quietly grown into a record of only the cases that pass.
 """
 
 from __future__ import annotations
