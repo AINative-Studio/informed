@@ -344,6 +344,101 @@ def test_the_sweep_sweeps_a_turn_with_no_expiry_marker(client: ZeroDBClient) -> 
     assert result.deleted == 1
 
 
+def test_a_row_whose_age_cannot_be_established_is_reported_not_deleted(
+    client: ZeroDBClient,
+) -> None:
+    """A parse failure must not become a deletion.
+
+    A row with no `expires_at` marker AND no usable `created_at` has no clock
+    this sweep can read. Deleting it would destroy data on the strength of a
+    bad timestamp; silently keeping it would hide a row that may be
+    indefinitely retained. So it is kept and counted as `undateable`, which is
+    what puts it in the summary line an operator reads.
+    """
+    client.store_memory(
+        session_id=SESSION,
+        content="unreadable clock",
+        role="user",
+        memory_metadata={"expires_at": "not-a-timestamp"},
+        created_at="also-not-a-timestamp",
+    )
+    result = sweep_expired_session_memory(client, now=NOW)
+
+    assert result.undateable == 1
+    assert result.deleted == 0
+    assert client.list_memories(session_id=SESSION).total == 1
+    assert "undateable" in result.summary()
+
+
+def test_a_row_deleted_by_someone_else_mid_sweep_counts_as_already_gone(
+    client: ZeroDBClient, service: SessionMemoryService, transport: FakeZeroDBTransport
+) -> None:
+    """The race this sweep has to tolerate: it lists a row, and by the time it
+    deletes it, a concurrent sweep or the voter's own `forget_session` has
+    removed it. The row is gone, which is this sweep's goal — so it counts as
+    `already_gone` and the loop continues, rather than failing the whole run.
+
+    Staged the way the race actually happens: the row is removed from the store
+    after the sweep has listed it, by emptying the transport's own state between
+    the list and the delete. `delete_memory` then hits the live
+    500-that-means-404 path (which the fake reproduces as a plain 404 for a
+    missing row) and the sweep treats it as "already gone".
+    """
+    service.remember(
+        session_id=SESSION,
+        role="user",
+        content="stale",
+        anonymous=False,
+        now=NOW - timedelta(hours=25),
+    )
+
+    listed = transport.memories[0]["memory_id"]
+    real_request = transport.request
+
+    def drop_the_row_before_the_delete(method: str, path: str, **kwargs: object) -> object:
+        if method == "DELETE" and listed in path:
+            transport.memories.clear()
+        return real_request(method, path, **kwargs)  # type: ignore[arg-type]
+
+    transport.request = drop_the_row_before_the_delete  # type: ignore[method-assign]
+
+    result = sweep_expired_session_memory(client, now=NOW)
+
+    assert result.already_gone == 1
+    assert result.deleted == 0
+
+
+def test_the_sweep_stops_at_its_page_ceiling_and_says_so(
+    client: ZeroDBClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sweep that has been down for a long time must not become an unbounded
+    full-table scan. It stops, reports `truncated`, and the next run picks up
+    where it left off — there is no cursor to lose, because "expired" is a
+    function of the row and the clock.
+    """
+    from app.agent_memory import retention as retention_module
+
+    monkeypatch.setattr(retention_module, "MAX_SWEEP_PAGES", 1)
+    # Two pages' worth of rows that are all inside their window, so nothing is
+    # deleted and `skip` genuinely advances past page one.
+    not_yet_expired = (NOW + timedelta(hours=1)).isoformat()
+    for index in range(retention_module.DEFAULT_MEMORY_PAGE_SIZE + 5):
+        client.store_memory(
+            session_id=SESSION,
+            content=f"turn {index}",
+            role="user",
+            memory_metadata={"expires_at": not_yet_expired},
+        )
+
+    result = sweep_expired_session_memory(client, now=NOW)
+
+    assert result.truncated is True
+    assert "re-run" in result.summary()
+    # Everything it did reach was correctly kept.
+    assert result.deleted == 0
+    assert result.kept == retention_module.DEFAULT_MEMORY_PAGE_SIZE
+
+
 def test_the_sweep_is_a_registered_scheduled_job() -> None:
     """A retention promise with no scheduler behind it is a documentation
     claim, not a mechanism — the exact gap story 12.4 flagged and story 16.x's
