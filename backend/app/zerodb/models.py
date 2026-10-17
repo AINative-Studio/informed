@@ -357,11 +357,73 @@ class EventSubscription(_ZeroDBModel):
     webhook_url: str | None = None
 
 
+# --- memory ---------------------------------------------------------------
+
+
+class MemoryRecord(_ZeroDBModel):
+    """One stored turn of a Q&A session's context (story 13.5).
+
+    Shapes measured live against `POST`/`GET
+    /projects/{project_id}/database/memory` rather than read off the OpenAPI
+    schema:
+
+      * `memory_id` is the handle every later call (`GET`, `PUT`, `DELETE`) and
+        the retention sweep use. The list endpoint ALSO returns an `id` field
+        holding the same uuid; only `memory_id` is modelled, because two names
+        for one value is how a caller ends up comparing the wrong one.
+      * `created_at` is present on both the write response and every list item.
+        It is the sweep's fallback clock for a row whose metadata carries no
+        `expires_at` marker.
+      * `memory_metadata` round-trips verbatim, which is where
+        `app.agent_memory` keeps its own `expires_at`. There is NO server-side
+        TTL field on this API; see `ZeroDBClient.store_memory`'s docstring.
+      * `embedding` comes back as a long all-zeros vector for content stored
+        without one. It is deliberately NOT modelled: nothing in Informed reads
+        it, and carrying ~110 floats per turn through every list page is pure
+        weight. `extra="ignore"` on `_ZeroDBModel` drops it.
+    """
+
+    memory_id: str
+    content: str
+    session_id: str | None = None
+    agent_id: str | None = None
+    role: str | None = None
+    memory_metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: str | None = None
+
+    @field_validator("memory_metadata", mode="before")
+    @classmethod
+    def _default_metadata(cls, value: Any) -> Any:
+        """The live API answers `null` when no metadata was supplied, the same
+        way `file_metadata` does; normalised so no caller has to guard.
+        """
+        return {} if value is None else value
+
+
+class MemoryPage(_ZeroDBModel):
+    """A page of stored turns.
+
+    The live list response is `{data, total, limit, offset, has_more}`. `data`
+    is renamed to `memories` so the field says what it holds, matching how
+    `EventPage` names its own list `events` rather than `data`.
+    """
+
+    memories: list[MemoryRecord] = Field(default_factory=list, validation_alias="data")
+    total: int = 0
+    limit: int = 0
+    offset: int = 0
+    has_more: bool = False
+
+    model_config = ConfigDict(extra="ignore", frozen=True, populate_by_name=True)
+
+
 __all__ = [
     "EmbedResult",
     "Event",
     "EventPage",
     "EventSubscription",
+    "MemoryPage",
+    "MemoryRecord",
     "GraphEdge",
     "GraphEntity",
     "GraphRagResults",

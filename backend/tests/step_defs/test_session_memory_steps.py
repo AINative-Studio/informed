@@ -41,7 +41,7 @@ class MemoryWorld:
 def world() -> MemoryWorld:
     transport = FakeZeroDBTransport()
     client = ZeroDBClient(
-        api_key="test-key", project_id=FakeZeroDBTransport.PROJECT_ID, transport=transport
+        project_id=FakeZeroDBTransport.PROJECT_ID, transport=transport
     )
     return MemoryWorld(transport=transport, client=client, service=SessionMemoryService(client))
 

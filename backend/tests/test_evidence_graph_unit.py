@@ -23,6 +23,7 @@ import pytest
 
 from app.bootstrap import ONTOLOGY_ENTITY_TYPES, ONTOLOGY_PREDICATES
 from app.evidence_graph import (
+    DOCUMENTED_PREDICATE_TABLE,
     EvidenceGraphWriter,
     UnknownPredicateError,
     WrongEndpointTypeError,
@@ -40,7 +41,8 @@ TOPIC_ID = "topic:housing"
 ROLL_CALL_ID = "us-house:119-2:452"
 UNTOUCHED_ROLL_CALL_ID = "us-house:119-2:453"
 BILL_ID = "us-bill:119:hr:1234"
-VERDICT_ID = "vd:11111111-1111-4111-8111-111111111111"
+# datamodel.md: `verdicts` id pattern is `{promise_id}:v{n}`.
+VERDICT_ID = f"{PROMISE_ID}:v1"
 
 
 @pytest.fixture
@@ -51,9 +53,7 @@ def transport() -> FakeZeroDBTransport:
 @pytest.fixture
 def client(transport: FakeZeroDBTransport) -> ZeroDBClient:
     return ZeroDBClient(
-        api_key="test-key",
-        project_id=FakeZeroDBTransport.PROJECT_ID,
-        transport=transport,
+        project_id=FakeZeroDBTransport.PROJECT_ID, transport=transport
     )
 
 
@@ -63,6 +63,32 @@ def writer(client: ZeroDBClient) -> EvidenceGraphWriter:
 
 
 # --- criterion 1: the ontology is the one datamodel.md documents ----------
+
+
+def test_the_bootstrap_ontology_matches_the_documented_predicate_table() -> None:
+    """The acceptance criterion "the ontology is registered" is only meaningful
+    if what is registered is datamodel.md's own table.
+
+    `DOCUMENTED_PREDICATE_TABLE` is that table transcribed independently of
+    `app.bootstrap.ONTOLOGY_PREDICATES`, so this comparison catches a drift in
+    either direction — a predicate renamed in the code, a predicate added to
+    the document and not the code, or an endpoint type quietly swapped.
+    """
+    assert ONTOLOGY_PREDICATES == DOCUMENTED_PREDICATE_TABLE
+    # Every type either side of a documented predicate must be a registered
+    # entity type, or the predicate could never be written.
+    needed = {spec["source"] for spec in DOCUMENTED_PREDICATE_TABLE.values()} | {
+        spec["target"] for spec in DOCUMENTED_PREDICATE_TABLE.values()
+    }
+    assert needed == set(ONTOLOGY_ENTITY_TYPES)
+
+
+def test_the_documented_table_has_the_eleven_predicates_datamodel_md_lists() -> None:
+    """Ten rows in datamodel.md's table; `advances / opposes` is one row and
+    two predicates, so eleven registered predicates is the correct count.
+    """
+    assert len(DOCUMENTED_PREDICATE_TABLE) == 11
+    assert {"advances", "opposes"} <= set(DOCUMENTED_PREDICATE_TABLE)
 
 
 def test_the_writer_knows_exactly_datamodel_mds_predicates() -> None:

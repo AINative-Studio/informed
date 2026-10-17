@@ -50,9 +50,7 @@ def transport() -> FakeZeroDBTransport:
 @pytest.fixture
 def client(transport: FakeZeroDBTransport) -> ZeroDBClient:
     return ZeroDBClient(
-        api_key="test-key",
-        project_id=FakeZeroDBTransport.PROJECT_ID,
-        transport=transport,
+        project_id=FakeZeroDBTransport.PROJECT_ID, transport=transport
     )
 
 

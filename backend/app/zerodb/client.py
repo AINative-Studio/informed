@@ -58,6 +58,7 @@ natural key are the repository layer's job in story 1.4.
 import logging
 import random
 import time
+import uuid
 from collections.abc import Callable, Sequence
 from typing import Any, TypeVar
 
@@ -82,6 +83,8 @@ from app.zerodb.models import (
     GraphEdge,
     GraphEntity,
     GraphRagResults,
+    MemoryPage,
+    MemoryRecord,
     Ontology,
     PresignedUrl,
     Row,
@@ -123,6 +126,11 @@ _STATUS_ERRORS: dict[int, type[ZeroDBError]] = {
 
 DEFAULT_PRESIGN_EXPIRATION = 300
 MAX_PRESIGN_EXPIRATION = 3600
+
+#: Turns per request when listing memory. The live endpoint caps `limit` at 100
+#: (OpenAPI `maximum: 100`), so this is the biggest page it will serve and the
+#: retention sweep pages with `skip` rather than asking for more.
+DEFAULT_MEMORY_PAGE_SIZE = 100
 
 #: Rows per request while filtering client-side around ZeroDB's broken
 #: server-side filter (see `_fallback_filtered_rows`). Big enough that a
@@ -971,6 +979,122 @@ class ZeroDBClient:
         return self._parse(EventSubscription, response)
 
     # =====================================================================
+    # Memory — the Q&A agent's session context, and nothing else
+    # =====================================================================
+
+    def store_memory(
+        self,
+        *,
+        session_id: str,
+        content: str,
+        role: str,
+        memory_metadata: dict[str, Any] | None = None,
+        agent_id: str | None = None,
+        created_at: str | None = None,
+    ) -> MemoryRecord:
+        """Store one turn of a Q&A session's context. Wraps `zerodb_store_memory`.
+
+        datamodel.md: "Memory keeps the Q&A agent's session context, scoped by
+        `session_id`, with retention set to 1 day. In anonymous mode memory is
+        not written at all." Both of those rules live in
+        `app.agent_memory.SessionMemoryService`, not here — this method is the
+        transport, and a transport that silently refused writes would be the
+        wrong place for a product rule.
+
+        **There is no server-side TTL on this API, and this method does not
+        pretend there is.** Measured live during story 13.5: a `ttl_seconds`
+        field and a top-level `expires_at` are both ACCEPTED by the endpoint and
+        then silently dropped — neither appears in the response and nothing
+        expires. `/memory/decay-config` is a decay-rate and LRU-eviction knob,
+        not a time-based retention one (and answered 500 live). So this method
+        takes no TTL parameter at all: a parameter that looked like one would
+        read as "retention is enforced server-side" to every later reader, and
+        the 1-day promise would quietly be nobody's job. Retention is enforced
+        instead by `app.agent_memory`: an `expires_at` marker in
+        `memory_metadata` (which DOES round-trip), a read-time guard, and
+        `sweep_qa_session_memory` in the scheduled job registry.
+
+        `session_id` must be a UUID. Validated here rather than at the server
+        because the live endpoint answers 422 `uuid_parsing` for anything else
+        — e.g. a readable `"qa:session-1"` — and spending a request to learn
+        that is worse than failing immediately, the same reasoning
+        `generate_presigned_url` applies to an out-of-range expiration. The
+        constraint is also privacy-positive: an opaque uuid cannot carry
+        anything about the voter the way a composed id could.
+
+        `created_at` exists for tests that need an aged row. The live endpoint
+        ignores it (it stamps its own), so it is only meaningful against the
+        in-memory fake; production callers never pass it.
+        """
+        self._require_uuid(session_id, "session_id")
+        self._require(content, "content")
+        payload: dict[str, Any] = {
+            "session_id": session_id,
+            "content": content,
+            "role": role,
+        }
+        if memory_metadata is not None:
+            payload["memory_metadata"] = memory_metadata
+        if agent_id is not None:
+            payload["agent_id"] = agent_id
+        if created_at is not None:
+            payload["created_at"] = created_at
+        response = self._request(
+            "POST", f"/projects/{self._project_id}/database/memory", json=payload
+        )
+        return self._parse(MemoryRecord, response)
+
+    def list_memories(
+        self,
+        *,
+        session_id: str | None = None,
+        limit: int = DEFAULT_MEMORY_PAGE_SIZE,
+        skip: int = 0,
+        role: str | None = None,
+    ) -> MemoryPage:
+        """Read a page of stored turns, optionally for one session.
+
+        **The `session_id` filter works server-side on this endpoint**, which is
+        worth stating plainly because it is the opposite of `/rows`, whose
+        server-side `filter` matches nothing and forces the client-side
+        workaround in `_fallback_filtered_rows` (datamodel.md's open question).
+        Confirmed live during story 13.5: one row written under a fresh session
+        uuid was read back by exactly that filter, and the unfiltered read
+        agreed. So no fallback is needed here, and none is built — a second
+        paging workaround nobody needs is a second thing to get wrong.
+
+        `limit` is capped at 100 by the live endpoint (OpenAPI `maximum: 100`),
+        so a caller that wants more pages with `skip` rather than asking for a
+        bigger window; `app.agent_memory.sweep_expired_session_memory` is the
+        one caller that does.
+        """
+        if session_id is not None:
+            self._require_uuid(session_id, "session_id")
+        params: dict[str, Any] = {"limit": limit, "skip": skip}
+        if session_id is not None:
+            params["session_id"] = session_id
+        if role is not None:
+            params["role"] = role
+        response = self._request(
+            "GET", f"/projects/{self._project_id}/database/memory", params=params
+        )
+        return self._parse(MemoryPage, response)
+
+    def delete_memory(self, *, memory_id: str) -> None:
+        """Delete one stored turn. The retention sweep's write half.
+
+        Idempotent from the caller's point of view in the way that matters: a
+        `memory_id` already gone raises `ZeroDBNotFoundError`, which
+        `sweep_expired_session_memory` treats as "already deleted" rather than
+        a failure — a sweep that crashed because a row it had just listed was
+        deleted by a concurrent run would be worse than useless.
+        """
+        self._require_uuid(memory_id, "memory_id")
+        self._request(
+            "DELETE", f"/projects/{self._project_id}/database/memory/{memory_id}"
+        )
+
+    # =====================================================================
     # Internals: one retry policy and one error map for every method above
     # =====================================================================
 
@@ -1223,6 +1347,25 @@ class ZeroDBClient:
         """Reject an empty required argument before spending a round trip."""
         if not value or not str(value).strip():
             raise ZeroDBValidationError(f"{name} must be a non-empty string")
+
+    @classmethod
+    def _require_uuid(cls, value: str, name: str) -> None:
+        """Reject an argument the memory API will 422 on as a `uuid_parsing` error.
+
+        Only the memory routes need this: `session_id` and `memory_id` are the
+        two ZeroDB-side identifiers Informed passes that are typed `uuid` and
+        validated as such by the server (measured live during story 13.5). Row
+        ids, canonical names and table names are all free strings by contrast,
+        which is why `_require` alone has served every other method.
+        """
+        cls._require(value, name)
+        try:
+            uuid.UUID(str(value))
+        except ValueError as exc:
+            raise ZeroDBValidationError(
+                f"{name} must be a UUID; ZeroDB's memory API rejects anything else "
+                f"with a 422 uuid_parsing error"
+            ) from exc
 
     def close(self) -> None:
         """Release the transport's connections, if it holds any."""

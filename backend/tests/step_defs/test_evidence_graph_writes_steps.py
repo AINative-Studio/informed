@@ -24,7 +24,8 @@ PERSON_ID = "person:B000944"
 CANDIDACY_ID = "us-2026-11-03-general:ocd-division/country:us/state:oh/cd:11:person:B000944"
 PROMISE_ID = "prm:11111111-1111-4111-8111-111111111111"
 STANCE_ID = "stance:housing-supply:for"
-VERDICT_ID = "vd:11111111-1111-4111-8111-111111111111"
+# datamodel.md: `verdicts` id pattern is `{promise_id}:v{n}`.
+VERDICT_ID = f"{PROMISE_ID}:v1"
 BILL_ID = "us-bill:119:hr:1234"
 TESTED_ROLL_CALL = "us-house:119-2:452"
 UNTOUCHED_ROLL_CALL = "us-house:119-2:453"
@@ -46,7 +47,7 @@ class GraphWorld:
 def world() -> GraphWorld:
     transport = FakeZeroDBTransport()
     client = ZeroDBClient(
-        api_key="test-key", project_id=FakeZeroDBTransport.PROJECT_ID, transport=transport
+        project_id=FakeZeroDBTransport.PROJECT_ID, transport=transport
     )
     return GraphWorld(transport=transport, client=client, writer=EvidenceGraphWriter(client))
 
