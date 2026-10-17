@@ -19,7 +19,7 @@ import re
 from pathlib import Path
 
 import pytest
-from pytest_bdd import given, parsers, scenarios, then, when
+from pytest_bdd import parsers, scenarios, then, when
 
 from app.agent_policy import RECOMMENDATION_REFUSAL, classify
 from app.agent_policy.red_team import RED_TEAM_PROMPTS

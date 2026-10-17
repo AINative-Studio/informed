@@ -38,6 +38,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pytest_bdd import given, parsers, then, when
 
+from app.agent_policy import classify
 from app.main import create_app
 
 # --- shared fixtures ------------------------------------------------------
@@ -403,11 +404,28 @@ def voter_asks(context: ScenarioContext, question: str) -> None:
 
 
 @then("the agent explains it doesn't recommend candidates")
-def agent_refuses_to_recommend(request: pytest.FixtureRequest, context: ScenarioContext) -> None:
+def agent_refuses_to_recommend(context: ScenarioContext) -> None:
+    """No longer pending — story 13.3 built the guardrail this asserts on.
+
+    The pending marker here named story "14.3", which was a mis-numbering: the
+    PRD scenario this step belongs to ("Agent refuses to recommend") is
+    backlog.md story **13.3**, and 14.3 is anonymous mode. Retired rather than
+    re-pointed, because the behaviour now exists.
+
+    What this asserts is the policy layer's decision, not an agent's HTTP
+    response: story 13.2's agent is not built, and `app.agent_policy` is the
+    thing that will gate it. When 13.2 lands, this step should assert on the
+    agent's own answer text — at which point it will still be asserting the
+    same refusal, because the agent returns `decision.refusal` verbatim.
+    """
     assert context.question
-    pending(request, "14.3", "the agent's refusal to recommend a candidate")
+    decision = classify(context.question)
+    assert decision.allowed is False, context.question
+    assert "can't tell you who to vote for" in (decision.refusal or "").lower()
+    context.answer = {"text": decision.refusal, "citations": []}
 
 
 @then("offers the voter's alignment comparison instead")
-def agent_offers_alignment(request: pytest.FixtureRequest) -> None:
-    pending(request, "14.3", "the alignment comparison offered in place of a recommendation")
+def agent_offers_alignment(context: ScenarioContext) -> None:
+    assert context.answer is not None, "the refusal step must run first"
+    assert "alignment" in str(context.answer["text"]).lower()

@@ -134,7 +134,11 @@ def write_vote_evidence(world: GraphWorld) -> None:
         )
 
 
-@when(parsers.parse('the evidence graph writer is asked to write an edge with the predicate "{predicate}"'))
+@when(
+    parsers.parse(
+        'the evidence graph writer is asked to write an edge with the predicate "{predicate}"'
+    )
+)
 def write_unknown_predicate(world: GraphWorld, predicate: str) -> None:
     world.transport.calls.clear()
     try:
@@ -147,7 +151,12 @@ def write_unknown_predicate(world: GraphWorld, predicate: str) -> None:
         world.error = exc
 
 
-@when(parsers.parse('the evidence graph writer is asked to write a "{predicate}" edge from the candidacy to the person'))
+@when(
+    parsers.parse(
+        'the evidence graph writer is asked to write a "{predicate}" edge '
+        "from the candidacy to the person"
+    )
+)
 def write_reversed_edge(world: GraphWorld, predicate: str) -> None:
     world.transport.calls.clear()
     try:
@@ -188,14 +197,22 @@ def no_extra_predicates(world: GraphWorld) -> None:
     assert set(world.ontology.predicates) == set(DOCUMENTED_PREDICATE_TABLE)
 
 
-@then(parsers.parse('a "{entity_type}" entity exists whose canonical name is the person\'s NoSQL id'))
+@then(
+    parsers.parse(
+        'a "{entity_type}" entity exists whose canonical name is the person\'s NoSQL id'
+    )
+)
 def person_entity_exists(world: GraphWorld, entity_type: str) -> None:
     entity = world.transport.graph_entities[PERSON_ID]
     assert entity["entity_type"] == entity_type
     assert entity["canonical_name"] == PERSON_ID
 
 
-@then(parsers.parse('a "{entity_type}" entity exists whose canonical name is the candidacy\'s NoSQL id'))
+@then(
+    parsers.parse(
+        'a "{entity_type}" entity exists whose canonical name is the candidacy\'s NoSQL id'
+    )
+)
 def candidacy_entity_exists(world: GraphWorld, entity_type: str) -> None:
     entity = world.transport.graph_entities[CANDIDACY_ID]
     assert entity["entity_type"] == entity_type

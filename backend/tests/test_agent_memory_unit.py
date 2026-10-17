@@ -27,13 +27,13 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
-
 from app.agent_memory import (
     RETENTION,
     RETENTION_DAYS,
     SessionMemoryService,
     sweep_expired_session_memory,
 )
+
 from app.zerodb import ZeroDBClient
 from app.zerodb.testing import FakeZeroDBTransport
 
@@ -67,7 +67,7 @@ def test_the_retention_window_is_one_day() -> None:
     be a deliberate change to both.
     """
     assert RETENTION_DAYS == 1
-    assert RETENTION == timedelta(days=1)
+    assert timedelta(days=1) == RETENTION
 
 
 # --- identified mode: the write happens, with a 1-day marker -------------

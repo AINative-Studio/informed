@@ -8,13 +8,13 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-from pytest_bdd import given, parsers, scenarios, then, when
-
 from app.agent_memory import (
     RETENTION,
     SessionMemoryService,
     sweep_expired_session_memory,
 )
+from pytest_bdd import given, parsers, scenarios, then, when
+
 from app.zerodb import ZeroDBClient
 from app.zerodb.testing import FakeZeroDBTransport
 
@@ -139,7 +139,7 @@ def list_the_registry(world: MemoryWorld) -> None:
 
 @then(parsers.parse("the stored turn's retention is {days:d} day"))
 def stored_retention_is_one_day(world: MemoryWorld, days: int) -> None:
-    assert RETENTION == timedelta(days=days)
+    assert timedelta(days=days) == RETENTION
     metadata = (world.transport.calls[-1].json or {})["memory_metadata"]
     assert metadata["retention_days"] == days
 

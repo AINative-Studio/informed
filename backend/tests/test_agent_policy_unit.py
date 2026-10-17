@@ -22,8 +22,8 @@ from __future__ import annotations
 import pytest
 
 from app.agent_policy import (
-    REFUSAL_REASON,
     RECOMMENDATION_REFUSAL,
+    REFUSAL_REASON,
     PolicyDecision,
     classify,
     is_recommendation_request,
