@@ -28,9 +28,11 @@ import { useQuery } from '@tanstack/react-query';
 import { useId, useMemo, useState } from 'react';
 
 import {
+  type ConsentOffer,
   type InterestProfilePayload,
   type SaveProfileResponse,
   ProfileSaveError,
+  fetchConsentOffer,
   saveAnonymousProfile,
   saveProfile,
 } from '../api/profiles';
@@ -50,6 +52,16 @@ interface SelectedTopic {
 
 export function QuickOnboarding() {
   const topicsQuery = useQuery({ queryKey: ['topics'], queryFn: ({ signal }) => fetchTopics(signal) });
+  // Story 14.2: the consent wording is the server's, versioned, so the record
+  // written to the consent ledger names text that can be reproduced later.
+  // Fetched eagerly rather than on entering the consent step — it is a tiny,
+  // identity-free, cacheable GET, and having it in hand means the consent
+  // screen never renders a spinner where the ask should be.
+  const consentQuery = useQuery({
+    queryKey: ['consent-offer'],
+    queryFn: ({ signal }) => fetchConsentOffer(undefined, signal),
+    staleTime: Number.POSITIVE_INFINITY,
+  });
 
   const [step, setStep] = useState<Step>('topics');
   const [selected, setSelected] = useState<SelectedTopic[]>([]);
@@ -109,7 +121,13 @@ export function QuickOnboarding() {
       // synthetic id keeps this flow usable and demonstrable before that
       // story lands, without pretending to be real authentication.
       const userId = ensureDemoUserId();
-      const response = await saveProfile(userId, profilePayload(), { consent: true });
+      const response = await saveProfile(userId, profilePayload(), {
+        consent: true,
+        // The version this screen actually rendered (story 14.2), not a
+        // constant in the client: that is what makes the stored consent
+        // record resolvable back to wording the voter really saw.
+        consentVersion: consentQuery.data?.consent_version,
+      });
       setSaveResult({ mode: 'account', response });
       setStep('done');
     } catch (error) {
@@ -148,6 +166,9 @@ export function QuickOnboarding() {
 
       {step === 'consent' ? (
         <ConsentStep
+          offer={consentQuery.data}
+          isPending={consentQuery.isPending}
+          isError={consentQuery.isError}
           onBack={() => setStep('stances')}
           onChoice={onConsentChoice}
           isSaving={isSaving}
@@ -337,11 +358,17 @@ function TopicStanceChooser({
 // --- Step 3: consent gate, with anonymous mode as an actual choice ---------
 
 function ConsentStep({
+  offer,
+  isPending,
+  isError,
   onBack,
   onChoice,
   isSaving,
   error,
 }: {
+  offer?: ConsentOffer;
+  isPending: boolean;
+  isError: boolean;
   onBack: () => void;
   onChoice: (choice: 'account' | 'anonymous') => void;
   isSaving: boolean;
@@ -350,26 +377,53 @@ function ConsentStep({
   return (
     <div>
       <h3>Before we save anything</h3>
-      <p>
-        Your interests are political-opinion data. Informed encrypts them so that even Informed
-        cannot read them, never logs them, and never uses them for targeting.
-      </p>
+      {isPending ? <p>Loading the consent information…</p> : null}
+      {isError || (!isPending && !offer) ? (
+        <p role="alert">
+          We could not load the consent information just now, so nothing can be saved to an
+          account. Anonymous mode still works, and nothing has been saved.
+        </p>
+      ) : null}
       <div>
         <section aria-label="Save to my account">
           <h4>Save to my account</h4>
-          <p>
-            Your profile is encrypted and stored so you can come back to it. This requires your
-            consent to store special-category political-opinion data under GDPR.
-          </p>
-          <button type="button" onClick={() => onChoice('account')} disabled={isSaving}>
+          {/* Every word of the ask is the server's (story 14.2). Nothing is
+              hard-coded here: wording compiled into the client could not be
+              resolved from a stored consent record naming its version, which
+              is the whole reason the wording is versioned at all. */}
+          {offer ? (
+            <>
+              <p>{offer.summary}</p>
+              <ul>
+                {offer.what_is_stored.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+              <h5>Your rights</h5>
+              <ul>
+                {offer.your_rights.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+              <p>Consent version {offer.consent_version}</p>
+            </>
+          ) : null}
+          {/* Disabled without an offer: consenting to wording the ledger
+              cannot name would make the record unverifiable. */}
+          <button type="button" onClick={() => onChoice('account')} disabled={isSaving || !offer}>
             {isSaving ? 'Saving…' : 'I consent — save to my account'}
           </button>
         </section>
         <section aria-label="Stay anonymous">
           <h4>Stay anonymous</h4>
+          {/* The alternative comes from the SAME payload as the ask, so this
+              screen cannot render a consent-or-nothing choice (ui-prd.md 2.2:
+              "side by side, as an actual choice"). The fallback sentence is
+              only for a consent-service outage, where anonymous mode must
+              stay available precisely because it stores nothing. */}
           <p>
-            Your profile stays only in this browser. Nothing is sent to Informed's servers, and
-            nothing is saved to an account.
+            {offer?.anonymous_alternative ??
+              "Your profile stays only in this browser. Nothing is sent to Informed's servers, and nothing is saved to an account."}
           </p>
           <button type="button" onClick={() => onChoice('anonymous')} disabled={isSaving}>
             Use anonymous mode instead

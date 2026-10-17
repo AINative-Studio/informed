@@ -54,6 +54,22 @@ function stancesFor(topicId: string) {
   };
 }
 
+const CONSENT_OFFER = {
+  consent_version: '2026.1',
+  summary:
+    'Informed is asking you to save your political priorities to your account. Your political ' +
+    'opinions are special-category personal data, and we only store them if you explicitly agree.',
+  what_is_stored: [
+    'The issues you choose, encrypted with a key held for you alone.',
+    'We never sell your interests, share them, or use them to target you with anything.',
+  ],
+  anonymous_alternative:
+    'You do not have to agree. Anonymous mode gives you the same full app with your priorities ' +
+    'kept in this browser only.',
+  your_rights: ['Export: download everything stored for you as JSON.'],
+  lawful_basis: 'gdpr-9-2-a-explicit-consent',
+};
+
 const fetchMock = vi.fn();
 
 beforeEach(() => {
@@ -64,6 +80,14 @@ beforeEach(() => {
     const url = new URL(String(input), 'http://localhost');
     if (url.pathname === '/v1/topics') {
       return jsonResponse(TOPICS);
+    }
+    // Story 14.2: the consent step now reads its wording from the server, so
+    // the shared stub serves it for story 4.1's tests too. Without it those
+    // tests would find the consent button disabled (which is the correct
+    // behaviour when the wording cannot be loaded) and fail for a reason that
+    // has nothing to do with what they are testing.
+    if (url.pathname === '/v1/profiles/consent') {
+      return jsonResponse(CONSENT_OFFER);
     }
     const stanceMatch = url.pathname.match(/^\/v1\/topics\/(.+)\/stances$/);
     if (stanceMatch) {
@@ -206,8 +230,12 @@ describe('QuickOnboarding — consent gate and save', () => {
         expect.objectContaining({ method: 'POST' }),
       ),
     );
-    const call = fetchMock.mock.calls.find((args: unknown[]) =>
-      String(args[0]).includes('/v1/profiles'),
+    // Must select on the METHOD, not just the path: story 14.2 added a GET to
+    // /v1/profiles/consent, which this flow now makes first and which
+    // `includes('/v1/profiles')` would otherwise match instead of the save.
+    const call = fetchMock.mock.calls.find(
+      (args: unknown[]) =>
+        String(args[0]).includes('/v1/profiles') && (args[1] as RequestInit)?.method === 'POST',
     )!;
     const init = call[1] as RequestInit;
     const body = JSON.parse(init.body as string);
@@ -241,5 +269,101 @@ describe('QuickOnboarding — consent gate and save', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent(/consent/i);
     expect(screen.queryByText(/saved to your account/i)).not.toBeInTheDocument();
+  });
+});
+
+// --- Story 14.2: the consent ask is the server's words, and is recorded ----
+
+
+/**
+ * Drives the flow all the way to the consent screen (story 14.2's tests).
+ *
+ * A module-level twin of the `toConsentStep` scoped inside the earlier
+ * describe block: that one is not exported from its closure, and reaching
+ * across describe boundaries to borrow it would couple two blocks that stub
+ * `fetch` differently.
+ */
+async function reachConsentStep() {
+  const user = userEvent.setup();
+  renderWithQuery(<QuickOnboarding />);
+  await pickThreeTopics();
+  await user.click(screen.getByRole('button', { name: /next: choose your stance/i }));
+  await screen.findAllByText('Option A');
+  for (const fieldset of screen.getAllByRole('group')) {
+    await user.click(within(fieldset).getAllByRole('radio')[0]);
+  }
+  await user.click(screen.getByRole('button', { name: /next: save my profile/i }));
+  return user;
+}
+
+describe('QuickOnboarding — consent is recorded, not just collected (story 14.2)', () => {
+  beforeEach(() => {
+    fetchMock.mockImplementation(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input), 'http://localhost');
+      if (url.pathname === '/v1/topics') return jsonResponse(TOPICS);
+      if (url.pathname === '/v1/profiles/consent') return jsonResponse(CONSENT_OFFER);
+      const stanceMatch = url.pathname.match(/^\/v1\/topics\/(.+)\/stances$/);
+      if (stanceMatch) return jsonResponse(stancesFor(decodeURIComponent(stanceMatch[1])));
+      if (url.pathname === '/v1/profiles' && init?.method === 'POST') {
+        return jsonResponse({ version: 1, locale: 'en-US', updated_at: '2026-10-17T00:00:00Z' });
+      }
+      throw new Error(`unexpected fetch: ${url.pathname}`);
+    });
+  });
+
+  it('renders the consent wording served by the backend rather than its own copy', async () => {
+    await reachConsentStep();
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/v1/profiles/consent'),
+      expect.anything(),
+    );
+    expect(
+      await screen.findByText(/special-category personal data, and we only store them/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/never sell your interests/i)).toBeInTheDocument();
+  });
+
+  it('shows the anonymous-mode alternative from the same payload as the ask', async () => {
+    await reachConsentStep();
+    expect(await screen.findByText(/kept in this browser only/i)).toBeInTheDocument();
+  });
+
+  /**
+   * The assertion that makes the consent ledger meaningful: the version in the
+   * POST body is the version this screen DISPLAYED, read from the fetched
+   * offer, not a constant compiled into the client. A record naming wording
+   * nobody can reproduce reads as proof of consent while proving nothing.
+   */
+  it('echoes the displayed consent version on save, so the record names real wording', async () => {
+    const user = await reachConsentStep();
+    await user.click(screen.getByRole('button', { name: /i consent — save to my account/i }));
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(
+          (args: unknown[]) =>
+            String(args[0]).endsWith('/v1/profiles') &&
+            (args[1] as RequestInit)?.method === 'POST',
+        ),
+      ).toBe(true);
+    });
+    const call = fetchMock.mock.calls.find(
+      (args: unknown[]) =>
+        String(args[0]).endsWith('/v1/profiles') && (args[1] as RequestInit)?.method === 'POST',
+    )!;
+    const body = JSON.parse((call[1] as RequestInit).body as string);
+    expect(body.consent).toBe(true);
+    expect(body.consent_version).toBe('2026.1');
+  });
+
+  it('makes no consent request and no save in anonymous mode', async () => {
+    const user = await reachConsentStep();
+    await user.click(screen.getByRole('button', { name: /use anonymous mode instead/i }));
+
+    const writes = fetchMock.mock.calls.filter(
+      (args: unknown[]) => ((args[1] as RequestInit)?.method ?? 'GET') !== 'GET',
+    );
+    expect(writes).toEqual([]);
+    expect(loadAnonymousProfile()).not.toBeNull();
   });
 });
