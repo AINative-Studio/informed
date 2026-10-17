@@ -378,3 +378,327 @@ describe('ProfileEditor — save and load (story 4.4)', () => {
     }
   });
 });
+
+// --- Stories 14.2, 14.3, 14.4 ---------------------------------------------
+
+/**
+ * The consent offer, anonymous mode, export and delete, in the editor.
+ *
+ * The fetch stub in `beforeEach` above is extended per-describe here rather
+ * than globally, so the existing stories' tests keep asserting against exactly
+ * the endpoints they knew about: a test that passes only because an unrelated
+ * endpoint got stubbed is not evidence of anything.
+ */
+
+const CONSENT_OFFER = {
+  consent_version: '2026.1',
+  summary:
+    'Informed is asking you to save your political priorities to your account. Your political ' +
+    'opinions are special-category personal data.',
+  what_is_stored: [
+    'The issues you choose, encrypted with a key held for you alone.',
+    'Nothing else about your politics.',
+  ],
+  anonymous_alternative:
+    'You do not have to agree. Anonymous mode gives you the same full app with your priorities ' +
+    'kept in this browser only.',
+  your_rights: [
+    'Export: download everything stored for you as JSON.',
+    'Delete: permanently erase your profile and destroy its encryption key.',
+  ],
+  lawful_basis: 'gdpr-9-2-a-explicit-consent',
+};
+
+const EXPORT_DOCUMENT = {
+  exported_at: '2026-10-17T00:00:00Z',
+  version: 2,
+  updated_at: '2026-10-16T00:00:00Z',
+  locale: 'en-US',
+  jurisdiction_ids: [],
+  profile: { interests: [], evidence_mode: 'blend', followed_person_ids: [] },
+  consent: [
+    {
+      consent_version: '2026.1',
+      action: 'granted',
+      lawful_basis: 'gdpr-9-2-a-explicit-consent',
+      recorded_at: '2026-10-16T00:00:00Z',
+    },
+  ],
+};
+
+/** Request bodies/urls seen by the stub, so a test can assert what was NOT sent. */
+interface SeenRequest {
+  method: string;
+  pathname: string;
+  body: Record<string, unknown> | null;
+}
+
+let seen: SeenRequest[] = [];
+let deleteResponse = {
+  deleted: true,
+  key_shredded: true,
+  consent_withdrawal_recorded: true,
+  elapsed_seconds: 0.31,
+};
+
+function stubPrivacyEndpoints() {
+  seen = [];
+  fetchMock.mockImplementation(async (input: string | URL, init?: RequestInit) => {
+    const url = new URL(String(input), 'http://localhost');
+    const method = init?.method ?? 'GET';
+    seen.push({
+      method,
+      pathname: url.pathname,
+      body: typeof init?.body === 'string' ? JSON.parse(init.body) : null,
+    });
+    if (url.pathname === '/v1/topics') return jsonResponse(TOPICS);
+    if (url.pathname === '/v1/profiles/methodology') return jsonResponse(WEIGHTS);
+    if (url.pathname === '/v1/profiles/consent') return jsonResponse(CONSENT_OFFER);
+    const stanceMatch = url.pathname.match(/^\/v1\/topics\/(.+)\/stances$/);
+    if (stanceMatch) return jsonResponse(stancesFor(decodeURIComponent(stanceMatch[1])));
+    if (url.pathname.endsWith('/export')) return jsonResponse(EXPORT_DOCUMENT);
+    if (url.pathname === '/v1/profiles' && method === 'POST') {
+      return jsonResponse({ version: 1, locale: 'en-US', updated_at: '2026-10-16T00:00:00Z' });
+    }
+    const idMatch = url.pathname.match(/^\/v1\/profiles\/(?!methodology|consent$)([^/]+)$/);
+    if (idMatch && method === 'DELETE') return jsonResponse(deleteResponse);
+    if (idMatch && method === 'GET') return jsonResponse(loadedProfileResponse);
+    throw new Error(`unexpected fetch: ${method} ${url.pathname}`);
+  });
+}
+
+/** Writes that would leave a trace on the server. GETs of public reference
+ *  data (topics, stances, weights, the consent text) carry no identity. */
+function writeRequests(): SeenRequest[] {
+  return seen.filter((request) => request.method !== 'GET');
+}
+
+describe('ProfileEditor — consent at onboarding (story 14.2)', () => {
+  beforeEach(() => {
+    stubPrivacyEndpoints();
+  });
+
+  it('shows the consent wording served by the backend, not wording of its own', async () => {
+    renderWithQuery(<ProfileEditor />);
+    await screen.findByText('Prescription drug pricing');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/v1/profiles/consent'),
+      expect.anything(),
+    );
+    expect(await screen.findByText(/special-category personal data/i)).toBeInTheDocument();
+    expect(screen.getByText(/encrypted with a key held for you alone/i)).toBeInTheDocument();
+  });
+
+  it('offers anonymous mode as an alternative, from the same payload as the ask', async () => {
+    renderWithQuery(<ProfileEditor />);
+    await screen.findByText('Prescription drug pricing');
+    expect(await screen.findByText(/kept in this browser only/i)).toBeInTheDocument();
+  });
+
+  it('names the rights the consent promises (export and delete)', async () => {
+    renderWithQuery(<ProfileEditor />);
+    await screen.findByText('Prescription drug pricing');
+    expect(await screen.findByText(/download everything stored for you as JSON/i)).toBeInTheDocument();
+  });
+
+  it('refuses to save without consent, and echoes the displayed version once given', async () => {
+    renderWithQuery(<ProfileEditor />);
+    await screen.findByText('Prescription drug pricing');
+    const { user } = await setTier('Prescription drug pricing', 'Primary');
+    const row = screen.getByRole('group', { name: 'Prescription drug pricing' });
+    await user.selectOptions(within(row).getByLabelText(/stance/i), 'Option A');
+
+    const save = screen.getByRole('button', { name: /save my profile/i });
+    expect(save).toBeDisabled();
+
+    await user.click(await screen.findByRole('checkbox', { name: /consent/i }));
+    expect(save).toBeEnabled();
+    await user.click(save);
+
+    await waitFor(() => {
+      expect(seen.some((request) => request.pathname === '/v1/profiles' && request.method === 'POST')).toBe(true);
+    });
+    const post = seen.find((request) => request.pathname === '/v1/profiles' && request.method === 'POST');
+    expect(post?.body?.consent).toBe(true);
+    // The version the component actually displayed, from the fetched offer —
+    // not a constant compiled into the client (story 14.2).
+    expect(post?.body?.consent_version).toBe('2026.1');
+  });
+});
+
+describe('ProfileEditor — anonymous mode (story 14.3)', () => {
+  beforeEach(() => {
+    stubPrivacyEndpoints();
+  });
+
+  it('lets a voter choose anonymous mode instead of an account', async () => {
+    const user = userEvent.setup();
+    renderWithQuery(<ProfileEditor />);
+    await screen.findByText('Prescription drug pricing');
+    await user.click(await screen.findByRole('radio', { name: /anonymous/i }));
+    expect(screen.getByRole('radio', { name: /anonymous/i })).toBeChecked();
+  });
+
+  it('asks for no consent in anonymous mode, because nothing is stored', async () => {
+    const user = userEvent.setup();
+    renderWithQuery(<ProfileEditor />);
+    await screen.findByText('Prescription drug pricing');
+    await user.click(await screen.findByRole('radio', { name: /anonymous/i }));
+    expect(screen.queryByRole('checkbox', { name: /consent/i })).not.toBeInTheDocument();
+  });
+
+  /**
+   * Story 14.3's actual acceptance criterion: "no server rows are written".
+   * Asserted as "no non-GET request was made at all", which is the strongest
+   * check available from the client and one a later refactor cannot quietly
+   * break — adding a telemetry POST would fail this test.
+   */
+  it('completes the whole flow — tiers, a dealbreaker, save — with zero writes to the server', async () => {
+    const user = userEvent.setup();
+    renderWithQuery(<ProfileEditor />);
+    await screen.findByText('Prescription drug pricing');
+    await user.click(await screen.findByRole('radio', { name: /anonymous/i }));
+
+    await setTier('Prescription drug pricing', 'Primary');
+    const row = screen.getByRole('group', { name: 'Prescription drug pricing' });
+    await user.selectOptions(within(row).getByLabelText(/stance/i), 'Option A');
+    await user.click(within(row).getByRole('checkbox', { name: /dealbreaker/i }));
+    await setTier('Broadband access', 'Secondary');
+    const broadband = screen.getByRole('group', { name: 'Broadband access' });
+    await user.selectOptions(within(broadband).getByLabelText(/stance/i), 'Option A');
+
+    await user.click(screen.getByRole('button', { name: /save my profile/i }));
+
+    expect(await screen.findByText(/this browser only/i)).toBeInTheDocument();
+    expect(writeRequests()).toEqual([]);
+  });
+
+  it('keeps an anonymously saved profile in this browser, readable after a remount', async () => {
+    const user = userEvent.setup();
+    const first = renderWithQuery(<ProfileEditor />);
+    await screen.findByText('Prescription drug pricing');
+    await user.click(await screen.findByRole('radio', { name: /anonymous/i }));
+    await setTier('Prescription drug pricing', 'Primary');
+    const row = screen.getByRole('group', { name: 'Prescription drug pricing' });
+    await user.selectOptions(within(row).getByLabelText(/stance/i), 'Option A');
+    await user.click(screen.getByRole('button', { name: /save my profile/i }));
+    await screen.findByText(/this browser only/i);
+    first.unmount();
+
+    renderWithQuery(<ProfileEditor />);
+    await screen.findByText('Prescription drug pricing');
+    await user.click(await screen.findByRole('radio', { name: /anonymous/i }));
+
+    await waitFor(() => {
+      const reloaded = screen.getByRole('group', { name: 'Prescription drug pricing' });
+      expect(within(reloaded).getByLabelText('Tier')).toHaveValue('primary');
+    });
+    expect(writeRequests()).toEqual([]);
+  });
+
+  it('clears the anonymous profile on request, leaving nothing in this browser', async () => {
+    const user = userEvent.setup();
+    renderWithQuery(<ProfileEditor />);
+    await screen.findByText('Prescription drug pricing');
+    await user.click(await screen.findByRole('radio', { name: /anonymous/i }));
+    await setTier('Prescription drug pricing', 'Primary');
+    const row = screen.getByRole('group', { name: 'Prescription drug pricing' });
+    await user.selectOptions(within(row).getByLabelText(/stance/i), 'Option A');
+    await user.click(screen.getByRole('button', { name: /save my profile/i }));
+    await screen.findByText(/this browser only/i);
+
+    await user.click(screen.getByRole('button', { name: /clear.*(browser|anonymous)/i }));
+
+    expect(window.localStorage.getItem('informed:anonymous-profile:v1')).toBeNull();
+    expect(writeRequests()).toEqual([]);
+  });
+});
+
+describe('ProfileEditor — export and delete (story 14.4)', () => {
+  beforeEach(() => {
+    stubPrivacyEndpoints();
+    loadedProfileResponse = {
+      interests: [
+        {
+          topic_id: 'en-US:medicare:v1',
+          stance_id: 'en-US:medicare:v1:option-a',
+          tier: 'primary',
+          intensity: 2,
+          dealbreaker: true,
+          note: null,
+        },
+      ],
+      evidence_mode: 'blend',
+      followed_person_ids: [],
+    };
+    deleteResponse = {
+      deleted: true,
+      key_shredded: true,
+      consent_withdrawal_recorded: true,
+      elapsed_seconds: 0.31,
+    };
+  });
+
+  it('exports the stored profile as a JSON document the voter can keep', async () => {
+    const user = userEvent.setup();
+    renderWithQuery(<ProfileEditor />);
+    await screen.findByText('Prescription drug pricing');
+
+    await user.click(screen.getByRole('button', { name: /export my (profile|data)/i }));
+
+    await waitFor(() => {
+      expect(seen.some((request) => request.pathname.endsWith('/export'))).toBe(true);
+    });
+    const link = await screen.findByRole('link', { name: /download/i });
+    expect(link).toHaveAttribute('download');
+  });
+
+  it('asks for confirmation before deleting, and sends nothing until confirmed', async () => {
+    const user = userEvent.setup();
+    renderWithQuery(<ProfileEditor />);
+    await screen.findByText('Prescription drug pricing');
+
+    await user.click(screen.getByRole('button', { name: /delete my (profile|data)/i }));
+
+    expect(await screen.findByText(/cannot be undone|permanent/i)).toBeInTheDocument();
+    expect(seen.some((request) => request.method === 'DELETE')).toBe(false);
+  });
+
+  it('deletes and reports both guarantees once confirmed', async () => {
+    const user = userEvent.setup();
+    renderWithQuery(<ProfileEditor />);
+    await screen.findByText('Prescription drug pricing');
+
+    await user.click(screen.getByRole('button', { name: /delete my (profile|data)/i }));
+    await user.click(await screen.findByRole('button', { name: /yes.*delete|delete permanently/i }));
+
+    expect(await screen.findByText(/permanently deleted/i)).toBeInTheDocument();
+    expect(screen.getByText(/key/i)).toBeInTheDocument();
+    expect(seen.some((request) => request.method === 'DELETE')).toBe(true);
+  });
+
+  it('cancelling the confirmation sends no delete and leaves the profile loaded', async () => {
+    const user = userEvent.setup();
+    renderWithQuery(<ProfileEditor />);
+    await screen.findByText('Prescription drug pricing');
+
+    await user.click(screen.getByRole('button', { name: /delete my (profile|data)/i }));
+    await user.click(await screen.findByRole('button', { name: /cancel|keep my profile/i }));
+
+    expect(seen.some((request) => request.method === 'DELETE')).toBe(false);
+    const medicare = screen.getByRole('group', { name: 'Medicare' });
+    expect(within(medicare).getByLabelText('Tier')).toHaveValue('primary');
+    expect(within(medicare).getByRole('checkbox', { name: /dealbreaker/i })).toBeChecked();
+  });
+
+  it('offers neither export nor delete in anonymous mode, since nothing is stored', async () => {
+    const user = userEvent.setup();
+    renderWithQuery(<ProfileEditor />);
+    await screen.findByText('Prescription drug pricing');
+    await user.click(await screen.findByRole('radio', { name: /anonymous/i }));
+
+    expect(screen.queryByRole('button', { name: /export my (profile|data)/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /delete my (profile|data)/i })).not.toBeInTheDocument();
+  });
+});
