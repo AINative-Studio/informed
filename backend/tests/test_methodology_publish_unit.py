@@ -8,6 +8,8 @@ ordering guarantee that makes a torn publish recoverable.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from app.bootstrap import Bootstrapper
@@ -19,10 +21,12 @@ from app.methodology.publish import (
     METHODOLOGY_PUBLISHED_TOPIC,
     MethodologyPublisher,
     MethodologyPublishError,
+    _changelog_url_for,
     default_weights,
 )
 from app.methodology.service import PublicMethodologyService
 from app.profiles.methodology import (
+    DEFAULT_CHANGELOG_URL,
     DEFAULT_TIER_WEIGHTS,
     TABLE_NAME,
     MethodologyVersionService,
@@ -253,6 +257,53 @@ def test_publishing_defaults_the_changelog_url_to_this_versions_anchor(
     published = publisher.publish_new_version("2027.1")
     assert published.changelog_url.endswith("methodology-changelog.md#20271")
     assert published.changelog_url.startswith("https://")
+
+
+def test_the_live_versions_changelog_anchor_actually_exists_in_the_changelog() -> None:
+    """The anchor a stored `changelog_url` points at has to be real.
+
+    This caught a real bug. The publisher builds `#20262` from the version id,
+    but GitHub auto-generates a heading slug from the heading's full prose
+    (`#20262--evidence-blend-and-vote-types`), which the publisher cannot know.
+    The published link therefore landed at the top of the page rather than at
+    its own entry — a dead citation on the one endpoint whose entire purpose is
+    that a skeptical reader can follow it. `docs/methodology-changelog.md` now
+    carries an explicit `<a id="...">` per version, and this test is what keeps
+    it that way when the next version is published.
+
+    Checked against the file for every version this repository has published,
+    so adding `2027.1` to the live table without adding its changelog entry
+    fails here rather than silently shipping a broken link.
+
+    The assertion looks for the explicit `<a id="...">` and nothing else. An
+    earlier version of this test also accepted a GitHub-style `#<anchor>--…`
+    slug appearing anywhere in the file, and that made it useless: the string
+    `#20262--evidence-blend-and-vote-types` occurred in a prose cross-reference
+    elsewhere on the page, so deleting the real anchor still passed. Verified
+    by deleting it and watching this test go red.
+    """
+    changelog = (
+        Path(__file__).resolve().parents[2] / "docs" / "methodology-changelog.md"
+    ).read_text(encoding="utf-8")
+
+    for version in ("2026.1", "2026.2"):
+        anchor = _changelog_url_for(version).rpartition("#")[2]
+        assert f'<a id="{anchor}"></a>' in changelog, (
+            f"{version}'s published changelog_url points at #{anchor}, which "
+            f"docs/methodology-changelog.md does not define as an explicit anchor"
+        )
+
+
+def test_story_4_2s_already_published_changelog_anchor_still_resolves() -> None:
+    """`2026.1`'s live row stores the longer auto-generated slug (story 4.2
+    wrote it before this convention existed). A stored citation must not rot,
+    so that heading keeps its original anchor working."""
+    changelog = (
+        Path(__file__).resolve().parents[2] / "docs" / "methodology-changelog.md"
+    ).read_text(encoding="utf-8")
+    legacy_anchor = DEFAULT_CHANGELOG_URL.rpartition("#")[2]
+    assert legacy_anchor == "20261--the-first-published-methodology"
+    assert "## 2026.1 — the first published methodology" in changelog
 
 
 def test_an_explicit_changelog_url_and_date_are_honoured(

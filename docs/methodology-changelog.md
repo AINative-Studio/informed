@@ -31,12 +31,14 @@ as though it were the whole thing.
 
 ---
 
+<a id="20262"></a>
+
 ## 2026.2 — evidence blend and vote types
 
 **Status:** in force.
 **Published:** 2026-10-17.
-**Replaces:** [2026.1](#20261--the-first-published-methodology), which stays
-readable at its own URL showing exactly the weights it covered.
+**Replaces:** [2026.1](#20261), which stays readable at its own URL showing
+exactly the weights it covered.
 
 `2026.1` published one weight group of the three and said so. This version
 fills in the other two. Nothing about the interest tier weights changed.
@@ -106,12 +108,20 @@ Nothing. All three documented weight groups are now in force, so
 
 ---
 
+<a id="20261"></a>
+
 ## 2026.1 — the first published methodology
 
-**Status:** superseded by [2026.2](#20262--evidence-blend-and-vote-types) on
-2026-10-17. Still readable at `/v1/methodology/2026.1`, and anything scored
-under it still cites it.
+**Status:** superseded by [2026.2](#20262) on 2026-10-17. Still readable at
+`/v1/methodology/2026.1`, and anything scored under it still cites it.
 **Published:** 2026-10-16.
+
+> This heading also keeps its original GitHub-generated anchor
+> (`#20261--the-first-published-methodology`), because story 4.2's live
+> `2026.1` row stores that longer URL and a stored citation must not rot. New
+> versions use the short `#{version without the dot}` form, which story 6.1's
+> publisher can generate from the version id alone — a link built from a
+> heading's prose cannot be, which is how the mismatch arose.
 
 ### Interest tier weights (`tiers`)
 
@@ -144,8 +154,8 @@ nothing is. When those groups go into force, they will appear in a new
 version here with its own entry, and `2026.1` will remain readable at its own
 URL showing exactly what it did and did not cover.
 
-> That is what happened: both groups went into force in
-> [2026.2](#20262--evidence-blend-and-vote-types) on 2026-10-17. The paragraph
+> That is what happened: both groups went into force in [2026.2](#20262) on
+> 2026-10-17. The paragraph
 > above is left exactly as it was written, because it describes what `2026.1`
 > covered and that has not changed — a verdict or score citing `2026.1` is
 > citing a methodology that weighted tiers and nothing else.

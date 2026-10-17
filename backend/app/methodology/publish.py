@@ -366,8 +366,25 @@ def _changelog_url_for(version: str) -> str:
     Points at `docs/methodology-changelog.md` for the reason story 12.2 chose
     it over a product domain that is not stood up: the changelog is
     version-controlled, publicly readable, and its own history is auditable.
-    The anchor shape matches GitHub's heading slugs, which is why the version's
-    dot is dropped rather than replaced.
+
+    The anchor is the version id with the dot removed — `2026.2` becomes
+    `#20262` — and `docs/methodology-changelog.md` carries a matching explicit
+    `<a id="...">` above each version heading.
+
+    That explicit anchor is load-bearing, and the alternative was tried and
+    rejected: GitHub auto-generates a heading slug from the heading's full
+    prose (`## 2026.2 — evidence blend and vote types` becomes
+    `#20262--evidence-blend-and-vote-types`), which this function cannot
+    construct, because it knows the version id and nothing about the title
+    someone will write for it. A stored `changelog_url` that silently landed
+    at the top of the page instead of at its own entry would be a dead
+    citation on the one endpoint whose whole purpose is that a skeptical
+    reader can follow it.
+
+    Story 4.2's `2026.1` row predates this convention and stores the longer
+    auto-generated slug; `DEFAULT_CHANGELOG_URL` still carries that exact
+    string and the changelog keeps that heading's original anchor working, so
+    the already-published citation does not rot.
     """
     slug = version.replace(".", "")
     return (
