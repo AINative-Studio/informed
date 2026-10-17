@@ -60,6 +60,7 @@ def _unused_client() -> ZeroDBClient:
     """For constructor-guard tests that must raise before any request."""
     return _fake_client()
 
+
 # ---------------------------------------------------------------------------
 # segment_sentences
 # ---------------------------------------------------------------------------
