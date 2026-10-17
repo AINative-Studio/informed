@@ -319,6 +319,22 @@ describe('BallotPage', () => {
       await submitAddress();
       await screen.findByText('Rep. Synthetic Example');
 
+      fetchMock.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            candidacy_id: 'election:district:person:ZZ000001',
+            person_name: 'Rep. Synthetic Example',
+            party: 'Independent',
+            district: 'California 19th Congressional District',
+            photo_url: null,
+            verdict_counts: null,
+            say_do_gap: null,
+            positions_summary: null,
+            updated_at: '2026-10-17T00:00:00Z',
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+      );
       const user = userEvent.setup();
       await user.click(screen.getByRole('button', { name: /share rep\. synthetic example/i }));
 
