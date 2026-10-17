@@ -165,9 +165,7 @@ def reviewer_rejected_stance(
 
 
 @given(
-    parsers.parse(
-        'reviewer "{reviewer}" proposed the label "{label}" for the stance "{stance_id}"'
-    )
+    parsers.parse('reviewer "{reviewer}" proposed the label "{label}" for the stance "{stance_id}"')
 )
 def reviewer_proposed_label(
     panel: PanelReviewService, result: dict[str, Any], reviewer: str, label: str, stance_id: str
@@ -181,7 +179,9 @@ def reviewer_proposed_label(
 def reviewer_approves_proposal(
     panel: PanelReviewService, result: dict[str, Any], reviewer: str
 ) -> None:
-    panel.decide(proposal_id=result["proposal"].proposal_id, reviewer_id=reviewer, decision="approved")
+    panel.decide(
+        proposal_id=result["proposal"].proposal_id, reviewer_id=reviewer, decision="approved"
+    )
 
 
 @given(
@@ -230,11 +230,12 @@ def gate_fails(gate_report: GateReport) -> None:
 
 
 @then("the panel gate report counts every topic and stance as grandfathered")
-def gate_reports_grandfathered(gate_report: GateReport, topics: Repository[IssueTopic], stances: Repository[Stance]) -> None:
+def gate_reports_grandfathered(
+    gate_report: GateReport, topics: Repository[IssueTopic], stances: Repository[Stance]
+) -> None:
     expected = len(topics.query(limit=5000)) + len(stances.query(limit=5000))
     assert gate_report.grandfathered == expected, (
-        f"expected {expected} grandfathered row(s), the report counted "
-        f"{gate_report.grandfathered}"
+        f"expected {expected} grandfathered row(s), the report counted {gate_report.grandfathered}"
     )
 
 

@@ -215,7 +215,9 @@ def check_panel_gate(client: ZeroDBClient) -> GateReport:
                 "PanelReviewService.propose()/decide() (e.g. a seeder re-run that changed "
                 "wording without a review)"
             )
-        violations.append(Violation(table=entry.subject_table, row_id=entry.subject_id, detail=detail))
+        violations.append(
+            Violation(table=entry.subject_table, row_id=entry.subject_id, detail=detail)
+        )
 
     # `queue()` already scanned every current row (it is how it finds rows
     # with no in-force approval); `scanned` here counts the same universe
