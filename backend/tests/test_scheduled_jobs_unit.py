@@ -38,7 +38,7 @@ def client() -> ZeroDBClient:
 # --- default_jobs() composition ---------------------------------------------
 
 
-def test_default_jobs_registers_exactly_the_five_documented_jobs() -> None:
+def test_default_jobs_registers_exactly_the_six_documented_jobs() -> None:
     names = [job.name for job in jobs_module.default_jobs()]
     assert names == [
         "sweep_correction_emails",
@@ -46,7 +46,24 @@ def test_default_jobs_registers_exactly_the_five_documented_jobs() -> None:
         "load_house_rollcalls",
         "run_nightly_integrity_checks",
         "repair_member_votes_denormalization",
+        # Story 13.5. Registered from day one rather than left to a human with
+        # a script, which is the gap story 12.4's own module docstring
+        # documented at length before this registry existed.
+        "sweep_qa_session_memory",
     ]
+
+
+def test_the_qa_memory_sweep_runs_every_six_hours_with_no_precondition() -> None:
+    """Every 6 hours, not daily: a daily sweep of a 1-day window lets a turn
+    survive up to 48 hours, which would make datamodel.md's "Q&A memory | 1
+    day" false of the database for an extra day. See
+    `app.agent_memory.retention`'s module docstring for the full argument, and
+    `SessionMemoryService.recall`'s read guard for why the overshoot is never
+    voter-visible.
+    """
+    job = next(j for j in jobs_module.default_jobs() if j.name == "sweep_qa_session_memory")
+    assert job.precondition is None
+    assert job.interval == timedelta(hours=6)
 
 
 def test_integrity_jobs_have_no_precondition() -> None:

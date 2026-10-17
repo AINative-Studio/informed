@@ -1,6 +1,6 @@
 """The real job registry: every periodic task this codebase needs, named once.
 
-Five jobs today, one per story that flagged the scheduling gap:
+Six jobs today, one per story that flagged the scheduling gap:
 
   * `sweep_correction_emails` — story 12.4's 90-day contact-email retention
     sweep. Daily. The most urgent of the three (see `app.corrections.retention`'s
@@ -26,6 +26,14 @@ Five jobs today, one per story that flagged the scheduling gap:
     the moment it is found (rather than only reporting it) is the point of
     16.4's acceptance criterion, and running it right after the check means
     one nightly invocation both reports and heals.
+  * `sweep_qa_session_memory` — story 13.5's 1-day Q&A memory retention. Every
+    6 hours, not daily: a daily sweep of a 1-day window lets a turn survive up
+    to 48 hours, which would make datamodel.md's "retention: 1 day" false of
+    the database for an extra day. Registered from day one rather than left to
+    a human with a script — the gap 12.4 documented and `ScheduledJobRunner`
+    closed. No precondition: the memory API needs no credential beyond the
+    project's own, so this job and the two integrity jobs are the three that
+    always actually run.
 
 Each job calls directly into the already-tested `app.ingest.*` / `app.corrections.*`
 / `app.integrity.*` logic, using the `ZeroDBClient` the runner injects — exactly
@@ -55,6 +63,7 @@ import time
 from collections.abc import Callable
 from datetime import timedelta
 
+from app.agent_memory import sweep_expired_session_memory
 from app.corrections.retention import sweep_expired_contact_emails
 from app.ingest.candidacies import (
     ALL_STATES,
@@ -285,6 +294,27 @@ def run_repair_member_votes_drift(client: ZeroDBClient) -> None:
     logger.info("repair_member_votes_denormalization: %s", result.summary())
 
 
+# --- story 13.5: sweep_qa_session_memory ------------------------------------
+
+
+def run_sweep_qa_session_memory(client: ZeroDBClient) -> None:
+    """Delete Q&A session turns past their one-day retention window.
+
+    Delegates entirely to `app.agent_memory.sweep_expired_session_memory`,
+    which is idempotent and raises `ZeroDBError` on a genuine failure — the
+    same contract `run_sweep_correction_emails` follows, and exactly what the
+    registry needs to decide RAN vs FAILED.
+
+    **Registered from day one, unlike story 12.4's email sweep.** 12.4 shipped
+    with its retention promise "kept by a human running a script" because no
+    scheduler existed; `ScheduledJobRunner` now does, so story 13.5 has no
+    excuse to reopen that gap. The log line carries counts only — never a
+    question, never a session id (see `app.agent_memory.retention`).
+    """
+    result = sweep_expired_session_memory(client)
+    logger.info("sweep_qa_session_memory: %s", result.summary())
+
+
 # --- the registry itself ----------------------------------------------------
 
 
@@ -325,6 +355,19 @@ def default_jobs() -> list[JobRegistration]:
             interval=timedelta(days=1),
             run=run_repair_member_votes_drift,
         ),
+        JobRegistration(
+            # Every 6 hours rather than daily. A daily sweep of a 1-day window
+            # means a turn can survive up to 48 hours — its own day, plus up to
+            # a day waiting for the sweep — which would make datamodel.md's
+            # "retention: 1 day" false of the database for a full extra day.
+            # Six hours bounds the overshoot at a quarter-day, and
+            # `SessionMemoryService.recall`'s read guard means the overshoot is
+            # never voter-visible at any point. No precondition: the memory API
+            # needs no credential beyond the project's own.
+            name="sweep_qa_session_memory",
+            interval=timedelta(hours=6),
+            run=run_sweep_qa_session_memory,
+        ),
     ]
 
 
@@ -344,4 +387,5 @@ __all__ = [
     "run_nightly_integrity_checks",
     "run_repair_member_votes_drift",
     "run_sweep_correction_emails",
+    "run_sweep_qa_session_memory",
 ]
