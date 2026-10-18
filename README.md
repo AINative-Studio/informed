@@ -6,6 +6,20 @@ A voter states their priorities; Informed shows how closely each candidate match
 cited evidence. Nonpartisan by construction, evidence over opinion, privacy first — see
 [`prd.md`](prd.md).
 
+## Status
+
+Iteration 1's walking skeleton is done, and work is well into Epics 2–4 and 9/12–16 — see the
+[issue tracker](../../issues) for the full backlog as GitHub issues (one per user story, labeled
+by epic and priority) and what's open vs. closed. Most of what's left is blocked on a few things
+any contributor can help unblock:
+
+- A **Congress.gov API key** (free, via [api.data.gov](https://api.data.gov/signup/)) — unblocks
+  House/Senate roll-call ingest and everything downstream of real vote data (Epics 5, 6, 8, 10, 11).
+- An **OpenFEC API key** (free, same signup) — unblocks the full weekly candidacy refresh (story 2.6).
+- Real **authentication** — every profile-touching endpoint currently takes a bare `user_id` with
+  no verification. This is the most important open gap; see `docs/environments.md` for where it's
+  flagged.
+
 ## Documents
 
 | File | What it holds |
@@ -14,6 +28,10 @@ cited evidence. Nonpartisan by construction, evidence over opinion, privacy firs
 | [`datamodel.md`](datamodel.md) | ZeroDB data model: tables, ids, vectors, graph, events |
 | [`backlog.md`](backlog.md) | 18 epics, 110 user stories with acceptance criteria |
 | [`CLAUDE.md`](CLAUDE.md) | How we work: AI-native XP with TDD and BDD |
+| [`docs/environments.md`](docs/environments.md) | Dev/staging/prod setup, secrets, and every known operational gap |
+| [`docs/observability.md`](docs/observability.md) | Metrics, logging, and what dashboards to build once real infra exists |
+| [`docs/methodology-changelog.md`](docs/methodology-changelog.md) | Plain-language history of the scoring methodology's weights |
+| [`docs/spikes/`](docs/spikes) | Written answers from timeboxed research spikes (data sources, ZeroDB limits) |
 
 ## Layout
 
@@ -63,18 +81,28 @@ is undefined or actually broken still turns the build red.
 
 ## Backend
 
-Requires Python 3.12 or newer.
+**Requires Python 3.12** — not newer. CI pins 3.12, and the test suite's `pytest-bdd` plugin
+fails to import under 3.14 (`ImportError: No module named 'tests.step_defs'`). If your system
+`python3` is newer, install 3.12 alongside it (`brew install python@3.12` on macOS) and point the
+venv at it explicitly.
 
 ```bash
 cd backend
-python -m venv .venv && source .venv/bin/activate
+python3.12 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
-pytest                 # unit tests and pytest-bdd features
+pytest                 # unit tests and pytest-bdd features — no credentials needed
 pytest --cov=app       # with coverage
 ruff check . && ruff format --check .
 uvicorn app.main:app --reload   # http://127.0.0.1:8000/health
 ```
+
+The committed test suite runs entirely against an in-memory ZeroDB fake — no live credentials
+are needed to develop or run `pytest`. To exercise a module's `scripts/verify_*_live.py` script
+against the real ZeroDB project (optional, only needed if you're touching a story that writes
+live data), copy `.env.example` to `local.env`, fill in real `ZERODB_*` values from whoever holds
+the project's credentials, and `source` it before running the script. See
+[`docs/environments.md`](docs/environments.md) for the full setup and secret-handling story.
 
 ## Frontend
 
@@ -100,5 +128,19 @@ build blocks merge.
 
 ## Contributing
 
-Follow the loop in [`CLAUDE.md`](CLAUDE.md): one story at a time, a branch per story, Gherkin
-first, then red, green, refactor. No production code without a failing test first.
+Pick an open [issue](../../issues) — each is one backlog story with its own acceptance criteria,
+epic label, and MoSCoW priority label. Then follow the loop in [`CLAUDE.md`](CLAUDE.md): one
+story at a time, a branch per story (`story/<id>-<short-name>`), Gherkin first, then red, green,
+refactor. No production code without a failing test first. Open a PR naming the story id; CI
+must be green before merge.
+
+A story's PR should say plainly which parts of its acceptance criteria are genuinely verified
+(ideally against the real ZeroDB project, via a `scripts/verify_*_live.py` script) versus
+honestly blocked on something outside the PR's control (a missing API key, an upstream story
+that hasn't landed yet). Don't fabricate data or a passing result to make a criterion look met —
+every prior story in this backlog has held that line, including by writing zero rows when the
+honest alternative was writing wrong ones.
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).
