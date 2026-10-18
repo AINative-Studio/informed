@@ -185,10 +185,20 @@ def submit_with_consent_a_day_later(
     sleeping or the id scheme being widened: the behaviour under test is "a
     later consent appends", and what makes it later is the timestamp, not the
     wall-clock delay.
+
+    The patched timestamp is computed relative to the real clock at call time
+    (one day ahead), not a hardcoded date — a fixed future date is only ever
+    "later" until the real calendar catches up to it, and then overtakes it.
     """
+    from datetime import UTC, datetime, timedelta
+
     from app.profiles import consent as consent_module
 
-    monkeypatch.setattr(consent_module, "_now", lambda: "2026-10-17T12:00:00Z")
+    a_day_later = (
+        (datetime.now(UTC) + timedelta(days=1)).isoformat(timespec="seconds").replace("+00:00", "Z")
+    )
+    monkeypatch.setattr(consent_module, "_now", lambda: a_day_later)
+    result["patched_later_timestamp"] = a_day_later
     _submit(api, result)
 
 
@@ -364,7 +374,7 @@ def earlier_record_intact(result: dict[str, Any]) -> None:
     times = [record.recorded_at for record in records]
     assert times == sorted(times), times
     assert times[0] != times[1], times
-    assert times[1] == "2026-10-17T12:00:00Z", times
+    assert times[1] == result["patched_later_timestamp"], times
 
 
 @then("a withdrawal record exists for that voter")
