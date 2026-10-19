@@ -108,6 +108,23 @@ def test_routes_are_only_the_ones_built_so_far(client: TestClient) -> None:
         # the k-anonymity threshold — see `app.analytics`'s module docstrings.
         "/v1/analytics/events",
         "/v1/analytics/aggregate",
+        # Stories 6.4-6.7: prd.md's alignment endpoint — score, confidence
+        # badge, dealbreaker warnings, top reasons. The opposite case from
+        # 14.6's summary card directly above it: this endpoint REQUIRES a
+        # voter identity (`profile_id`), because an alignment score is a
+        # function of a voter's priorities and there is no meaningful
+        # anonymous version of it.
+        #
+        # Its guarantee is therefore the other direction — personalized in,
+        # never personal out: `app.scoring.models`' four response models
+        # forbid extra fields and declare nothing that could carry an
+        # interest's wording, tier, note or the encrypted payload. See
+        # `app.scoring.router`'s module docstring for the contrast.
+        #
+        # Declared with the `{candidacy_id:path}` converter, because a real
+        # candidacy id embeds an OCD-ID containing slashes — the OpenAPI
+        # schema still renders it as `{candidacy_id}`.
+        "/v1/candidates/{candidacy_id}/alignment",
     }
 
     # Story 12.4's deliberate omission, asserted rather than only described:
@@ -137,9 +154,19 @@ def test_routes_are_only_the_ones_built_so_far(client: TestClient) -> None:
     assert "/v1/topics/{topic_id}/stances" in paths
 
     # The remaining Core API endpoints are genuinely absent, not merely
-    # untested. `/v1/corrections` left this list in story 12.4.
-    for not_yet in (
-        "/v1/candidates/some-id/alignment",
-        "/v1/agent/ask",
-    ):
+    # untested. `/v1/corrections` left this list in story 12.4, and
+    # `/v1/candidates/{id}/alignment` left it in stories 6.4-6.7 — it is
+    # asserted present in the path set above instead.
+    #
+    # `/v1/candidates/{id}/promise-record` is the one still missing from
+    # prd.md's Core API table alongside `/v1/agent/ask`. It is NOT checked by
+    # a 404 here, deliberately: the alignment route is declared with the
+    # `{candidacy_id:path}` converter (a real candidacy id embeds a
+    # slash-bearing OCD-ID), and a greedy `:path` segment would swallow
+    # `/v1/candidates/x/promise-record` into a candidacy id of
+    # `x/promise-record` rather than 404ing. Asserting a 404 would therefore
+    # have tested the converter, not the absence — and when the
+    # promise-record route lands it will need its own `:path` declaration for
+    # the same reason.
+    for not_yet in ("/v1/agent/ask",):
         assert client.get(not_yet).status_code == 404

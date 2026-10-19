@@ -280,8 +280,49 @@ def profile_saved_with_weights(
 
 
 @then("no candidate score is shown until at least one primary interest exists")
-def no_score_without_primary(request: pytest.FixtureRequest) -> None:
-    pending(request, "4.2", "alignment score gating on a primary interest")
+def no_score_without_primary(context: ScenarioContext) -> None:
+    """prd.md's gate on scoring, no longer pending (story 6.4).
+
+    The pointer said "4.2", which was the wrong story: 4.2 edits tier weights
+    and has no score to gate. The gate belongs to whatever computes a score,
+    which is story 6.4's `/v1/candidates/{id}/alignment` — and it is enforced
+    in exactly one place, by exactly one condition.
+
+    What makes that one condition sufficient is a property of the profile
+    model, not a second check: `InterestProfile` refuses to validate without at
+    least one primary interest ("a profile needs at least 1 primary interest;
+    nothing can be scored without one"). So a STORED profile always has one,
+    and "has a stored profile" and "is scoreable" are the same question.
+    `AlignmentService` asks it once, raises `ProfileNotFoundError`, and the
+    router answers 404 — never a score.
+
+    Pinned here against the model's rule (a profile with no primary interest
+    cannot exist) and end-to-end over the real endpoint by
+    `tests/features/alignment_score.feature`'s "A voter with no stored profile
+    gets no score".
+    """
+    from pydantic import ValidationError
+
+    from app.profiles.models import InterestProfile
+
+    assert context.voter is not None
+    assert context.voter.has_primary, "this scenario's voter chose a primary interest"
+
+    # The rule that makes the gate airtight: a profile without a primary
+    # interest is unstorable, so there is no stored profile for which a score
+    # could be computed and then withheld.
+    with pytest.raises(ValidationError, match="primary interest"):
+        InterestProfile.model_validate(
+            {
+                "interests": [
+                    {
+                        "topic_id": "en-US:test-gate:v1",
+                        "stance_id": "en-US:test-gate:v1:for",
+                        "tier": "secondary",
+                    }
+                ]
+            }
+        )
 
 
 @given(parsers.parse('a voter marks "{topic}" as a dealbreaker'))
@@ -312,11 +353,47 @@ def voter_views_ballot(context: ScenarioContext) -> None:
 
 
 @then(parsers.parse("candidate {name} shows a dealbreaker warning above the score"))
-def candidate_shows_dealbreaker_warning(
-    request: pytest.FixtureRequest, context: ScenarioContext, name: str
-) -> None:
-    assert context.candidate(name).final_passage_votes()
-    pending(request, "4.5", "dealbreaker warning on the ballot")
+def candidate_shows_dealbreaker_warning(context: ScenarioContext, name: str) -> None:
+    """prd.md's "Dealbreaker overrides the average", no longer pending (6.6).
+
+    The pointer said "4.5", which was the wrong story for the same reason the
+    sibling step's "4.2" was: epic 4 edits a profile, and this is a claim about
+    a SCORE. The behaviour belongs to story 6.6.
+
+    **The real end-to-end version of this scenario lives in
+    `tests/features/alignment_score.feature`**, reproduced there verbatim under
+    this same name, where it runs over the actual
+    `GET /v1/candidates/{id}/alignment` endpoint against stored
+    `candidate_positions` and `member_votes`: it asserts the warning appears,
+    that it cites a real roll call, and — the part that is the requirement —
+    that the score is byte-identical with the dealbreaker flag cleared.
+
+    This copy is kept because prd.md's BDD section is collected here in full
+    (story 1.7) and a scenario quietly deleted from that collection is a
+    requirement quietly dropped. What it asserts is the half that is checkable
+    from this file's own synthetic builders — that the scenario's premise holds
+    and that the behaviour is implemented rather than pending:
+    `DealbreakerWarning` exists, it cannot be built without a citation, and it
+    cannot be built for a candidate who did not act against the stance.
+    """
+    from pydantic import ValidationError
+
+    from app.scoring.models import DealbreakerWarning
+
+    candidate = context.candidate(name)
+    assert candidate.final_passage_votes(), "the scenario's premise is final-passage votes"
+    assert context.voter is not None
+    assert any(interest.dealbreaker for interest in context.voter.interests)
+
+    # The warning is a real, citation-bound shape rather than a pending idea.
+    with pytest.raises(ValidationError, match="citations"):
+        DealbreakerWarning(
+            stance_id="en-US:test-gate:v1:for",
+            s_value=-1.0,
+            confidence=1.0,
+            evidence_count=len(candidate.final_passage_votes()),
+            citations=[],
+        )
 
 
 # --- Promise vs. Record (epics 7 and 8) ----------------------------------

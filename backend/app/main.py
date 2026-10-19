@@ -13,12 +13,13 @@ Routes so far:
     POST /v1/corrections              — report an error on any claim, no account (12.4)
     GET  /v1/corrections/{token}      — the reporter checks their own status (12.4)
     GET  /v1/candidates/{id}/summary-card — shareable, candidate-data-only card (14.6)
+    GET  /v1/candidates/{id}/alignment    — score, confidence, dealbreakers, reasons (6.4-6.7)
     POST /v1/analytics/events         — record a coarse, non-identifying usage event (14.7)
     GET  /v1/analytics/aggregate      — k-anonymous aggregate count, k >= 50 (14.7)
 
-The remaining endpoints in prd.md's Core API table (`/v1/candidates/{id}/
-alignment`, `/v1/candidates/{id}/promise-record`, `/v1/agent/ask`) each mount
-their own router here behind their own failing tests first.
+The remaining endpoints in prd.md's Core API table
+(`/v1/candidates/{id}/promise-record`, `/v1/agent/ask`) each mount their own
+router here behind their own failing tests first.
 
 `zerodb_client` is re-exported from `app.ballot.router` so tests and future
 routers have one import path for the dependency they override:
@@ -53,6 +54,7 @@ from app.panel_review import router as panel_review_router
 from app.profiles import router as profiles_router
 from app.ratelimit import RateLimitMiddleware
 from app.scheduling.jobs import default_jobs
+from app.scoring.router import router as alignment_router
 from app.stances import router as stances_router
 from app.summary_card import router as summary_card_router
 from app.topics import router as topics_router
@@ -265,6 +267,7 @@ def create_app(
     app.include_router(corrections_router)
     app.include_router(summary_card_router)
     app.include_router(analytics_router)
+    app.include_router(alignment_router)
 
     return app
 

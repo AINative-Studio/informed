@@ -24,8 +24,16 @@ The two rules that shape this package, both from prd.md and datamodel.md:
     is shown above the score rather than averaged away". `dealbreakers.py` is a
     separate module that `formula.py` cannot see, which is what makes "the
     warning never silently changes the number" a fact about the import graph.
+
+This package deliberately re-exports only the **pure** pieces — the formula and
+the badge function. `router`, `service` and `positions` are imported from their
+own modules by the one caller each has (`app.main`, the router,
+`app.scheduling.jobs`), because re-exporting them here would make
+`import app.scoring.positions` drag in FastAPI and the profile keyring, and the
+scheduled job that recomputes positions needs neither.
 """
 
+from app.scoring.badges import ConfidenceBadge, badge_for
 from app.scoring.formula import (
     MAX_ALIGNMENT,
     MIN_ALIGNMENT,
@@ -39,7 +47,9 @@ __all__ = [
     "MAX_ALIGNMENT",
     "MIN_ALIGNMENT",
     "NEUTRAL_ALIGNMENT",
+    "ConfidenceBadge",
     "ScoredTerm",
     "alignment_score",
+    "badge_for",
     "weighted_mean_position",
 ]
