@@ -267,6 +267,16 @@ TABLE_SCHEMAS: dict[str, dict[str, str]] = {
         "confidence": "number",
         "evidence_count": "number",
         "basis": "string",
+        # Story 6.2. datamodel.md's id pattern for this table is
+        # `{person_id}:{stance_id}:{method_ver}` and
+        # `app.repositories.models.CandidatePosition` has always declared
+        # `methodology_version` as a required field, but this schema omitted
+        # the column -- the omission went unnoticed because nothing wrote to
+        # the table until story 6.2's scorer. Added for the same reason
+        # `verdicts` carries it: prd.md requires "every verdict links to the
+        # methodology version that produced it", and a position is scored
+        # evidence under exactly the same rule.
+        "methodology_version": "string",
         "is_current": "boolean",
         "computed_at": "string",
     },
