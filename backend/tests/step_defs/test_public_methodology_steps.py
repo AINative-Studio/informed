@@ -31,6 +31,7 @@ from pytest_bdd import given, parsers, scenarios, then, when
 
 from app.bootstrap import TABLE_SCHEMAS
 from app.main import create_app
+from app.methodology.models import DOCUMENTED_WEIGHT_GROUPS
 from app.methodology.router import zerodb_client_for_methodology
 from app.profiles.methodology import (
     DEFAULT_METHODOLOGY_VERSION,
@@ -201,15 +202,19 @@ def _includes_published_at(seen: dict[str, Any]) -> None:
 
 @then("the unpopulated weight groups are reported as not yet published")
 def _unpopulated_groups_reported(seen: dict[str, Any]) -> None:
-    """datamodel.md documents three weight groups: `tiers`, `evidence_blend`
-    and `vote_types`. Only `tiers` is in force today — evidence blending and
-    vote-type weighting belong to epic 6's scorer, which does not exist. A
-    public methodology page that silently omitted them would let a reader
-    assume the published page is the whole methodology; one that invented
-    numbers would be worse. So they are named and reported as unpublished.
+    """This scenario's Given is story 4.2's SEEDED row, which carries `tiers`
+    only — so every other published weight group is reported as not yet in
+    force. A public methodology page that silently omitted them would let a
+    reader assume the published page is the whole methodology; one that
+    invented numbers would be worse.
+
+    The expected set is derived from `DOCUMENTED_WEIGHT_GROUPS`, not written
+    out: it was `{evidence_blend, vote_types}` when story 12.2 wrote this, and
+    story 6.5 added `badge_thresholds`. What the scenario actually asserts is
+    "the page names what is missing", which is true of any number of groups.
     """
     body = _body(seen)
-    assert set(body["weights_not_yet_published"]) == {"evidence_blend", "vote_types"}
+    assert set(body["weights_not_yet_published"]) == set(DOCUMENTED_WEIGHT_GROUPS) - {"tiers"}
 
 
 @then("no weight group is given an invented value")

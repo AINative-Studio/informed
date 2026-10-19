@@ -402,7 +402,7 @@ def _response_names(seen: dict[str, Any], version: str) -> None:
     assert seen["response"].json()["version"] == version
 
 
-@then("the response publishes all three weight groups")
+@then("the response publishes every weight group")
 def _response_all_groups(seen: dict[str, Any]) -> None:
     body = seen["response"].json()
     assert sorted(body["weights"]) == sorted(DOCUMENTED_WEIGHT_GROUPS), body["weights"]

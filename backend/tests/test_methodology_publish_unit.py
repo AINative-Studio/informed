@@ -398,8 +398,15 @@ def test_the_public_page_reports_nothing_unpublished_after_a_real_publish(
     """The gap story 12.2 documented and this story closes: before 6.1, the
     live row carried `tiers` only and the page correctly reported the other two
     groups in `weights_not_yet_published`."""
+    # Story 4.2's seed carries `tiers` only, so every OTHER documented group is
+    # reported missing. Derived from `DOCUMENTED_WEIGHT_GROUPS` rather than
+    # written out, because story 6.5 added a fourth group (`badge_thresholds`)
+    # and a literal list here would have made that extension look like a
+    # regression in this story's assertion.
     seeded = PublicMethodologyService(client).current()
-    assert sorted(seeded.weights_not_yet_published) == ["evidence_blend", "vote_types"]
+    assert sorted(seeded.weights_not_yet_published) == sorted(
+        group for group in DOCUMENTED_WEIGHT_GROUPS if group != "tiers"
+    )
 
     publisher.publish_new_version("2027.1")
 

@@ -33,9 +33,14 @@ Feature: Methodology versions (story 6.1)
   # seeded `tiers` only and said so out loud; 12.2 published the other two as
   # `weights_not_yet_published`. This story gives them real numbers.
 
-  Scenario: A published version carries all three documented weight groups
+  # The list was "tiers, evidence_blend, vote_types" when story 6.1 wrote this
+  # scenario — datamodel.md's three. Story 6.5 added `badge_thresholds` (see
+  # `app.methodology.models.DOCUMENTED_WEIGHT_GROUPS` for why that is a
+  # documented extension), so the list grew by one. The scenario's claim is
+  # unchanged: a published version carries every group, with no holes.
+  Scenario: A published version carries every documented weight group
     When the methodology owner publishes version "2027.1"
-    Then the published version carries weight groups "tiers, evidence_blend, vote_types"
+    Then the published version carries weight groups "tiers, evidence_blend, vote_types, badge_thresholds"
     And no weight group is reported as not yet published
 
   Scenario: The evidence blend is prd.md's documented default
@@ -162,7 +167,7 @@ Feature: Methodology versions (story 6.1)
     When the methodology owner publishes version "2027.1"
     And anyone requests the methodology with no authentication
     Then the response names methodology version "2027.1"
-    And the response publishes all three weight groups
+    And the response publishes every weight group
 
   Scenario: The superseded version stays citable with its own weights
     Given the current methodology version has been published

@@ -83,6 +83,13 @@ from app.profiles.methodology import (
     TABLE_NAME,
     MethodologyVersion,
 )
+
+# Story 6.5's badge thresholds. Imported from the scorer rather than redefined
+# here for the same reason `DEFAULT_TIER_WEIGHTS` is imported from story 4.2:
+# the module that USES a number owns it, and the publisher's job is to put the
+# owned numbers in a row. `app.scoring.badges` imports nothing from this
+# package (or any other), so there is no cycle — see its module docstring.
+from app.scoring.badges import BADGE_THRESHOLDS_GROUP, DEFAULT_BADGE_THRESHOLDS
 from app.zerodb.client import ZeroDBClient
 
 #: datamodel.md's Events table: `methodology.published`, payload `version`,
@@ -176,7 +183,12 @@ DEFAULT_VOTE_TYPE_WEIGHTS: dict[str, float] = {
 
 
 def default_weights() -> dict[str, dict[str, float]]:
-    """All three documented weight groups, with prd.md's defaults.
+    """Every published weight group, with its documented defaults.
+
+    Three groups when story 6.1 wrote this; four since story 6.5 added
+    `badge_thresholds` (see `app.methodology.models.DOCUMENTED_WEIGHT_GROUPS`
+    for why that is an extension rather than an invention, and
+    `app.scoring.badges` for where its numbers come from).
 
     Returns fresh copies so a caller that edits one group cannot mutate the
     module constants every other caller reads.
@@ -185,6 +197,7 @@ def default_weights() -> dict[str, dict[str, float]]:
         "tiers": dict(DEFAULT_TIER_WEIGHTS),
         "evidence_blend": dict(DEFAULT_EVIDENCE_BLEND),
         "vote_types": dict(DEFAULT_VOTE_TYPE_WEIGHTS),
+        BADGE_THRESHOLDS_GROUP: dict(DEFAULT_BADGE_THRESHOLDS),
     }
 
 
