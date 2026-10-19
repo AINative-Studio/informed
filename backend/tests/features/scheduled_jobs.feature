@@ -65,6 +65,10 @@ Feature: Scheduled job runner (infrastructure for stories 2.6, 5.1/5.6, 12.4)
     Then the real job registry includes a job named "load_house_rollcalls"
     And that job's interval is 1 hour(s)
 
+  Scenario: load_senate_rollcalls is registered to run hourly, per story 8.1's own acceptance criterion
+    Then the real job registry includes a job named "load_senate_rollcalls"
+    And that job's interval is 1 hour(s)
+
   Scenario: run_nightly_integrity_checks is registered to run nightly
     Then the real job registry includes a job named "run_nightly_integrity_checks"
     And that job's interval is 1 day(s)

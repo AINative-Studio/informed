@@ -1,6 +1,6 @@
 """The real job registry: every periodic task this codebase needs, named once.
 
-Seven jobs today, one per story that flagged the scheduling gap:
+Eight jobs today, one per story that flagged the scheduling gap:
 
   * `sweep_correction_emails` — story 12.4's 90-day contact-email retention
     sweep. Daily. The most urgent of the three (see `app.corrections.retention`'s
@@ -15,6 +15,14 @@ Seven jobs today, one per story that flagged the scheduling gap:
     the hourly cadence story 5.6 specifies ("new votes picked up hourly while
     the House is in session") even though 5.6 itself has not been built yet.
     Blocked on `CONGRESS_GOV_API_KEY` for the same reason as `load_candidacies`.
+  * `load_senate_rollcalls` — story 8.1's roll-call ingest, at the hourly
+    cadence its own acceptance criterion names directly ("hourly sync while
+    in session"). **No precondition, unlike `load_house_rollcalls`**: the
+    senate.gov LIS feed is public and keyless, confirmed live during this
+    story (see `app.ingest.senate_rollcalls`'s module docstring) — there is
+    no credential to block on, so this job runs for real from the moment
+    this registry is deployed, the same "always actually runs" posture the
+    two integrity jobs and the memory sweep already have.
   * `run_nightly_integrity_checks` — story 16.2's five datamodel.md integrity
     checks (`app.integrity.checks`). Nightly, no precondition: every check
     reads tables that already exist (even if some are empty today), so there
@@ -91,6 +99,18 @@ from app.ingest.house_rollcalls import (
     fetch_roll_call_numbers,
     transform_roll_calls,
 )
+from app.ingest.senate_rollcalls import (
+    SenateRollCallLoader,
+    SenateRollCallSourceError,
+    fetch_lis_to_bioguide_map,
+    fetch_roll_call_xml,
+    fetch_vote_numbers,
+    roll_call_item_url,
+    transform_member_votes_for,
+)
+from app.ingest.senate_rollcalls import (
+    transform_roll_calls as transform_senate_roll_calls,
+)
 from app.integrity.checks import run_all_checks
 from app.integrity.repair import repair_member_votes_drift
 from app.panel_review.gate import check_panel_gate
@@ -116,6 +136,15 @@ HOUSE_ROLLCALLS_SAMPLE_SIZE = 20
 #: 404s rather than silently returning nothing).
 HOUSE_ROLLCALLS_CONGRESS = 119
 HOUSE_ROLLCALLS_SESSION = 2
+
+#: Mirrors HOUSE_ROLLCALLS_SAMPLE_SIZE/CONGRESS/SESSION's own reasoning for
+#: story 8.1's hourly sync: a small, bounded recent window, hard-coded to the
+#: current congress/session rather than computed (no live source to derive
+#: "current" from; an out-of-range congress/session 404s from senate.gov
+#: itself rather than silently returning nothing).
+SENATE_ROLLCALLS_SAMPLE_SIZE = 20
+SENATE_ROLLCALLS_CONGRESS = 119
+SENATE_ROLLCALLS_SESSION = 2
 
 
 def _pacer(min_interval_seconds: float) -> Callable[[], None]:
@@ -257,6 +286,82 @@ def run_load_house_rollcalls(client: ZeroDBClient) -> None:
     )
 
 
+# --- story 8.1: load_senate_rollcalls ---------------------------------------
+
+
+def run_load_senate_rollcalls(client: ZeroDBClient) -> None:
+    """Hourly Senate roll-call sync, at the cadence story 8.1's own
+    acceptance criterion names ("hourly sync while in session").
+
+    Unlike `run_load_house_rollcalls`, this job has NO precondition: the
+    senate.gov LIS feed needs no API key (confirmed live during this story),
+    so there is no credential to check for before running. Fetches the
+    `SENATE_ROLLCALLS_SAMPLE_SIZE` most recently listed votes, the matching
+    `lis_member_id -> bioguide` crosswalk, and writes both `roll_calls` and
+    `member_votes` — this story's wider scope than 5.1's `roll_calls`-only
+    (see `app.ingest.senate_rollcalls`'s module docstring's "Member
+    positions" section for why).
+
+    A `SenateRollCallSourceError` from the vote-list or item fetch is a real
+    failure for this job (only one source, unlike `load_candidacies`'s
+    several states/offices) and propagates as a `ZeroDBError`, mirroring
+    `run_load_house_rollcalls`'s own posture exactly.
+    """
+    pace = _pacer(1.1)
+
+    try:
+        numbers = fetch_vote_numbers(
+            congress=SENATE_ROLLCALLS_CONGRESS, session=SENATE_ROLLCALLS_SESSION
+        )
+        sample = sorted(numbers, reverse=True)[:SENATE_ROLLCALLS_SAMPLE_SIZE]
+        documents = []
+        for vote_number in sample:
+            pace()
+            xml = fetch_roll_call_xml(
+                congress=SENATE_ROLLCALLS_CONGRESS,
+                session=SENATE_ROLLCALLS_SESSION,
+                vote_number=vote_number,
+            )
+            source_url = roll_call_item_url(
+                congress=SENATE_ROLLCALLS_CONGRESS,
+                session=SENATE_ROLLCALLS_SESSION,
+                vote_number=vote_number,
+                base_url="https://www.senate.gov/legislative/LIS",
+            )
+            documents.append((xml, source_url))
+        rows, skipped = transform_senate_roll_calls(documents)
+
+        pace()
+        bioguide_by_lis_id = fetch_lis_to_bioguide_map()
+
+        member_vote_rows_by_roll_call: dict[str, list[dict]] = {}
+        member_votes_skipped_total = 0
+        xml_by_source_url = {source_url: xml for xml, source_url in documents}
+        for row in rows:
+            xml = xml_by_source_url.get(row["source_url"])
+            if xml is None:
+                continue
+            member_rows, member_skipped = transform_member_votes_for(
+                row, xml, bioguide_by_lis_id=bioguide_by_lis_id
+            )
+            member_vote_rows_by_roll_call[row["id"]] = member_rows
+            member_votes_skipped_total += len(member_skipped)
+    except SenateRollCallSourceError as exc:
+        raise ZeroDBError(f"could not load the Senate roll-call source: {exc}") from exc
+
+    report = SenateRollCallLoader(client, pace=_pacer(1.1)).load(
+        rows, member_vote_rows_by_roll_call=member_vote_rows_by_roll_call
+    )
+    logger.info(
+        "load_senate_rollcalls: %d roll call(s) written, %d skipped, "
+        "%d member_vote(s) written, %d member_vote(s) skipped",
+        report.row_count,
+        len(skipped),
+        len(report.member_votes_written),
+        member_votes_skipped_total,
+    )
+
+
 # --- story 16.2: run_nightly_integrity_checks -------------------------------
 
 
@@ -391,6 +496,16 @@ def default_jobs() -> list[JobRegistration]:
             precondition=_require_env("CONGRESS_GOV_API_KEY"),
         ),
         JobRegistration(
+            # Story 8.1: no precondition -- the senate.gov LIS feed is
+            # public and keyless (confirmed live), so unlike
+            # load_house_rollcalls there is no credential to block on. Runs
+            # for real from day one, the same posture the integrity jobs and
+            # the memory sweep already have.
+            name="load_senate_rollcalls",
+            interval=timedelta(hours=1),
+            run=run_load_senate_rollcalls,
+        ),
+        JobRegistration(
             name="run_nightly_integrity_checks",
             interval=timedelta(days=1),
             run=run_nightly_integrity_checks,
@@ -437,9 +552,13 @@ __all__ = [
     "HOUSE_ROLLCALLS_CONGRESS",
     "HOUSE_ROLLCALLS_SAMPLE_SIZE",
     "HOUSE_ROLLCALLS_SESSION",
+    "SENATE_ROLLCALLS_CONGRESS",
+    "SENATE_ROLLCALLS_SAMPLE_SIZE",
+    "SENATE_ROLLCALLS_SESSION",
     "default_jobs",
     "run_load_candidacies",
     "run_load_house_rollcalls",
+    "run_load_senate_rollcalls",
     "run_nightly_integrity_checks",
     "run_panel_gate_check",
     "run_repair_member_votes_drift",

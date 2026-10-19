@@ -22,6 +22,9 @@ import pytest
 from app.bootstrap import Bootstrapper
 from app.ingest.candidacies import ALL_STATES, INGESTED_OFFICES, CandidacySourceError
 from app.ingest.house_rollcalls import HouseRollCallSourceError
+from app.ingest.senate_rollcalls import SenateRollCallSourceError
+from app.repositories import Repository
+from app.repositories.models import MemberVote, Person, RollCall
 from app.scheduling import jobs as jobs_module
 from app.zerodb import ZeroDBClient
 from app.zerodb.errors import ZeroDBError
@@ -38,12 +41,17 @@ def client() -> ZeroDBClient:
 # --- default_jobs() composition ---------------------------------------------
 
 
-def test_default_jobs_registers_exactly_the_seven_documented_jobs() -> None:
+def test_default_jobs_registers_exactly_the_eight_documented_jobs() -> None:
     names = [job.name for job in jobs_module.default_jobs()]
     assert names == [
         "sweep_correction_emails",
         "load_candidacies",
         "load_house_rollcalls",
+        # Story 8.1. Hourly, like load_house_rollcalls, but with NO
+        # precondition: the senate.gov LIS feed is public and keyless
+        # (confirmed live during the story), so there is no credential to
+        # block on.
+        "load_senate_rollcalls",
         "run_nightly_integrity_checks",
         "repair_member_votes_denormalization",
         # Story 12.5. Daily, beside the integrity checks it mirrors in shape:
@@ -250,6 +258,114 @@ def test_run_load_house_rollcalls_loads_the_most_recent_sample(
     # Fetched in descending order (most recent first), matching the CLI
     # script's own `sorted(numbers, reverse=True)` behaviour.
     assert fetched == sorted(numbers, reverse=True)
+
+
+# --- load_senate_rollcalls: no precondition (story 8.1) --------------------
+
+
+def test_load_senate_rollcalls_has_no_precondition() -> None:
+    """Unlike `load_house_rollcalls`, the senate.gov LIS feed needs no API
+    key (confirmed live during story 8.1) -- there is no credential to check
+    for, so this job has none, the same "always actually runs" posture the
+    integrity jobs and the memory sweep already have.
+    """
+    job = next(j for j in jobs_module.default_jobs() if j.name == "load_senate_rollcalls")
+    assert job.interval == timedelta(hours=1)
+    assert job.precondition is None
+
+
+# --- run_load_senate_rollcalls: source-error mapping and the happy path ----
+
+
+def test_run_load_senate_rollcalls_maps_a_source_error_to_zerodb_error(
+    monkeypatch: pytest.MonkeyPatch, client: ZeroDBClient
+) -> None:
+    """Mirrors `test_run_load_house_rollcalls_maps_a_source_error_to_zerodb_error`:
+    only one source here, so any source failure must fail the whole job.
+    """
+
+    def fake_fetch_vote_numbers(*, congress: int, session: int):
+        raise SenateRollCallSourceError("simulated senate.gov outage")
+
+    monkeypatch.setattr(jobs_module, "fetch_vote_numbers", fake_fetch_vote_numbers)
+
+    with pytest.raises(ZeroDBError, match="could not load the Senate roll-call source"):
+        jobs_module.run_load_senate_rollcalls(client)
+
+
+def test_run_load_senate_rollcalls_loads_roll_calls_and_member_votes(
+    monkeypatch: pytest.MonkeyPatch, client: ZeroDBClient
+) -> None:
+    """Exercises the real wiring -- vote-number listing, item fetch, the
+    bioguide crosswalk fetch, and both `roll_calls` and `member_votes`
+    writes -- against mocked fetch functions, mirroring
+    `test_run_load_house_rollcalls_loads_the_most_recent_sample`'s shape but
+    additionally proving this story's wider `member_votes` scope works end
+    to end through the job wrapper, not just through the loader directly
+    (already covered by tests/features/senate_rollcalls.feature).
+    """
+    monkeypatch.setattr(jobs_module.time, "sleep", lambda _seconds: None)
+
+    # Seed the one senator this fixture's single vote names, so the
+    # member_votes write's `person_id -> people` reference resolves (the real
+    # people rows come from story 2.2's already-live legislators ingest; this
+    # test only needs to prove the job's own wiring, not re-prove that
+    # ingest).
+    Repository(client=client, model=Person).upsert(
+        {"id": "person:B001261", "canonical_name": "Senator Test"}
+    )
+
+    numbers = [254]
+    fetched: list[int] = []
+    vote_xml = """<?xml version="1.0" encoding="UTF-8"?><roll_call_vote>
+  <congress>119</congress>
+  <session>2</session>
+  <vote_number>254</vote_number>
+  <vote_date>September 30, 2026,  12:51 PM</vote_date>
+  <question>On Cloture on the Motion to Proceed</question>
+  <vote_result>Cloture on the Motion to Proceed Rejected</vote_result>
+  <document><document_type>H.R.</document_type></document>
+  <amendment><amendment_number/></amendment>
+  <count><yeas>1</yeas><nays>0</nays><present/><absent/></count>
+  <members>
+    <member>
+      <last_name>Barrasso</last_name>
+      <vote_cast>Yea</vote_cast>
+      <lis_member_id>S317</lis_member_id>
+    </member>
+  </members>
+</roll_call_vote>"""
+
+    def fake_fetch_vote_numbers(*, congress: int, session: int):
+        assert congress == jobs_module.SENATE_ROLLCALLS_CONGRESS
+        assert session == jobs_module.SENATE_ROLLCALLS_SESSION
+        return numbers
+
+    def fake_fetch_roll_call_xml(*, congress: int, session: int, vote_number: int):
+        fetched.append(vote_number)
+        return vote_xml
+
+    def fake_fetch_lis_to_bioguide_map():
+        return {"S317": "B001261"}
+
+    monkeypatch.setattr(jobs_module, "fetch_vote_numbers", fake_fetch_vote_numbers)
+    monkeypatch.setattr(jobs_module, "fetch_roll_call_xml", fake_fetch_roll_call_xml)
+    monkeypatch.setattr(jobs_module, "fetch_lis_to_bioguide_map", fake_fetch_lis_to_bioguide_map)
+
+    jobs_module.run_load_senate_rollcalls(client)
+
+    assert fetched == [254]
+
+    roll_calls: Repository = Repository(client=client, model=RollCall)
+    stored = roll_calls.get("us-senate:119-2:254")
+    assert stored is not None
+    assert stored.vote_type == "cloture"
+
+    member_votes: Repository = Repository(client=client, model=MemberVote)
+    member_row = member_votes.get("us-senate:119-2:254:B001261")
+    assert member_row is not None
+    assert member_row.position == "yea"
+    assert member_row.person_id == "person:B001261"
 
 
 # --- run_nightly_integrity_checks: violation becomes a job failure (16.2) --
