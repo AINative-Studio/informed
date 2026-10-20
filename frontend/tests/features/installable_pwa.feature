@@ -21,19 +21,20 @@ Feature: Installable PWA with encrypted offline profile (story 7.7)
     And they switch to the full profile editor
     And they assign "Prescription drug pricing" to primary with a stance
     And they give consent and save
+    And they see a confirmation that their profile was saved
 
   Scenario: A freshly saved profile is cached offline, encrypted
     Then the profile is cached for offline use, and the raw cache entry contains no readable topic or stance text
 
   Scenario: Losing the network still shows the last-saved profile
     Given the browser goes offline
-    When they switch to the full profile editor
-    Then "Prescription drug pricing" already shows as primary
-    And the editor shows that it is displaying a cached offline copy
+    When they reopen the app and switch to the full profile editor
+    Then the editor shows that it is displaying a cached offline copy
+    And "Prescription drug pricing" already shows as primary
 
   Scenario: Regaining the network returns to the live profile load
     Given the browser goes offline
-    And they switch to the full profile editor
+    And they reopen the app and switch to the full profile editor
     When the browser comes back online
-    And they switch to the full profile editor
+    And they reopen the app and switch to the full profile editor
     Then the editor no longer shows the offline-copy notice

@@ -329,7 +329,8 @@ export function ProfileEditor() {
 
     setIsSaving(true);
     try {
-      const response = await saveProfile(userId, profilePayload(), {
+      const payload = profilePayload();
+      const response = await saveProfile(userId, payload, {
         consent: true,
         // The version this component actually rendered (story 14.2). Passing
         // the fetched value rather than a local constant is what makes the
@@ -337,6 +338,23 @@ export function ProfileEditor() {
         consentVersion: consentQuery.data?.consent_version,
       });
       setSaveMessage(`Saved to your account (version ${response.version}).`);
+      // Story 7.7: cache the just-saved profile offline, encrypted,
+      // immediately — not only on a later `loadProfile` success. This
+      // component never invalidates/refetches `profileQuery` after a save
+      // (there is no `useQueryClient` call anywhere in this file), so
+      // without this line a voter who saves and then goes offline before
+      // ever reloading the editor would have nothing in the offline cache
+      // at all: `profileQuery.data` is still whatever it was when the
+      // component mounted (`null`, for a first-time save), and the
+      // load-side hydration effect's own cache write never fires for a
+      // `null` profile. Fire-and-forget for the same reason that effect's
+      // write is: a storage failure must not turn a successful save into an
+      // error on screen.
+      void cacheProfileOffline({
+        interests: payload.interests,
+        evidence_mode: payload.evidence_mode ?? 'blend',
+        followed_person_ids: payload.followed_person_ids ?? [],
+      });
     } catch (error) {
       setSaveError(
         error instanceof ProfileSaveError
