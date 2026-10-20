@@ -207,7 +207,7 @@ describe('BallotView compare selection (story 7.4)', () => {
 
   it('shows a compare control once two candidates in the same race are selected', async () => {
     const user = userEvent.setup();
-    renderWithQuery(<BallotView races={[RACE]} />);
+    renderWithQuery(<BallotView races={[RACE]} onCompare={vi.fn()} />);
     await screen.findByText('Rep. Synthetic Low');
 
     const article = screen.getByRole('heading', { name: RACE.office_name }).closest('article') as HTMLElement;
@@ -273,7 +273,7 @@ describe('BallotView compare selection (story 7.4)', () => {
 
   it('never labels the compare affordance with recommending language', async () => {
     const user = userEvent.setup();
-    renderWithQuery(<BallotView races={[RACE]} />);
+    renderWithQuery(<BallotView races={[RACE]} onCompare={vi.fn()} />);
     await screen.findByText('Rep. Synthetic Low');
 
     const article = screen.getByRole('heading', { name: RACE.office_name }).closest('article') as HTMLElement;

@@ -13,7 +13,6 @@ import { expect } from '@playwright/test';
 
 import { visit, world } from './common.steps';
 
-const ADDRESS = '1 Synthetic Way, Example, CA 90000';
 const DISTRICT_ID = 'ocd-division/country:us/state:ca/cd:19';
 const ELECTION_ID = 'us-2026-11-03-general';
 
@@ -282,10 +281,18 @@ Then(
 
 Then('every color-coded cell also carries a text label saying its direction', async () => {
   const compare = compareRegion();
+  // Wait for the table to actually render before inspecting its cells:
+  // `locator.count()` is a single snapshot with no auto-retry (unlike
+  // `expect(...).toBeVisible()`, which polls), so without this the step can
+  // run while the per-candidacy alignment queries are still pending and see
+  // zero `[data-direction]` cells that are about to appear a moment later —
+  // the same flake `candidate_detail.steps.ts`'s own "at least one control"
+  // step already documents and guards against the same way.
+  await expect(compare.getByRole('table')).toBeVisible();
   // Every cell whose rendering carries a direction class/data attribute must
   // also contain readable text naming that direction — "agrees"/"disagrees"
   // etc — not just a colored swatch with no text content a screen reader or
-  // colorblind voter could use. See CompareView.tsx's own `DIRECTION_LABEL`.
+  // colorblind voter could use. See CompareView.tsx's own `DirectionCell`.
   const directionCells = compare.locator('[data-direction]');
   const cellCount = await directionCells.count();
   expect(cellCount).toBeGreaterThan(0);
@@ -298,6 +305,7 @@ Then('every color-coded cell also carries a text label saying its direction', as
 
 Then('the compare view does not recommend, endorse or rank any candidate', async () => {
   const compare = compareRegion();
+  await expect(compare.getByRole('table')).toBeVisible();
   const text = (await compare.textContent()) ?? '';
   expect(text).not.toMatch(/vote for|recommend|endorse|best match|winner|ranked/i);
 });
