@@ -211,7 +211,14 @@ export async function readCachedProfileOffline(): Promise<CachedProfileResult | 
     if (!keyRecord || !cacheRecord) return null;
 
     const plaintext = await crypto.subtle.decrypt(
-      { name: 'AES-GCM', iv: cacheRecord.iv },
+      // `cacheRecord.iv`'s type is `Uint8Array<ArrayBufferLike>` once it has
+      // round-tripped through IndexedDB's structured clone, which TS 5.6's
+      // DOM lib no longer accepts as `BufferSource` without a cast (the
+      // underlying buffer could in principle be a `SharedArrayBuffer`,
+      // which `crypto.subtle` genuinely cannot take) — it never is one
+      // here: this module only ever constructs `iv` from
+      // `crypto.getRandomValues(new Uint8Array(12))`, a plain `ArrayBuffer`.
+      { name: 'AES-GCM', iv: cacheRecord.iv as Uint8Array<ArrayBuffer> },
       keyRecord.key,
       cacheRecord.ciphertext,
     );

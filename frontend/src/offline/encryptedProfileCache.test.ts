@@ -147,7 +147,11 @@ describe('what is actually persisted (the ciphertext claim, tested not asserted)
       'decrypt',
     ]);
     await expect(
-      crypto.subtle.decrypt({ name: 'AES-GCM', iv: raw!.iv }, wrongKey, raw!.ciphertext),
+      crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: raw!.iv as Uint8Array<ArrayBuffer> },
+        wrongKey,
+        raw!.ciphertext,
+      ),
     ).rejects.toBeDefined();
   });
 
@@ -174,7 +178,7 @@ describe('what is actually persisted (the ciphertext claim, tested not asserted)
     // *before* it existed as a fresh object. A new key per write would fail
     // this with an `OperationError` from `crypto.subtle.decrypt`.
     const decrypted = await crypto.subtle.decrypt(
-      { name: 'AES-GCM', iv: firstRecord.iv },
+      { name: 'AES-GCM', iv: firstRecord.iv as Uint8Array<ArrayBuffer> },
       secondRecord.key,
       firstRecord.ciphertext,
     );

@@ -48,6 +48,7 @@ import {
 } from '../api/profiles';
 import { type StanceOption, fetchStances } from '../api/stances';
 import { fetchTopics } from '../api/topics';
+import { cacheProfileOffline, readCachedProfileOffline } from '../offline/encryptedProfileCache';
 
 export const MIN_PRIMARY = 1;
 export const MAX_PRIMARY = 5;
@@ -141,6 +142,17 @@ export function ProfileEditor() {
   const [deleteResult, setDeleteResult] = useState<DeleteProfileResult | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
+  // --- Story 7.7: encrypted offline profile cache ------------------------
+  //
+  // `showingOfflineCopy` is distinct from `hydrated` below: hydration is
+  // "the selections state has been filled in from *some* source", which an
+  // offline-cache read also satisfies, while this flag specifically drives
+  // the "you're viewing a cached offline copy" notice the feature file
+  // requires — a voter who is mid-edit should not keep seeing that banner
+  // on an unrelated re-render once a later successful network load clears
+  // it (the "regaining the network" scenario).
+  const [showingOfflineCopy, setShowingOfflineCopy] = useState(false);
+
   // Load an existing profile once (story 4.4: "come back to it"). Guarded so
   // a later refetch of the same query (e.g. after a save invalidated it)
   // does not clobber in-progress edits.
@@ -149,6 +161,16 @@ export function ProfileEditor() {
     if (hydrated || storageMode !== 'account' || !profileQuery.data) return;
     setSelections(selectionsFromLoadedProfile(profileQuery.data, allSubtopics));
     setHydrated(true);
+    setShowingOfflineCopy(false);
+    // Story 7.7: every successful network load refreshes this browser's
+    // offline copy, encrypted, so the cache a later offline visit reads back
+    // is never more than one successful load stale. Fire-and-forget: a
+    // cache-write failure (e.g. IndexedDB unavailable in private browsing)
+    // must not block the editor from showing the profile it just loaded —
+    // the same "never let a storage failure take down the screen" posture
+    // `PrivacyActions`' blob-URL fallback already follows elsewhere in this
+    // file.
+    void cacheProfileOffline(profileQuery.data);
   }, [hydrated, storageMode, profileQuery.data, allSubtopics]);
   useEffect(() => {
     // A voter with no saved profile still counts as "hydrated" once the load
@@ -158,6 +180,31 @@ export function ProfileEditor() {
       setHydrated(true);
     }
   }, [hydrated, storageMode, profileQuery.isSuccess, profileQuery.data]);
+
+  // Story 7.7: "view my profile offline" — when the network load genuinely
+  // fails (offline, or any other fetch/server error `loadProfile` surfaces
+  // as `profileQuery.isError`), fall back to this browser's own encrypted
+  // cache rather than showing only an error. A stale cached copy that is
+  // clearly labelled as cached is strictly better at a polling place than no
+  // profile at all; `showingOfflineCopy` is what labels it.
+  useEffect(() => {
+    if (hydrated || storageMode !== 'account' || !profileQuery.isError) return;
+    let cancelled = false;
+    void readCachedProfileOffline().then((cached) => {
+      if (cancelled || hydrated) return;
+      if (cached) {
+        setSelections(selectionsFromLoadedProfile(cached.profile, allSubtopics));
+        setShowingOfflineCopy(true);
+      }
+      // Hydrated either way: a voter with network trouble and no cache yet
+      // still sees the query's own error message below rather than a
+      // spinner that never resolves.
+      setHydrated(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [hydrated, storageMode, profileQuery.isError, allSubtopics]);
 
   // Story 14.3: anonymous mode hydrates from this browser instead, so the
   // "survives a reload" half of the acceptance criterion holds on the same
@@ -367,7 +414,13 @@ export function ProfileEditor() {
   if (weightsQuery.isError) {
     return <p role="alert">We could not load the current tier weights just now. Please try again.</p>;
   }
-  if (profileQuery.isError) {
+  // Story 7.7: a failed network load for the profile is no longer always
+  // fatal to this screen — if the offline-fallback effect above found a
+  // cached copy, `showingOfflineCopy` is true and `hydrated` has already
+  // been set from it, so the editor renders normally (with the offline
+  // notice below) instead of stopping here. Only a genuine "no cache
+  // either" case still shows the plain error.
+  if (profileQuery.isError && !showingOfflineCopy) {
     const message =
       profileQuery.error instanceof ProfileLoadError
         ? profileQuery.error.message
@@ -380,6 +433,18 @@ export function ProfileEditor() {
   return (
     <section aria-label="Edit my interest profile">
       <h2>My interest profile</h2>
+      {showingOfflineCopy ? (
+        <p role="status">
+          You're offline, so this is showing an offline copy of your profile, last cached
+          {' '}
+          {/* The exact timestamp is not read anywhere by this file; the
+              notice's job is to tell the voter this is a cached offline
+              copy at all, per story 7.7's acceptance criterion and the
+              feature file's "shows that it is displaying a cached offline
+              copy" step. */}
+          on this device.
+        </p>
+      ) : null}
       <p>
         Assign each topic a tier: primary (1–{MAX_PRIMARY}, weight {weights.primary}), secondary
         (up to {MAX_SECONDARY}, weight {weights.secondary}), or nice-to-have (unlimited, weight{' '}
