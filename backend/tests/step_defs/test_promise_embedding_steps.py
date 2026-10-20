@@ -22,8 +22,8 @@ from pytest_bdd import given, parsers, scenarios, then, when
 
 from app.bootstrap import Bootstrapper
 from app.ingest.promise_embedding import (
-    PROMISES_NAMESPACE,
     PROMISE_EXTRACTED_TOPIC,
+    PROMISES_NAMESPACE,
     PromiseEmbedder,
     PromiseEmbeddingReport,
 )
@@ -220,16 +220,12 @@ def _embedding_store_broken(transport: dict[str, Any], fake: FakeZeroDBTransport
 
 @given("the vector store stores embeddings but will not list them back")
 def _vector_listing_broken(transport: dict[str, Any], fake: FakeZeroDBTransport) -> None:
-    transport["transport"] = _SelectivelyFailingTransport(
-        fake, break_paths=("/database/vectors",)
-    )
+    transport["transport"] = _SelectivelyFailingTransport(fake, break_paths=("/database/vectors",))
 
 
 @given("the event log refuses to publish events")
 def _events_broken(transport: dict[str, Any], fake: FakeZeroDBTransport) -> None:
-    transport["transport"] = _SelectivelyFailingTransport(
-        fake, break_paths=("/database/events",)
-    )
+    transport["transport"] = _SelectivelyFailingTransport(fake, break_paths=("/database/events",))
 
 
 # --- embedding ---------------------------------------------------------------
@@ -318,7 +314,9 @@ def _rows_still_have_vector_id(fake: FakeZeroDBTransport) -> None:
     _every_row_has_vector_id(fake)
 
 
-@then(parsers.parse('the vector_id names a vector that really exists in the "{namespace}" namespace'))
+@then(
+    parsers.parse('the vector_id names a vector that really exists in the "{namespace}" namespace')
+)
 def _vector_id_resolves(fake: FakeZeroDBTransport, namespace: str) -> None:
     stored_ids = {vector["vector_id"] for vector in fake.vectors.get(namespace, [])}
     for row in _promise_rows(fake):
