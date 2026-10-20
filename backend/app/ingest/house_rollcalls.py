@@ -20,20 +20,37 @@ https://blogs.loc.gov/law/2025/05/introducing-house-roll-call-votes-in-the-congr
 `roll_calls` table only — per-member positions (the "member votes-level"
 endpoint) are story 5.2's job, and bill ingest with sponsors is story 5.3's.
 
-**No real Congress.gov API key was available this session.** `local.env` and
-`.env.example` carry no `CONGRESS_GOV_API_KEY` or similar placeholder, and a
-live, unauthenticated probe of `https://api.congress.gov/v3/house-vote/118/2/452`
-during this story confirmed the host is reachable and the URL scheme is
-correct, but every call -- including the OpenAPI schema itself -- answers
-`403 API_KEY_MISSING` with no public fallback. Getting a key requires an
-interactive signup at api.data.gov this agent cannot complete. This is a
-genuine infrastructure blocker, the same shape as story 1.6's ZeroDB project
-provisioning: this module is built and fully tested against a realistic
-fixture (`tests/fixtures/house_rollcalls_sample.json`) built from the cited
-documentation's exact field names and enum values, but it has NOT been run
-against the live API, and `scripts/load_house_rollcalls.py` cannot be
-exercised for real until a key exists. See this story's PR for the full
-blocker writeup.
+**RUN LIVE, AT LAST (stories 5.6/5.7/5.8, 2026-10-19).** Story 5.1 shipped
+this module blocked: no `CONGRESS_GOV_API_KEY` existed, so it was built and
+fully tested against a fixture whose field names and enum values came from
+the cited DOCUMENTATION, and its own docstring said plainly that it "has NOT
+been run against the live API". A real, working key now exists, and the first
+live run found that **the documentation is wrong in two places, both of them
+silently**:
+
+  1. **`votePartyTotal` is a bare LIST**, not `{"item": [...]}`. The
+     documented wrapper appears on no live record (12 probed). Reading only
+     the documented shape made `_tally_from` fall through to an all-zero
+     `Tally()` on every real roll call -- a VALID `RollCall` row that scoring
+     would read as a unanimously abstaining House. Fixed in
+     `_party_total_items`, which accepts both shapes.
+  2. **No record carries a `url` field at all.** `transform_roll_call`
+     required it and raised `_SkipRollCall` without it, so
+     `transform_roll_calls` collected 100% of live records as skips and the
+     loader wrote nothing -- while the process exited 0. Fixed by deriving
+     the URL this adapter actually fetched; see `roll_call_item_url`.
+
+Neither defect could surface against a fixture built from the same
+documentation the code was built from, which is the general lesson worth
+keeping: a fixture derived from docs tests the transform against its own
+assumptions. The fixture now also carries `item_live_shape_119_2_74`,
+captured verbatim from the live endpoint, and three scenarios in
+`tests/features/house_sync_event_backfill.feature` pin the real shape.
+
+Confirmed live, same run: the list endpoint's `pagination.count` reports 724
+roll calls for 118-1, 517 for 118-2, 362 for 119-1 and 314 for 119-2 (1,917
+total), and `limit=250` is a hard server-side page cap -- see
+`fetch_roll_call_numbers`, which now pages.
 
 Shape of one source record (from the cited documentation, item level)
 ========================================================================
@@ -194,9 +211,21 @@ for the same reason `legislators.py` separates `fetch_legislators_yaml` from
 `transform_legislators`: every other piece of this module is testable from
 `tests/fixtures/house_rollcalls_sample.json` with no live HTTP call, and CI
 must not depend on Congress.gov being reachable (CLAUDE.md). Only
-`scripts/load_house_rollcalls.py` and a future live-verification script call
-them for real -- and as this story's PR documents, neither has been run live
-yet, for lack of a key.
+`scripts/load_house_rollcalls.py`, `scripts/backfill_house_rollcalls.py`
+(story 5.8) and `scripts/verify_house_sync_event_backfill_live.py` call them
+for real -- and all three HAVE now been run live, which is what this branch
+changed. See the live-run note at the top.
+
+Events
+======
+
+`HouseRollCallLoader.load` emits datamodel.md's `rollcall.ingested` for every
+roll call whose content actually changed (story 5.7), via story 6.2's own
+`emit_rollcall_ingested` so the documented payload has a single definition.
+The emit is keyed off the repository's content-addressed provenance write, so
+"exactly once per roll call" holds across the hourly re-fetches story 5.6's
+sync performs without this module keeping a cursor of its own. See
+`HouseRollCallLoader._emit_ingested`.
 """
 
 from __future__ import annotations
