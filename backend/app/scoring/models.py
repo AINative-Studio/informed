@@ -115,6 +115,20 @@ class Citation(BaseModel):
             "1,000-page bill is not a vote for every clause'."
         ),
     )
+    bundled_reason: str | None = Field(
+        default=None,
+        description=(
+            "WHY this vote is bundled, when it is: `omnibus_marker` (the "
+            "measure's own title names it as an omnibus) or "
+            "`measure_count_exceeds_threshold` (one vote disposed of several "
+            "separate measures). Null when `is_bundled` is false. Published "
+            "because story 8.4's acceptance criterion is that the UI *explain* "
+            "the flag, not merely show it — a voter who sees a vote counted "
+            "for less is owed the reason. "
+            "`app.ingest.senate_vote_typing.explain_bundled_reason` turns the "
+            "code into the plain-language sentence to render."
+        ),
+    )
 
 
 class AlignmentReason(BaseModel):

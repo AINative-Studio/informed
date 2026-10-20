@@ -245,6 +245,12 @@ class VoteEvidence:
     contribution: float
     #: This vote's share of the denominator: vote-type weight x bundled factor.
     weight: float
+    #: WHY this vote was bundled, when it was (story 8.4) — carried for the
+    #: same reason the rest of this dataclass is: the page that shows a voter
+    #: a discounted vote has to explain the discount, and 8.4's acceptance
+    #: criterion is "the UI explains it". Defaulted so a caller built before
+    #: 8.4 still constructs.
+    bundled_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -385,6 +391,7 @@ def compute_position(
                 position=vote.position,
                 vote_type=vote.vote_type,
                 is_bundled=vote.is_bundled,
+                bundled_reason=vote.bundled_reason,
                 voted_at=vote.voted_at,
                 bill_id=vote.bill_id,
                 contribution=direction * weight * stance_direction,

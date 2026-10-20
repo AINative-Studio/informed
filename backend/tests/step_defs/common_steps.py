@@ -447,11 +447,44 @@ def voted_nay_cloture_yea_final(context: ScenarioContext, name: str) -> None:
         'the verdict is "{verdict}" with a "{note}" note on the cloture vote',
     )
 )
-def verdict_with_procedural_note(request: pytest.FixtureRequest, verdict: str, note: str) -> None:
+def verdict_with_procedural_note(
+    request: pytest.FixtureRequest, context: ScenarioContext, verdict: str, note: str
+) -> None:
+    """Half of this is now real; the other half is story 11.1's.
+
+    The pending marker here used to name story "5.4", which was wrong twice
+    over: 5.4 is "Archive bill text", and the two halves of this scenario
+    belong to two different stories.
+
+    **The classification half is done (story 8.3), and is asserted here
+    rather than deferred.** The scenario's whole premise is that a Nay on
+    cloture and a Yea on final passage of the same bill are DIFFERENT KINDS
+    of vote, weighted differently -- without which no verdict engine could
+    reach "Kept" on these two votes however it was written.
+
+    **The verdict half is story 11.1's** (the verdict engine, iteration 7):
+    turning those two typed votes into a stored "Kept" verdict with a
+    rendered "procedural vote" note. Nothing in iteration 5 writes a
+    `verdicts` row at all.
+    """
+    from app.ingest.senate_vote_typing import VoteSignals, classify
+    from app.methodology.publish import DEFAULT_VOTE_TYPE_WEIGHTS
+
+    cloture = classify(VoteSignals.from_source_fields(question="On the Cloture Motion"))
+    final = classify(VoteSignals.from_source_fields(question="On Passage of the Bill"))
+    assert cloture.vote_type == "cloture", cloture
+    assert final.vote_type == "final_passage", final
+    assert (
+        DEFAULT_VOTE_TYPE_WEIGHTS[cloture.vote_type] < DEFAULT_VOTE_TYPE_WEIGHTS[final.vote_type]
+    ), "a cloture vote must weigh less than final passage for this scenario to be reachable"
+    assert len(context.candidate("B").votes) == 2, (
+        "the scenario needs both votes on the record for a verdict to weigh them"
+    )
     pending(
         request,
-        "5.4",
-        f'procedural vote typing so cloture yields "{verdict}" with a "{note}" note',
+        "11.1",
+        f"the verdict engine turning a cloture Nay plus a final-passage Yea into "
+        f'"{verdict}" with a "{note}" note (8.3 types and weights the two votes)',
     )
 
 
@@ -465,8 +498,36 @@ def promise_maps_to_voice_vote(context: ScenarioContext) -> None:
 def verdict_no_opportunity(
     request: pytest.FixtureRequest, context: ScenarioContext, verdict: str, message: str
 ) -> None:
+    """The "no recorded vote" half is now real (story 8.5); the stored
+    verdict is still story 11.1's.
+
+    The marker here named story 7.3 ("Candidate detail"), which renders a
+    verdict but does not decide one. Corrected to 11.1, the verdict engine.
+
+    What 8.5 settles, and what this step now asserts rather than deferring:
+    the UI message is prd.md's exact wording, the verdict such an outcome
+    implies is `no_opportunity`, and the outcome is marked unscorable -- so
+    "silence is never treated as support" is true at the layer that decides
+    it, independently of whether any `verdicts` row exists yet.
+    """
+    from app.ingest.senate_vote_typing import (
+        NO_RECORDED_VOTE_MESSAGE,
+        NO_RECORDED_VOTE_VERDICT,
+        unrecorded_outcome,
+    )
+
     assert context.promises[-1].roll_call_url is None
-    pending(request, "7.3", f'"{verdict}" verdict when there is no recorded vote')
+    outcome = unrecorded_outcome("Passed Senate by Voice Vote")
+    assert outcome is not None, "a voice vote must be recognized as an unrecorded outcome"
+    assert outcome.message == message == NO_RECORDED_VOTE_MESSAGE
+    assert outcome.verdict == NO_RECORDED_VOTE_VERDICT
+    assert outcome.scorable is False, "an unrecorded outcome must never be scorable"
+    pending(
+        request,
+        "11.1",
+        f'the verdict engine storing a "{verdict}" verdict row '
+        f"(8.5 settles the message, the implied verdict and unscorability)",
+    )
 
 
 # --- Neutrality (epic 11) ------------------------------------------------
