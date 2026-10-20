@@ -769,6 +769,7 @@ class BillTopicClassifier:
         *,
         bills: Sequence[Bill] | None = None,
         write: bool = True,
+        accept_threshold: float | None = ACCEPT_THRESHOLD,
     ) -> ClassificationReport:
         """Classify bills, write accepted tags, hold the rest for QA.
 
@@ -776,6 +777,12 @@ class BillTopicClassifier:
             bills: which bills to classify. Defaults to a page of stored bills.
             write: False to classify and report without writing anything --
                 what a dry run and the precision measurement use.
+            accept_threshold: passed straight to `classify_bill`. Defaults to
+                `ACCEPT_THRESHOLD`, which is `None` -- so **a default run
+                accepts nothing and writes no `topic_ids`**, because the
+                measured precision does not earn an automatic write. A float
+                here is how a test exercises the write path, and how whoever
+                reaches the bar turns it on.
 
         Returns:
             A `ClassificationReport` whose `bills_changed` counts only bills
@@ -793,6 +800,7 @@ class BillTopicClassifier:
                 bill_id=_require_id(bill),
                 policy_area=bill.policy_area,
                 subjects=bill.subjects,
+                accept_threshold=accept_threshold,
             )
             resolvable = [tag for tag in tags if self._resolve_topic(tag.topic_id)]
             accepted = [tag for tag in resolvable if tag.accepted]
