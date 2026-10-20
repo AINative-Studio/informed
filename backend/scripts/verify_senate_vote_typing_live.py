@@ -12,8 +12,19 @@ ZeroDB project:
      re-fetches each one's real XML from senate.gov, re-classifies it with
      8.3/8.4's rules, reports the before/after, and upserts the corrected
      row -- so the live project ends up holding the right classification
-     rather than a stale one. **The re-classification of 119-2:252 from
-     `other` to `procedural` is the headline live finding** (see below).
+     rather than a stale one.
+
+     **On this branch's FIRST run (2026-10-19), one of the five changed:
+     `us-senate:119-2:252`, question "On the Motion to Discharge", moved
+     from 8.1's `other` to `procedural`.** A motion to discharge is a
+     parliamentary motion and 8.1's phrase list did not contain it.
+
+     Subsequent runs correctly report "0 of 5 change", because the first
+     run already corrected the stored value -- that is the idempotent
+     upsert working, not the finding evaporating. A reader re-running this
+     script after the branch merged should expect no changes; to see the
+     before/after for themselves they would have to check out `main`
+     before this branch's merge commit and run 8.1's loader again.
   2. **A fresh, larger live sample** drawn from the senate.gov LIS index,
      to measure accuracy and bundling at a scale no fixture can: the
      distribution of vote types the classifier actually produces across
@@ -258,6 +269,15 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0915 - a linear script of checks
             len(before_after),
             [f"{i}: {w} -> {n}" for i, w, n in changed] or "none",
         )
+        if not changed:
+            logger.info(
+                "  NOTE  'none' is the expected result on any run AFTER the first: "
+                "this script upserts in place, so once it has corrected a row the "
+                "stored value already matches. On this branch's first run "
+                "(2026-10-19) us-senate:119-2:252 moved other -> procedural. "
+                "Not a failure, and not the finding evaporating -- it is the "
+                "idempotent upsert working."
+            )
 
         # --- write the corrected rows back, with their member_votes -------
         rows, skipped = transform_roll_calls(documents)
