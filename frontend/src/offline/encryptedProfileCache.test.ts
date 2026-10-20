@@ -105,9 +105,21 @@ describe('what is actually persisted (the ciphertext claim, tested not asserted)
     // value from `crypto.subtle.encrypt`), not a JSON string — a cache that
     // `JSON.stringify`'d the plaintext and called the result "stored" would
     // still pass a naive substring check if the substring happened to need
-    // encoding, so this checks the shape first.
-    expect(raw!.ciphertext).toBeInstanceOf(ArrayBuffer);
-    expect(raw!.iv).toBeInstanceOf(Uint8Array);
+    // encoding, so this checks the shape first. Checked structurally
+    // (constructor name plus a real `byteLength`/`slice`) rather than with
+    // `instanceof ArrayBuffer`/`instanceof Uint8Array`: fake-indexeddb's
+    // structured clone reconstructs the value in a different JS realm than
+    // this test file runs in under Vitest's jsdom pool, so the *value* that
+    // comes back really is binary (confirmed by logging it directly: a real
+    // `ArrayBuffer { byteLength: 276, [Uint8Contents]: <ec 03 f4 ...> }`) even
+    // though `instanceof` against this realm's `ArrayBuffer` constructor
+    // reports false — a cross-realm identity quirk of the test harness, not
+    // a property of what the module actually stored.
+    expect(raw!.ciphertext?.constructor?.name).toBe('ArrayBuffer');
+    expect(typeof raw!.ciphertext?.byteLength).toBe('number');
+    expect(raw!.ciphertext!.byteLength).toBeGreaterThan(0);
+    expect(raw!.iv?.constructor?.name).toBe('Uint8Array');
+    expect(raw!.iv.length).toBe(12);
 
     // Every readable fragment of the real payload, searched for in the
     // actual bytes written to storage.
@@ -148,13 +160,25 @@ describe('what is actually persisted (the ciphertext claim, tested not asserted)
 
   it('reuses the same device key across separate cache writes', async () => {
     await cacheProfileOffline(SAMPLE_PROFILE);
-    const firstKeyRaw = (await getRawCacheRecordForTesting())!.key;
+    const firstRecord = (await getRawCacheRecordForTesting())!;
+
     await cacheProfileOffline({ ...SAMPLE_PROFILE, interests: [] });
-    const secondKeyRaw = (await getRawCacheRecordForTesting())!.key;
-    // CryptoKey objects do not structurally compare, but both must decrypt
-    // ciphertext written under the other's session for them to be "the same
-    // key" in the way that matters: ability to read data encrypted earlier.
-    expect(firstKeyRaw).toBe(secondKeyRaw);
+    const secondRecord = (await getRawCacheRecordForTesting())!;
+
+    // A fresh `CryptoKey` object does not structurally compare, and (per
+    // this test file's own earlier cross-realm note) not even `instanceof`
+    // reliably round-trips through fake-indexeddb's structured clone. The
+    // property that actually matters — this is one key, reused, not a new
+    // one generated on every write — is behavioral: the key read back
+    // *after* the second write must still decrypt ciphertext written
+    // *before* it existed as a fresh object. A new key per write would fail
+    // this with an `OperationError` from `crypto.subtle.decrypt`.
+    const decrypted = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: firstRecord.iv },
+      secondRecord.key,
+      firstRecord.ciphertext,
+    );
+    expect(JSON.parse(new TextDecoder().decode(decrypted))).toEqual(SAMPLE_PROFILE);
   });
 
   it('uses a fresh random IV on every encryption, never reusing one', async () => {
