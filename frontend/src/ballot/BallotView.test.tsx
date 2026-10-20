@@ -196,6 +196,96 @@ describe('BallotView sort control', () => {
   });
 });
 
+describe('BallotView compare selection (story 7.4)', () => {
+  it('offers no compare control until two candidates are selected', async () => {
+    renderWithQuery(<BallotView races={[RACE]} />);
+    await screen.findByText('Rep. Synthetic Low');
+
+    const article = screen.getByRole('heading', { name: RACE.office_name }).closest('article') as HTMLElement;
+    expect(within(article).queryByRole('button', { name: /compare/i })).not.toBeInTheDocument();
+  });
+
+  it('shows a compare control once two candidates in the same race are selected', async () => {
+    const user = userEvent.setup();
+    renderWithQuery(<BallotView races={[RACE]} />);
+    await screen.findByText('Rep. Synthetic Low');
+
+    const article = screen.getByRole('heading', { name: RACE.office_name }).closest('article') as HTMLElement;
+    const checkboxes = within(article).getAllByRole('checkbox', { name: /select.*compare/i });
+    await user.click(checkboxes[0]);
+    await user.click(checkboxes[1]);
+
+    expect(within(article).getByRole('button', { name: /compare/i })).toBeInTheDocument();
+  });
+
+  it('calls onCompare with the selected candidacy ids when the compare control is used', async () => {
+    const user = userEvent.setup();
+    const onCompare = vi.fn();
+    renderWithQuery(<BallotView races={[RACE]} onCompare={onCompare} />);
+    await screen.findByText('Rep. Synthetic Low');
+
+    const article = screen.getByRole('heading', { name: RACE.office_name }).closest('article') as HTMLElement;
+    const checkboxes = within(article).getAllByRole('checkbox', { name: /select.*compare/i });
+    await user.click(checkboxes[0]);
+    await user.click(checkboxes[1]);
+    await user.click(within(article).getByRole('button', { name: /compare/i }));
+
+    expect(onCompare).toHaveBeenCalledWith([
+      'election:district:person-low',
+      'election:district:person-high',
+    ]);
+  });
+
+  it('disables further selection once four candidates are selected', async () => {
+    const user = userEvent.setup();
+    const FOUR_CANDIDATE_RACE: Race = {
+      ...RACE,
+      candidates: [
+        ...RACE.candidates,
+        {
+          person_id: 'person:ZZ000004',
+          name: 'Rep. Synthetic Fourth',
+          party: null,
+          is_incumbent: false,
+          candidacy_id: 'election:district:person-fourth',
+        },
+        {
+          person_id: 'person:ZZ000005',
+          name: 'Rep. Synthetic Fifth',
+          party: null,
+          is_incumbent: false,
+          candidacy_id: 'election:district:person-fifth',
+        },
+      ],
+    };
+    renderWithQuery(<BallotView races={[FOUR_CANDIDATE_RACE]} />);
+    await screen.findByText('Rep. Synthetic Low');
+
+    const article = screen.getByRole('heading', { name: RACE.office_name }).closest('article') as HTMLElement;
+    const checkboxes = within(article).getAllByRole('checkbox', { name: /select.*compare/i });
+    await user.click(checkboxes[0]);
+    await user.click(checkboxes[1]);
+    await user.click(checkboxes[2]);
+    await user.click(checkboxes[3]);
+
+    expect(checkboxes[4]).toBeDisabled();
+  });
+
+  it('never labels the compare affordance with recommending language', async () => {
+    const user = userEvent.setup();
+    renderWithQuery(<BallotView races={[RACE]} />);
+    await screen.findByText('Rep. Synthetic Low');
+
+    const article = screen.getByRole('heading', { name: RACE.office_name }).closest('article') as HTMLElement;
+    const checkboxes = within(article).getAllByRole('checkbox', { name: /select.*compare/i });
+    await user.click(checkboxes[0]);
+    await user.click(checkboxes[1]);
+
+    const text = article.textContent ?? '';
+    expect(text).not.toMatch(/recommend|best match|top pick|endorse|winner/i);
+  });
+});
+
 describe('sortCardsByScore', () => {
   it('sorts by descending say_do_gap', () => {
     const items = [
