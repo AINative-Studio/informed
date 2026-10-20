@@ -24,7 +24,15 @@ import { world } from './common.steps';
 Given('they switch to the full profile editor', async () => {
   await watchAndStub();
   await world.page.getByRole('button', { name: /edit my full profile/i }).click();
-  await world.page.getByText('Prescription drug pricing').waitFor();
+  // Waits for the topic ROW specifically (the fieldset `role="group"` named
+  // by its legend), not just any text node matching this string. Story 7.7
+  // added scenarios that revisit the editor after already having saved
+  // "Prescription drug pricing" as primary, at which point the plain text
+  // also appears a second time in the profile summary list below — a bare
+  // `getByText` became ambiguous (Playwright's strict mode) the moment both
+  // were on screen at once, even though the topic row was always there
+  // first in every scenario written before that story.
+  await world.page.getByRole('group', { name: 'Prescription drug pricing' }).waitFor();
 });
 
 Then('none of the tier choices is pre-selected', async () => {

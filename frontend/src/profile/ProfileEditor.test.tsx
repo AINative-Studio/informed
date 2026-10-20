@@ -1,10 +1,16 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { IDBFactory } from 'fake-indexeddb';
 import type { ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { TopicTreeResponse } from '../api/topics';
+import {
+  cacheProfileOffline,
+  getRawCacheRecordForTesting,
+  readCachedProfileOffline,
+} from '../offline/encryptedProfileCache';
 import { ProfileEditor } from './ProfileEditor';
 
 /**
@@ -718,5 +724,130 @@ describe('ProfileEditor — export and delete (story 14.4)', () => {
 
     expect(screen.queryByRole('button', { name: /export my (profile|data)/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /delete my (profile|data)/i })).not.toBeInTheDocument();
+  });
+});
+
+// --- Story 7.7: encrypted offline profile cache ---------------------------
+
+/**
+ * "View my profile offline" at the integration level: `ProfileEditor` wired
+ * to the real `src/offline/encryptedProfileCache.ts` module (fake-indexeddb
+ * and Node's real `crypto.subtle`, per `tests/setup.ts` — not a mock of the
+ * cache module, since mocking the one thing this story is actually about
+ * would prove nothing). The module's own unit tests
+ * (`src/offline/encryptedProfileCache.test.ts`) already cover the
+ * encryption scheme itself in isolation; these tests cover the wiring: does
+ * a successful load actually populate the cache, and does a failed one
+ * actually read it back.
+ */
+describe('ProfileEditor — encrypted offline profile cache (story 7.7)', () => {
+  beforeEach(() => {
+    // A fresh in-memory IndexedDB per test, the same reason
+    // `encryptedProfileCache.test.ts` resets it: without this, the device
+    // key and cached profile from one test would leak into the next.
+    window.indexedDB = new IDBFactory();
+  });
+
+  it('caches the profile offline, encrypted, after a successful load', async () => {
+    loadedProfileResponse = {
+      interests: [
+        {
+          topic_id: 'en-US:medicare:v1',
+          stance_id: 'en-US:medicare:v1:option-b',
+          tier: 'primary',
+          intensity: 2,
+          dealbreaker: false,
+          note: null,
+        },
+      ],
+      evidence_mode: 'blend',
+      followed_person_ids: [],
+    };
+
+    renderWithQuery(<ProfileEditor />);
+    await screen.findByText('Prescription drug pricing');
+    await screen.findByRole('group', { name: 'Medicare' });
+
+    const cached = await waitFor(async () => {
+      const result = await readCachedProfileOffline();
+      expect(result).not.toBeNull();
+      return result;
+    });
+    expect(cached?.profile).toEqual(loadedProfileResponse);
+
+    // And the raw IndexedDB record is genuinely ciphertext, not the
+    // plaintext profile JSON — the same claim
+    // `encryptedProfileCache.test.ts` tests directly against the module,
+    // checked again here against what THIS component actually wrote.
+    const raw = await getRawCacheRecordForTesting();
+    const bytes = Buffer.from(raw!.ciphertext).toString('latin1');
+    expect(bytes).not.toContain('medicare');
+    expect(bytes).not.toContain('en-US:medicare:v1');
+  });
+
+  it('falls back to the encrypted offline cache when the network load fails, and labels it as offline', async () => {
+    // Seed the cache first, as a prior successful visit would have left it.
+    await cacheProfileOffline({
+      interests: [
+        {
+          topic_id: 'en-US:medicare:v1',
+          stance_id: 'en-US:medicare:v1:option-b',
+          tier: 'primary',
+          intensity: 2,
+          dealbreaker: true,
+          note: null,
+        },
+      ],
+      evidence_mode: 'blend',
+      followed_person_ids: [],
+    });
+
+    // Now simulate the network failing on the profile GET specifically —
+    // everything else (topics, weights, consent) still answers, matching
+    // "offline" more precisely than failing every request, and matching
+    // this component's own `profileQuery.isError` branch.
+    fetchMock.mockImplementation(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input), 'http://localhost');
+      if (url.pathname === '/v1/topics') return jsonResponse(TOPICS);
+      if (url.pathname === '/v1/profiles/methodology') return jsonResponse(WEIGHTS);
+      if (url.pathname === '/v1/profiles/consent') return jsonResponse(CONSENT_OFFER);
+      const stanceMatch = url.pathname.match(/^\/v1\/topics\/(.+)\/stances$/);
+      if (stanceMatch) return jsonResponse(stancesFor(decodeURIComponent(stanceMatch[1])));
+      const loadMatch = url.pathname.match(/^\/v1\/profiles\/(.+)$/);
+      if (loadMatch && (!init || init.method === undefined)) {
+        throw new TypeError('Failed to fetch');
+      }
+      throw new Error(`unexpected fetch: ${url.pathname}`);
+    });
+
+    renderWithQuery(<ProfileEditor />);
+    await screen.findByText('Prescription drug pricing');
+
+    const medicareRow = await screen.findByRole('group', { name: 'Medicare' });
+    expect(within(medicareRow).getByLabelText('Tier')).toHaveValue('primary');
+    expect(within(medicareRow).getByRole('checkbox', { name: /dealbreaker/i })).toBeChecked();
+
+    expect(screen.getByText(/offline/i)).toBeInTheDocument();
+  });
+
+  it('shows the ordinary load error, not a false offline notice, when the network fails and nothing is cached', async () => {
+    fetchMock.mockImplementation(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input), 'http://localhost');
+      if (url.pathname === '/v1/topics') return jsonResponse(TOPICS);
+      if (url.pathname === '/v1/profiles/methodology') return jsonResponse(WEIGHTS);
+      if (url.pathname === '/v1/profiles/consent') return jsonResponse(CONSENT_OFFER);
+      const stanceMatch = url.pathname.match(/^\/v1\/topics\/(.+)\/stances$/);
+      if (stanceMatch) return jsonResponse(stancesFor(decodeURIComponent(stanceMatch[1])));
+      const loadMatch = url.pathname.match(/^\/v1\/profiles\/(.+)$/);
+      if (loadMatch && (!init || init.method === undefined)) {
+        throw new TypeError('Failed to fetch');
+      }
+      throw new Error(`unexpected fetch: ${url.pathname}`);
+    });
+
+    renderWithQuery(<ProfileEditor />);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/could not load your saved profile/i);
+    expect(screen.queryByText(/offline copy/i)).not.toBeInTheDocument();
   });
 });
