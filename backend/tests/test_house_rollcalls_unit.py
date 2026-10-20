@@ -318,6 +318,38 @@ def test_tally_skips_a_non_dict_entry_in_the_item_list() -> None:
     assert tally.yea == 7
 
 
+def test_a_speaker_election_tally_is_zero_and_the_record_still_ingests() -> None:
+    """The third `votePartyTotal` shape, found in story 5.8's live backfill.
+
+    "Election of the Speaker" roll calls (the January 2023 McCarthy ballots)
+    publish `{"candidate": ..., "total": ...}` entries with no
+    `yeaTotal`/`nayTotal` at all, because members vote for a NAME rather than
+    yea/nay. 15 of the first 151 live rows backfilled were these.
+
+    Two things must both hold, and this pins both: the record still ingests
+    (it is a real roll call and dropping it would lose it from the record),
+    and its tally is ZERO rather than a guess -- mapping "216 for McCarthy"
+    onto `yea` would make a Speaker ballot read as a 216-212 policy vote.
+    See `_tally_from`'s docstring.
+    """
+    row = transform_roll_call(
+        _envelope(
+            voteQuestion="Election of the Speaker",
+            votePartyTotal=[
+                {"candidate": "McCarthy", "total": 216},
+                {"candidate": "Jeffries", "total": 212},
+                {"candidate": "Present", "total": 6},
+            ],
+        )
+    )
+    tally = row["tally"]
+    assert (tally.yea, tally.nay, tally.present, tally.not_voting) == (0, 0, 0, 0)
+    # Still a stored roll call, classified at the weakest weight rather than
+    # dropped or mistaken for a substantive vote.
+    assert row["id"] == "us-house:119-2:452"
+    assert row["vote_type"] == "other"
+
+
 # --- fetching (mocked httpx) ---------------------------------------------------
 
 

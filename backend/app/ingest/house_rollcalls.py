@@ -754,6 +754,32 @@ def _tally_from(vote: dict[str, Any]) -> Tally:
     than raising -- see the module docstring's "tally" note. Each per-party
     total that is present and an int is added; a missing or non-numeric
     per-party field contributes 0 rather than crashing the whole record.
+
+    **A third, CANDIDATE-shaped payload exists, and a zero tally is the right
+    answer for it.** Found while auditing story 5.8's live backfill: 15 of
+    the first 151 rows loaded had an all-zero tally, and every one is an
+    `"Election of the Speaker"` roll call -- the January 2023 McCarthy
+    ballots. Those publish
+
+        "votePartyTotal": [{"candidate": "McCarthy", "total": 216},
+                           {"candidate": "Jeffries", "total": 212},
+                           {"candidate": "Present",  "total": 6}]
+
+    with no `yeaTotal`/`nayTotal` anywhere, because a Speaker election is not
+    a yea/nay question -- members vote for a NAME. datamodel.md's `Tally` has
+    only yea/nay/present/not_voting, so there is no honest place to put
+    "216 for McCarthy", and this function correctly contributes nothing
+    rather than inventing a mapping (counting the winner's votes as "yea"
+    would make a Speaker ballot read as a 216-212 policy vote it never was).
+
+    Recorded here explicitly because an all-zero tally now has two very
+    different causes, and after the bare-list defect above a reviewer is
+    right to treat one as suspicious: a Speaker election SHOULD be zero, and
+    a yea/nay vote never should. `scripts/verify_house_sync_event_backfill_live.py`
+    asserts a non-zero tally against an ordinary roll call for exactly that
+    reason. Scoring is unaffected either way -- `vote_type` classifies these
+    as `other`, the weakest weight story 6.1 publishes, and no stance card
+    maps to "who should be Speaker".
     """
     totals = {"yea": 0, "nay": 0, "present": 0, "not_voting": 0}
     items = _party_total_items(vote)
