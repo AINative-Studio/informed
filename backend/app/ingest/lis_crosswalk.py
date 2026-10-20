@@ -377,7 +377,7 @@ def sitting_senators_from_roster(records: Iterable[Any]) -> list[SittingSenator]
     the same "a gap is a skip, not a crash" posture every loader in this
     codebase takes. A blank or non-string `id.lis` is normalized to `None`
     and a non-string, non-blank one is stringified (every live value is a
-    string like `S313`, but the file's other id fields are ints, so a future
+    string like `S317`, but the file's other id fields are ints, so a future
     schema change must not silently drop every mapping).
     """
     senators: list[SittingSenator] = []

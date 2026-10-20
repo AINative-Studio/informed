@@ -119,8 +119,11 @@ STORY_8_1_VOTE_NUMBERS = (252, 253, 254, 255, 256)
 BOGUS_LIS_ID = "S-zzz-live-check-8.2"
 
 #: The real `people` row whose other external ids are checked for survival in
-#: check 2. Any sitting senator would do; this one is picked because it is
-#: long-serving and so has an unusually full `id:` map in the source.
+#: check 2. Any sitting senator would do; this one (live S313 is Sanders, VT)
+#: is picked because it is long-serving and so carries an unusually full
+#: `id:` map in the source -- confirmed live: 16 keys including `ballotpedia`,
+#: `fec`, `govtrack`, `icpsr`, `opensecrets`, `thomas` and `wikidata`, every
+#: one of which the merge has to carry across ZeroDB's wholesale PUT.
 MERGE_CHECK_LIS_ID = "S313"
 
 

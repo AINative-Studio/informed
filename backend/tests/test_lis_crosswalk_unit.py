@@ -190,7 +190,7 @@ def test_a_blank_lis_id_is_treated_as_absent_not_as_a_mapping_to_the_empty_strin
 
 
 def test_a_non_string_lis_id_is_stringified_rather_than_dropped() -> None:
-    """Defensive: every `id.lis` in the live file is a string (`S313`), but
+    """Defensive: every `id.lis` in the live file is a string (`S317`), but
     the file's other id fields are ints, so a future schema change that made
     `lis` numeric must not silently drop every mapping.
     """
@@ -208,13 +208,13 @@ def test_a_non_string_lis_id_is_stringified_rather_than_dropped() -> None:
 
 
 def test_resolve_bioguide_id_returns_the_mapped_bioguide() -> None:
-    crosswalk = LisCrosswalk({"S313": "B001261"})
-    assert crosswalk.resolve_bioguide_id("S313") == "B001261"
+    crosswalk = LisCrosswalk({"S317": "B001261"})
+    assert crosswalk.resolve_bioguide_id("S317") == "B001261"
 
 
 def test_resolve_person_id_returns_the_people_id_member_votes_uses() -> None:
-    crosswalk = LisCrosswalk({"S313": "B001261"})
-    assert crosswalk.resolve_person_id("S313") == "person:B001261"
+    crosswalk = LisCrosswalk({"S317": "B001261"})
+    assert crosswalk.resolve_person_id("S317") == "person:B001261"
 
 
 def test_resolve_person_id_returns_none_for_an_unmapped_id() -> None:
@@ -237,7 +237,7 @@ def test_require_bioguide_id_raises_naming_the_id() -> None:
 
 
 def test_require_bioguide_id_returns_the_bioguide_when_mapped() -> None:
-    assert LisCrosswalk({"S313": "B001261"}).require_bioguide_id("S313") == "B001261"
+    assert LisCrosswalk({"S317": "B001261"}).require_bioguide_id("S317") == "B001261"
 
 
 def test_require_bioguide_id_also_counts_the_alert() -> None:
@@ -255,8 +255,8 @@ def test_len_is_the_number_of_mappings() -> None:
 
 
 def test_contains_tests_for_a_lis_id() -> None:
-    crosswalk = LisCrosswalk({"S313": "B001261"})
-    assert "S313" in crosswalk
+    crosswalk = LisCrosswalk({"S317": "B001261"})
+    assert "S317" in crosswalk
     assert "S999" not in crosswalk
 
 
@@ -318,9 +318,9 @@ def test_distinct_unmapped_ids_each_log(caplog: pytest.LogCaptureFixture) -> Non
 
 
 def test_a_mapped_id_never_alerts(caplog: pytest.LogCaptureFixture) -> None:
-    crosswalk = LisCrosswalk({"S313": "B001261"})
+    crosswalk = LisCrosswalk({"S317": "B001261"})
     with caplog.at_level(logging.ERROR, logger="app.ingest.lis_crosswalk"):
-        crosswalk.resolve_bioguide_id("S313", alert=True)
+        crosswalk.resolve_bioguide_id("S317", alert=True)
     assert not caplog.records
     assert crosswalk.unmapped_alert_count == 0
 
@@ -503,12 +503,12 @@ def test_load_crosswalk_pages_past_the_first_page_of_people() -> None:
         {
             "id": "person:B001261",
             "canonical_name": "John Barrasso",
-            "external_ids": {"lis": "S313"},
+            "external_ids": {"lis": "S317"},
         }
     )
 
     crosswalk = load_crosswalk(client)
-    assert crosswalk.resolve_bioguide_id("S313") == "B001261"
+    assert crosswalk.resolve_bioguide_id("S317") == "B001261"
 
 
 def test_load_crosswalk_ignores_a_people_row_with_no_lis_id() -> None:
@@ -541,13 +541,13 @@ def test_refresh_does_not_rewrite_a_row_whose_mapping_is_already_correct() -> No
         {
             "id": "person:B001261",
             "canonical_name": "John Barrasso",
-            "external_ids": {"lis": "S313"},
+            "external_ids": {"lis": "S317"},
         }
     )
     before = client.get_row("people", "person:B001261")
     assert before is not None
 
-    report = LisCrosswalkWriter(client, pace=lambda: None).refresh([_senator("B001261", "S313")])
+    report = LisCrosswalkWriter(client, pace=lambda: None).refresh([_senator("B001261", "S317")])
     after = client.get_row("people", "person:B001261")
     assert after is not None
     assert report.mapped == ["person:B001261"]
@@ -567,8 +567,8 @@ def test_refresh_corrects_a_row_whose_mapping_is_stale() -> None:
             "external_ids": {"lis": "S-stale"},
         }
     )
-    LisCrosswalkWriter(client, pace=lambda: None).refresh([_senator("B001261", "S313")])
-    assert load_crosswalk(client).resolve_bioguide_id("S313") == "B001261"
+    LisCrosswalkWriter(client, pace=lambda: None).refresh([_senator("B001261", "S317")])
+    assert load_crosswalk(client).resolve_bioguide_id("S317") == "B001261"
 
 
 def test_refresh_preserves_the_terms_already_on_the_row() -> None:
@@ -583,15 +583,15 @@ def test_refresh_preserves_the_terms_already_on_the_row() -> None:
         {
             "id": "person:B001261",
             "canonical_name": "John Barrasso",
-            "external_ids": {"govtrack": "400050"},
+            "external_ids": {"govtrack": "412251"},
             "terms": [{"body_id": "us-senate", "party": "Republican", "start": "2021-01-03"}],
         }
     )
-    LisCrosswalkWriter(client, pace=lambda: None).refresh([_senator("B001261", "S313")])
+    LisCrosswalkWriter(client, pace=lambda: None).refresh([_senator("B001261", "S317")])
 
     person = people.get("person:B001261")
     assert person is not None
-    assert person.external_ids == {"govtrack": "400050", "lis": "S313"}
+    assert person.external_ids == {"govtrack": "412251", "lis": "S317"}
     assert [term.body_id for term in person.terms] == ["us-senate"]
     assert person.canonical_name == "John Barrasso"
 

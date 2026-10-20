@@ -1,127 +1,181 @@
 # A six-senator slice of congress-legislators' `legislators-current.yaml`,
 # in the source's exact shape (story 8.2).
 #
-# Captured live 2026-10-19 from
+# GENERATED from the live file, fetched 2026-10-19 from
 # https://raw.githubusercontent.com/unitedstates/congress-legislators/main/legislators-current.yaml
-# and trimmed: only the `id`, `name` and `terms` keys this crosswalk reads are
-# kept, and only six records, so the fixture stays readable. Every `id.lis` /
-# `id.bioguide` pair below is the real pair the live file carries.
+# and trimmed: only the `id.bioguide`, `id.lis`, `id.govtrack`, `name` and
+# `terms` keys this crosswalk reads are kept, and only seven records, so the
+# fixture stays readable. Every `id.lis` / `id.bioguide` pair below is the real
+# pair the live file carries -- the first draft of this fixture hand-typed
+# three of them wrong (it had S313 as Barrasso, when live S313 is Sanders and
+# Barrasso is S317), which is exactly the class of error a fixture asserting
+# real-world id pairs must not contain. Regenerate it from the live file
+# rather than editing a pair by hand.
 #
-# The sixth record (Scott) deliberately has a House term in its history as
-# well as its current `sen` term -- the crosswalk's "is this a sitting
-# senator" test reads the LAST term's `type`, not any term's, and this record
-# is what proves it (a former representative now serving in the Senate must
-# still be counted as a sitting senator).
+# `terms` is trimmed to each record's last three terms, which is all the
+# "latest term type" selection reads, and keeps a long-serving senator's
+# twelve-term history from dominating the file.
+#
+# Shapes the tests need, and which record provides each:
+#
+#   * Blackburn (B001243) has a `rep` term in her kept history and a current
+#     `sen` term -- the crosswalk reads the LAST term's `type`, not any
+#     term's, and this record is what proves a former representative now
+#     serving in the Senate still counts as a sitting senator.
+#   * Alsobrooks (A000382) is single-term, and her LIS id S428 is the one
+#     that appears in story 8.1's real live roll-call XML.
+#   * Pelosi (P000197) is a House member carrying no `id.lis` at all --
+#     exactly the ~439 records of the live file that are correctly NOT part
+#     of this crosswalk. Present so the fixture proves the crosswalk filters
+#     by the roster's own last-term `type` rather than by "has a lis id",
+#     which would be circular.
 #
 # Nothing here is voter data.
 
 - id:
     bioguide: B001261
-    lis: S313
-    govtrack: 400050
+    lis: S317
+    govtrack: 412251
   name:
     first: John
     last: Barrasso
     official_full: John Barrasso
   terms:
-    - type: sen
-      start: '2021-01-03'
-      end: '2027-01-03'
-      state: WY
-      class: 1
-      party: Republican
-
+  - type: sen
+    start: '2013-01-03'
+    end: '2019-01-03'
+    state: WY
+    class: 1
+    party: Republican
+  - type: sen
+    start: '2019-01-03'
+    end: '2025-01-03'
+    state: WY
+    class: 1
+    party: Republican
+  - type: sen
+    start: '2025-01-03'
+    end: '2031-01-03'
+    state: WY
+    class: 1
+    party: Republican
 - id:
     bioguide: B001267
     lis: S330
+    govtrack: 412330
   name:
     first: Michael
     last: Bennet
     official_full: Michael F. Bennet
   terms:
-    - type: sen
-      start: '2023-01-03'
-      end: '2029-01-03'
-      state: CO
-      class: 3
-      party: Democrat
-
+  - type: sen
+    start: '2011-01-05'
+    end: '2017-01-03'
+    state: CO
+    class: 3
+    party: Democrat
+  - type: sen
+    start: '2017-01-03'
+    end: '2023-01-03'
+    state: CO
+    class: 3
+    party: Democrat
+  - type: sen
+    start: '2023-01-03'
+    end: '2029-01-03'
+    state: CO
+    class: 3
+    party: Democrat
 - id:
     bioguide: S000033
-    lis: S270
+    lis: S313
+    govtrack: 400357
   name:
     first: Bernard
     last: Sanders
     official_full: Bernard Sanders
   terms:
-    - type: sen
-      start: '2025-01-03'
-      end: '2031-01-03'
-      state: VT
-      class: 1
-      party: Independent
-
+  - type: sen
+    start: '2013-01-03'
+    end: '2019-01-03'
+    state: VT
+    class: 1
+    party: Independent
+  - type: sen
+    start: '2019-01-03'
+    end: '2025-01-03'
+    state: VT
+    class: 1
+    party: Independent
+  - type: sen
+    start: '2025-01-03'
+    end: '2031-01-03'
+    state: VT
+    class: 1
+    party: Independent
 - id:
     bioguide: A000382
     lis: S428
+    govtrack: 456965
   name:
     first: Angela
     last: Alsobrooks
     official_full: Angela D. Alsobrooks
   terms:
-    - type: sen
-      start: '2025-01-03'
-      end: '2031-01-03'
-      state: MD
-      class: 1
-      party: Democrat
-
+  - type: sen
+    start: '2025-01-03'
+    end: '2031-01-03'
+    state: MD
+    class: 1
+    party: Democrat
 - id:
     bioguide: B001243
     lis: S396
+    govtrack: 400032
   name:
     first: Marsha
     last: Blackburn
     official_full: Marsha Blackburn
   terms:
-    - type: rep
-      start: '2017-01-03'
-      end: '2019-01-03'
-      state: TN
-      district: 7
-      party: Republican
-    - type: sen
-      start: '2019-01-03'
-      end: '2025-01-03'
-      state: TN
-      class: 1
-      party: Republican
-
+  - type: rep
+    start: '2017-01-03'
+    end: '2019-01-03'
+    state: TN
+    district: 7
+    party: Republican
+  - type: sen
+    start: '2019-01-03'
+    end: '2025-01-03'
+    state: TN
+    class: 1
+    party: Republican
+  - type: sen
+    start: '2025-01-03'
+    end: '2031-01-03'
+    state: TN
+    class: 1
+    party: Republican
 - id:
     bioguide: S001217
-    lis: S370
+    lis: S404
+    govtrack: 412838
   name:
-    first: Tim
+    first: Rick
     last: Scott
-    official_full: Tim Scott
+    official_full: Rick Scott
   terms:
-    - type: rep
-      start: '2011-01-03'
-      end: '2013-01-03'
-      state: SC
-      district: 1
-      party: Republican
-    - type: sen
-      start: '2023-01-03'
-      end: '2029-01-03'
-      state: SC
-      class: 3
-      party: Republican
-
-# A House member, carrying no `id.lis` at all -- exactly the ~439 records of
-# the live file that are correctly NOT part of this crosswalk. Present so the
-# fixture proves the crosswalk filters by the roster's own last-term `type`
-# rather than by "has a lis id", which would be circular.
+  - type: sen
+    start: '2019-01-08'
+    end: '2025-01-03'
+    state: FL
+    class: 1
+    party: Republican
+  - type: sen
+    start: '2025-01-03'
+    end: '2031-01-03'
+    state: FL
+    class: 1
+    party: Republican
 - id:
     bioguide: P000197
     govtrack: 400314
@@ -130,9 +184,21 @@
     last: Pelosi
     official_full: Nancy Pelosi
   terms:
-    - type: rep
-      start: '2025-01-03'
-      end: '2027-01-03'
-      state: CA
-      district: 11
-      party: Democrat
+  - type: rep
+    start: '2021-01-03'
+    end: '2023-01-03'
+    state: CA
+    district: 12
+    party: Democrat
+  - type: rep
+    start: '2023-01-03'
+    end: '2025-01-03'
+    state: CA
+    district: 11
+    party: Democrat
+  - type: rep
+    start: '2025-01-03'
+    end: '2027-01-03'
+    state: CA
+    district: 11
+    party: Democrat

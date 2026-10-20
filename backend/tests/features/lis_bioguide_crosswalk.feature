@@ -12,15 +12,15 @@ Feature: LIS-to-bioguide crosswalk (story 8.2)
   Scenario: Refreshing the crosswalk writes each senator's LIS id onto their people row
     Given the sitting senators from the sample roster
     When I refresh the LIS crosswalk from the sample roster
-    Then the people row "person:B001261" carries external id "lis" "S313"
+    Then the people row "person:B001261" carries external id "lis" "S317"
     And the crosswalk report says 6 of 6 sitting senators mapped
 
   Scenario: Refreshing the crosswalk preserves the other external ids already on the row
     Given the sitting senators from the sample roster
-    And the people row "person:B001261" already carries external id "govtrack" "400050"
+    And the people row "person:B001261" already carries external id "govtrack" "412251"
     When I refresh the LIS crosswalk from the sample roster
-    Then the people row "person:B001261" carries external id "lis" "S313"
-    And the people row "person:B001261" carries external id "govtrack" "400050"
+    Then the people row "person:B001261" carries external id "lis" "S317"
+    And the people row "person:B001261" carries external id "govtrack" "412251"
 
   Scenario: Refreshing the crosswalk twice does not duplicate the people row
     Given the sitting senators from the sample roster
@@ -39,7 +39,7 @@ Feature: LIS-to-bioguide crosswalk (story 8.2)
   Scenario: The crosswalk resolves a LIS id to its bioguide id
     Given the crosswalk has been refreshed from the sample roster
     When I load the crosswalk from ZeroDB
-    Then resolving LIS id "S313" returns bioguide id "B001261"
+    Then resolving LIS id "S317" returns bioguide id "B001261"
 
   Scenario: The crosswalk resolves every LIS id in the roster
     Given the crosswalk has been refreshed from the sample roster
@@ -107,4 +107,4 @@ Feature: LIS-to-bioguide crosswalk (story 8.2)
   Scenario: The crosswalk resolves a LIS member id into the person_id member_votes uses
     Given the crosswalk has been refreshed from the sample roster
     When I load the crosswalk from ZeroDB
-    Then resolving LIS id "S313" returns person id "person:B001261"
+    Then resolving LIS id "S317" returns person id "person:B001261"
