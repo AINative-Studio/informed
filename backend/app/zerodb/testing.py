@@ -860,6 +860,31 @@ class FakeZeroDBTransport:
             self.files[file_id] = envelope
             return _ok(envelope)
 
+        if method == "DELETE" and segments[-2] == "files":
+            # `/files/{file_id}` — the route `ZeroDBClient.delete_file` uses.
+            # Live (measured 2026-10-20) this removes the metadata row AND the
+            # stored object, and answers a clean 404 for a file already gone —
+            # not the 500-wrapping-a-404 the memory delete route returns.
+            file_id = segments[-1]
+            if file_id not in self.files:
+                return _not_found("File not found")
+            file_name = self.files.pop(file_id).get("file_name")
+            self.file_content.pop(file_id, None)
+            return _ok(
+                {
+                    "success": True,
+                    "file_id": file_id,
+                    # Unconditionally true, exactly as live: this flag reports
+                    # that storage deletion was ATTEMPTED, not that bytes were
+                    # found and removed — it reads true even for a
+                    # metadata-only row that never had an object. The fake
+                    # reproduces that so no caller can come to rely on it as
+                    # proof of removal.
+                    "deleted_from_storage": True,
+                    "message": f"File {file_name} deleted successfully",
+                }
+            )
+
         if method == "GET" and segments[-2] == "files":
             # `.../database/files/{file_id}` — metadata only, no bytes. Answers
             # fine for a file registered through the metadata-only route, which

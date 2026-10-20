@@ -980,6 +980,92 @@ class ZeroDBClient:
         response = self._request("GET", f"/projects/{self._project_id}/database/files/{file_id}")
         return self._parse(StoredFile, response)
 
+    def delete_file(self, *, file_id: str, allow_missing_content: bool = False) -> None:
+        """Remove one stored file: its metadata row and its bytes.
+
+        The gap this closes: three merged stories (9.1 campaign sites, 5.4 bill
+        text, 9.2 debates and questionnaires) each had to document "cleanup
+        cannot remove uploaded file objects" as an honest limitation, and
+        story 5.4's verify script leaks a 2.8 MB object on every run
+        (datamodel.md's open question). This is that plumbing.
+
+        WHICH OF THE TWO LIVE ROUTES, AND WHY — the same `/database/files` vs
+        `/files` split that produced the upload bug in PR #157, so it was
+        measured rather than assumed (live, against the real project,
+        2026-10-20):
+
+          * `DELETE /projects/{id}/database/files/{file_id}` ("Delete a file
+            from project storage") answers `{"message", "file_name"}`.
+          * `DELETE /projects/{id}/files/{file_id}` ("Delete file metadata and
+            optionally the file from storage") answers
+            `{"success", "file_id", "deleted_from_storage", "message"}` and
+            takes a `delete_from_storage` query parameter, default true.
+
+        **Both genuinely remove the object.** That is not inferred from the
+        200: a presigned URL minted before the delete, whose signature was
+        still valid afterwards, was fetched straight from object storage and
+        answered `NoSuchKey` for either route. This method uses the second one
+        because it is the only one whose contract *names* storage, which is
+        what makes the half-delete below refusable instead of invisible.
+
+        `delete_from_storage` IS NEVER SENT, and this method takes no parameter
+        for it. Measured live: `?delete_from_storage=false` returns 200, drops
+        the metadata row, and leaves the object in MinIO — reachable by no
+        file id, listed by nothing, deletable by nothing, because every delete
+        route addresses a row that no longer exists. Recovering one takes
+        re-uploading a file under the identical `file_key` and deleting that
+        properly. It is a byte leak with a friendly name, and the only way to
+        keep it out of Informed is to give no caller a way to ask for it.
+
+        `deleted_from_storage` in the response is deliberately NOT treated as
+        proof: it reads true even for a metadata-only row that never had an
+        object, so it reports "storage deletion was attempted", not "bytes were
+        found and removed". A caller that needs proof should fetch and expect
+        `ZeroDBNotFoundError`, which is what the verify scripts do.
+
+        Idempotent in the way a cleanup path needs: a file already gone raises
+        `ZeroDBNotFoundError`, and — unlike `delete_memory`, whose endpoint
+        answers a 500 wrapping a 404 — this route answers a clean 404, so no
+        reinterpretation is needed and no retry is burned.
+
+        Args:
+            file_id: ZeroDB's file id, as returned by `upload_file`.
+            allow_missing_content: Delete even when no bytes are stored behind
+                the row. Off by default: such a row is a citation whose
+                evidence is unrecoverable, and datamodel.md records retiring
+                story 9.1's three unmendable `promise_sources` archives as a
+                deliberate decision for a human, not something a cleanup
+                sweep should do on its way past.
+
+        Raises:
+            ZeroDBValidationError: if `file_id` is empty, or the file has no
+                stored bytes and `allow_missing_content` is not set.
+            ZeroDBNotFoundError: if no file with that id exists.
+        """
+        self._require(file_id, "file_id")
+
+        if not allow_missing_content:
+            # Reading the bytes is the only way to tell an ordinary archive
+            # from one of datamodel.md's unmendable citations: `get_file`
+            # answers fine for both (that is precisely how story 9.1's broken
+            # archives hid), so the content route is the one that separates
+            # them.
+            try:
+                self.download_file(file_id=file_id)
+            except ZeroDBNotFoundError:
+                # Distinguish "no such file at all" from "a row with no bytes":
+                # the first is an ordinary already-gone, the second is the
+                # decision this guard exists to escalate.
+                self.get_file(file_id=file_id)
+                raise ZeroDBValidationError(
+                    f"file {file_id!r} has a metadata row but no stored bytes, so "
+                    f"deleting it destroys the only record that a citation pointed "
+                    f"at something unrecoverable; pass allow_missing_content=True "
+                    f"to retire it deliberately (see datamodel.md)"
+                ) from None
+
+        self._request("DELETE", f"/projects/{self._project_id}/files/{file_id}")
+
     def generate_presigned_url(
         self,
         *,
