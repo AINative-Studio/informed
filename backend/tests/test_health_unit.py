@@ -133,6 +133,13 @@ def test_routes_are_only_the_ones_built_so_far(client: TestClient) -> None:
         # source url precisely so the archive can be checked against the
         # primary source without trusting Informed — see `app.bills.models`.
         "/v1/bills/{bill_id}/text",
+        # Story 7.1: the ballot view's own read, over story 7.2's
+        # `candidate_cards` read model. Public and identity-free like 14.6's
+        # summary card and 12.2's methodology page above — a `candidate_cards`
+        # row holds no voter reference (datamodel.md), so there is nothing
+        # personal this endpoint could leak even by accident. See
+        # `app.ballot.cards_router`'s module docstring.
+        "/v1/ballot/cards",
     }
 
     # Story 12.4's deliberate omission, asserted rather than only described:

@@ -32,6 +32,7 @@ import {
 } from './api/ballot';
 import { ProfileSaveError, followPerson, unfollowPerson } from './api/profiles';
 import { SummaryCardError, fetchSummaryCard, shareTextFor } from './api/summaryCard';
+import { BallotView } from './ballot/BallotView';
 
 export function BallotPage() {
   const inputId = useId();
@@ -127,28 +128,31 @@ function candidacyIdsByPerson(ballot: Ballot): Map<string, string> {
   return byPerson;
 }
 
-/** The district and its two chambers. */
+/** The district, its two chambers, and the whole ballot view (story 7.1). */
 function Delegation({ ballot }: { ballot: Ballot }) {
   const house = ballot.officeholders.filter((person) => person.body_id === HOUSE_BODY_ID);
   const senate = ballot.officeholders.filter((person) => person.body_id === SENATE_BODY_ID);
   const candidacyIds = candidacyIdsByPerson(ballot);
 
   return (
-    <section aria-label="Your representatives">
-      <h2>{ballot.district.name}</h2>
-      <Chamber
-        heading="House"
-        members={house}
-        candidacyIds={candidacyIds}
-        emptyMessage="We don't have this district's representative yet."
-      />
-      <Chamber
-        heading="Senate"
-        members={senate}
-        candidacyIds={candidacyIds}
-        emptyMessage="We don't have this state's senators yet."
-      />
-    </section>
+    <>
+      <section aria-label="Your representatives">
+        <h2>{ballot.district.name}</h2>
+        <Chamber
+          heading="House"
+          members={house}
+          candidacyIds={candidacyIds}
+          emptyMessage="We don't have this district's representative yet."
+        />
+        <Chamber
+          heading="Senate"
+          members={senate}
+          candidacyIds={candidacyIds}
+          emptyMessage="We don't have this state's senators yet."
+        />
+      </section>
+      <BallotView races={ballot.races ?? []} />
+    </>
   );
 }
 

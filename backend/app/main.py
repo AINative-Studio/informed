@@ -44,6 +44,7 @@ from pydantic import BaseModel
 
 from app import __version__
 from app.analytics import router as analytics_router
+from app.ballot import cards_router as ballot_cards_router
 from app.ballot import router as ballot_router
 from app.ballot.router import zerodb_client
 from app.bills.router import router as bills_router
@@ -260,6 +261,7 @@ def create_app(
         return Response(content=body, media_type="text/plain; version=0.0.4; charset=utf-8")
 
     app.include_router(ballot_router)
+    app.include_router(ballot_cards_router)
     app.include_router(bills_router)
     app.include_router(topics_router)
     app.include_router(stances_router)
