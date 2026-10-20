@@ -53,7 +53,7 @@
  * gets a checkbox — "Select ... to compare" — local to its own race's
  * `selectedForCompare` state, because comparing is always within one race
  * (voters do not compare a House candidate against a Senate one). Checking
- * a THIRD candidate when a race already has `MAX_COMPARE` (4) selected is
+ * a FIFTH candidate when a race already has `MAX_COMPARE` (4) selected is
  * blocked by disabling every unchecked box once the cap is hit — never by
  * silently dropping the oldest selection, which would be a confusing thing
  * to have happen to a choice the voter just made. A "Compare" button appears
@@ -82,6 +82,10 @@ const BADGE_LABEL: Record<ConfidenceBadge, string> = {
   insufficient: 'Insufficient confidence',
 };
 
+/** Story 7.4's acceptance: "supports 2-4 candidates". */
+const MIN_COMPARE = 2;
+const MAX_COMPARE = 4;
+
 /**
  * Every race on this voter's ballot, each with its candidates' cards.
  *
@@ -89,10 +93,6 @@ const BADGE_LABEL: Record<ConfidenceBadge, string> = {
  * blocks another — a voter with a House race loaded and a stalled Senate
  * fetch still sees the House race.
  */
-/** Story 7.4's acceptance: "supports 2-4 candidates". */
-const MIN_COMPARE = 2;
-const MAX_COMPARE = 4;
-
 export function BallotView({
   races,
   onViewDetails,
