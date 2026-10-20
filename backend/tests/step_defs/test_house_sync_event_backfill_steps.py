@@ -45,6 +45,7 @@ from app.scheduling.jobs import HOUSE_PUBLICATION_LAG_PROMISE, default_jobs
 from app.scheduling.registry import JobStatus, ScheduledJobRunner
 from app.scoring.positions import ROLLCALL_INGESTED_TOPIC, PositionRecomputeConsumer
 from app.zerodb import ZeroDBClient
+from app.zerodb.errors import ZeroDBError
 from app.zerodb.testing import FakeZeroDBTransport
 
 scenarios("../features/house_sync_event_backfill.feature")
@@ -191,6 +192,22 @@ def job_is_due(result: dict[str, Any], name: str) -> None:
 # --- syncing (5.6 idempotency, 5.7 events) -----------------------------------
 
 
+@given("the event log is unavailable")
+def event_log_unavailable(zerodb: ZeroDBClient) -> None:
+    """Simulate a ZeroDB event-log outage on the create path only.
+
+    Patched on the client rather than the transport so the `roll_calls` and
+    `provenance_log` writes in the same loop still succeed -- which is the
+    whole point of the scenario: the row survives an outage that only the
+    event write hits.
+    """
+
+    def unavailable(**_kwargs: Any) -> None:
+        raise ZeroDBError("simulated event-log outage")
+
+    zerodb.create_event = unavailable  # type: ignore[method-assign]
+
+
 def _sync(loader: HouseRollCallLoader, result: dict[str, Any], *sample_keys: str) -> LoadReport:
     rows = [transform_roll_call(_fixture_envelopes()[key]) for key in sample_keys]
     report = loader.load(rows)
@@ -284,6 +301,16 @@ def event_carries_field(fake: FakeZeroDBTransport, topic: str, field: str) -> No
         assert field in event["event_payload"], (
             f"{topic} payload {event['event_payload']!r} has no {field!r} key"
         )
+
+
+@then(parsers.parse("the load report claims {count:d} events emitted"))
+def report_claims_events(result: dict[str, Any], count: int) -> None:
+    emitted = result["report"].events_emitted
+    assert len(emitted) == count, (
+        f"the report claims {len(emitted)} event(s) emitted ({emitted}), expected "
+        f"{count} -- an id listed here whose event failed to send would make an "
+        "event-log outage read as a clean run"
+    )
 
 
 @then(parsers.parse('a "{topic}" event was emitted for "{roll_call_id}"'))
