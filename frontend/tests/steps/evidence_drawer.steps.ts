@@ -187,9 +187,16 @@ Then(
   async () => {
     const drawer = world.page.getByRole('dialog');
     await expect(drawer.getByText(/us-house:119-2:452/)).toBeVisible();
-    await expect(drawer.getByText(/2026-03-01|march 1, 2026/i)).toBeVisible();
-    await expect(drawer.getByText(/final passage/i)).toBeVisible();
-    await expect(drawer.getByText(/yea/i)).toBeVisible();
+    // Scoped to the detail list (`<dl>`), not the whole dialog: once the
+    // archived-source link loads, its own text also names the bill text's
+    // version date ("Engrossed in House (2026-03-01)"), and Playwright's
+    // `getByText` over the whole dialog matches both — found by running this
+    // step against the real render and seeing Playwright's own strict-mode
+    // violation name both elements.
+    const details = drawer.locator('dl');
+    await expect(details.getByText(/march 1, 2026/i)).toBeVisible();
+    await expect(details.getByText(/final passage/i)).toBeVisible();
+    await expect(details.getByText(/^yea$/i)).toBeVisible();
   },
 );
 

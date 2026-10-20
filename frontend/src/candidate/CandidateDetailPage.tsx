@@ -308,10 +308,21 @@ function ArchivedSource({
   );
 }
 
+/**
+ * `voted_at` as a plain calendar date, in UTC.
+ *
+ * `toLocaleDateString` without `timeZone: 'UTC'` renders in the *viewer's*
+ * timezone, which can shift a UTC-midnight timestamp back a day — found by
+ * running this against the fixture date `2026-03-01T00:00:00Z` in a
+ * behind-UTC environment and getting "February 28, 2026" back. A roll call
+ * happened on the calendar day the record names, the same day for every
+ * voter regardless of where they are reading it from, so this fixes the
+ * timezone rather than letting the browser's guess move the date.
+ */
 function formatDate(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;
-  return date.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  return date.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' });
 }
 
 /** A readable label for `Citation.vote_type` — datamodel.md's enum, spelled out. */
