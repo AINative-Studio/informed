@@ -21,7 +21,7 @@ from fastapi.testclient import TestClient
 
 from app.bootstrap import TABLE_SCHEMAS
 from app.main import create_app
-from app.methodology.models import PublishedMethodology
+from app.methodology.models import DOCUMENTED_WEIGHT_GROUPS, PublishedMethodology
 from app.methodology.router import zerodb_client_for_methodology
 from app.methodology.service import PublicMethodologyService
 from app.profiles.methodology import (
@@ -261,13 +261,19 @@ def test_versions_on_an_empty_table_is_an_empty_list_not_a_seed(
 
 
 def test_unpopulated_weight_groups_are_named_rather_than_hidden() -> None:
-    """datamodel.md documents `weights {tiers, evidence_blend, vote_types}`.
+    """datamodel.md documents `weights {tiers, evidence_blend, vote_types}`,
+    and story 6.5 extended that with `badge_thresholds`.
 
-    Only `tiers` is in force today: evidence blending and vote-type weighting
-    are epic 6's scorer, which does not exist in this codebase. Omitting them
-    silently would let a reader believe the page is the whole methodology;
-    inventing numbers for a scorer nobody has written would be worse. So the
-    response names them as not yet published.
+    A row carrying only `tiers` — which is what story 4.2's seed writes, and
+    what the live `2026.1` row held before story 6.1 — must name every other
+    group as not yet published. Omitting them silently would let a reader
+    believe the page is the whole methodology; inventing numbers for a scorer
+    nobody has written would be worse.
+
+    The expectation is derived from `DOCUMENTED_WEIGHT_GROUPS` rather than
+    written out, which is the point the sibling test below makes: the list is
+    computed from the row, so adding a group (6.1 added two, 6.5 added one)
+    does not require editing this assertion.
     """
     published = PublishedMethodology(
         version="2026.1",
@@ -277,7 +283,7 @@ def test_unpopulated_weight_groups_are_named_rather_than_hidden() -> None:
         is_current=True,
         path="/v1/methodology/2026.1",
     )
-    assert set(published.weights_not_yet_published) == {"evidence_blend", "vote_types"}
+    assert set(published.weights_not_yet_published) == set(DOCUMENTED_WEIGHT_GROUPS) - {"tiers"}
 
 
 def test_a_populated_weight_group_is_not_reported_as_unpublished() -> None:
@@ -298,7 +304,9 @@ def test_a_populated_weight_group_is_not_reported_as_unpublished() -> None:
         is_current=True,
         path="/v1/methodology/2027.1",
     )
-    assert published.weights_not_yet_published == ["vote_types"]
+    assert published.weights_not_yet_published == [
+        group for group in DOCUMENTED_WEIGHT_GROUPS if group not in {"tiers", "evidence_blend"}
+    ]
 
 
 def test_the_public_response_model_has_no_voter_field() -> None:

@@ -41,7 +41,7 @@ def client() -> ZeroDBClient:
 # --- default_jobs() composition ---------------------------------------------
 
 
-def test_default_jobs_registers_exactly_the_eight_documented_jobs() -> None:
+def test_default_jobs_registers_exactly_the_documented_jobs() -> None:
     names = [job.name for job in jobs_module.default_jobs()]
     assert names == [
         "sweep_correction_emails",
@@ -63,6 +63,11 @@ def test_default_jobs_registers_exactly_the_eight_documented_jobs() -> None:
         # a script, which is the gap story 12.4's own module docstring
         # documented at length before this registry existed.
         "sweep_qa_session_memory",
+        # Story 6.2. The consumer of datamodel.md's `rollcall.ingested` event.
+        # Hourly, matching `load_house_rollcalls` — the ingest is its only
+        # producer. A no-op until something emits that event; see
+        # `run_recompute_candidate_positions`'s docstring for that gap.
+        "recompute_candidate_positions",
     ]
 
 

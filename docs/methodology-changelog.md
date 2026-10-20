@@ -23,6 +23,7 @@ Each version publishes its weights in named groups:
 | `tiers` | How much each of your interest tiers counts toward a match |
 | `evidence_blend` | How a candidate's voting record is balanced against their stated promises |
 | `vote_types` | How much a final-passage vote counts versus a procedural one |
+| `badge_thresholds` | How much evidence a score needs before it is badged High, Medium or Low |
 
 A group a version does not carry is listed in `weights_not_yet_published`.
 We name those explicitly rather than omitting them or filling them with
@@ -31,11 +32,78 @@ as though it were the whole thing.
 
 ---
 
+<a id="20263"></a>
+
+## 2026.3 — confidence badge thresholds
+
+**Status:** in force.
+**Published:** 2026-10-19.
+**Replaces:** [2026.2](#20262), which stays readable at its own URL showing
+exactly the weights it covered.
+
+This version adds one group, `badge_thresholds`, and changes nothing else. The
+tier weights, the evidence blend and the vote-type weights are all carried
+forward from `2026.2` unaltered.
+
+### What a confidence badge is for
+
+Beside every alignment score, Informed shows how much evidence that score
+rests on. The score answers "how closely does this candidate's record match
+what you said you care about". The badge answers a different and equally
+important question — **should you trust that number at all?**
+
+A candidate whose record on your priorities comes down to a single recorded
+vote can still score 100. That is arithmetically correct and would be
+misleading on its own, so the badge says so.
+
+| Badge | Relevant records behind the score | In plain words |
+| --- | --- | --- |
+| **High** | 10 or more | A real record. Several occasions, not one episode. |
+| **Medium** | 4 to 9 | Some record. More than one occasion, well short of a pattern. |
+| **Low** | 1 to 3 | Thin. Treat the number as a hint, not a finding. |
+| **Insufficient data** | 0 | No recorded evidence on your priorities. No score is shown. |
+
+"Relevant records" means recorded votes — and, once the evidence blend is in
+use, sponsorships and stated positions — on the stances **you** picked. A
+candidate's long record on an issue you did not choose does not raise your
+badge, because it is not evidence about your priorities.
+
+### Where these numbers come from
+
+The **High** threshold of 10 is published in the product requirements and is
+not a judgment made here.
+
+**Medium at 4** and **Low at 1** are judgment calls, and we would rather say so
+than present them as derived. The reasoning:
+
+- **Medium at 4.** A member's votes on one stance within a single legislative
+  episode commonly run to three or four — a final passage, an amendment, a
+  cloture motion, a procedural vote. Four is roughly the point at which a
+  reader could plausibly be looking at more than one occasion rather than one
+  bill's worth of procedure.
+- **Low at 1.** Any recorded evidence at all. It starts at one rather than zero
+  because with zero evidence there is no score to badge — that case is
+  *Insufficient data*, and the two must not overlap.
+
+If these prove wrong in use, the fix is a new version on this page, not a quiet
+edit. A score badged High under `2026.3` keeps citing `2026.3`.
+
+### What the badge is *not*
+
+- It is **not** part of the score. Changing a threshold cannot move a single
+  alignment number; the two are computed separately and deliberately so.
+- It is **not** a judgment about the candidate. A Low badge means Informed has
+  thin evidence, not that the candidate has a thin record — most often it means
+  the issue you chose has not come to a recorded vote.
+
+---
+
 <a id="20262"></a>
 
 ## 2026.2 — evidence blend and vote types
 
-**Status:** in force.
+**Status:** superseded by [2026.3](#20263) on 2026-10-19. Still readable at its
+own URL, and anything scored under it still cites it.
 **Published:** 2026-10-17.
 **Replaces:** [2026.1](#20261), which stays readable at its own URL showing
 exactly the weights it covered.
@@ -139,14 +207,17 @@ one scoring codebase and no party-specific rule anywhere in it.
 
 ### What this version does *not* yet publish
 
-Two of the three documented weight groups are deliberately absent from
-`2026.1`, and the API reports them in `weights_not_yet_published`:
+Every weight group except `tiers` is deliberately absent from `2026.1`, and the
+API reports them in `weights_not_yet_published`:
 
 - **`evidence_blend`** — how a voting record is weighed against a stated
   promise. The component that would use it (the alignment scorer) is not
   built yet.
 - **`vote_types`** — how a final-passage vote is weighed against a cloture
   vote, a motion to recommit or another procedural vote. Same reason.
+- **`badge_thresholds`** — how much evidence a score needs before it is badged
+  High, Medium or Low. Added as a group only in [2026.3](#20263); when `2026.1`
+  was published the concept had no stored home at all.
 
 We are stating this plainly rather than publishing placeholder numbers,
 because a published weight implies something is being computed with it, and
@@ -154,8 +225,9 @@ nothing is. When those groups go into force, they will appear in a new
 version here with its own entry, and `2026.1` will remain readable at its own
 URL showing exactly what it did and did not cover.
 
-> That is what happened: both groups went into force in [2026.2](#20262) on
-> 2026-10-17. The paragraph
+> That is what happened: `evidence_blend` and `vote_types` went into force in
+> [2026.2](#20262) on 2026-10-17, and `badge_thresholds` in
+> [2026.3](#20263) on 2026-10-19. The paragraph
 > above is left exactly as it was written, because it describes what `2026.1`
 > covered and that has not changed — a verdict or score citing `2026.1` is
 > citing a methodology that weighted tiers and nothing else.

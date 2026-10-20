@@ -65,6 +65,7 @@ from fastapi.testclient import TestClient
 
 from app.bootstrap import TABLE_SCHEMAS
 from app.main import create_app
+from app.methodology.models import DOCUMENTED_WEIGHT_GROUPS
 from app.methodology.router import zerodb_client_for_methodology
 from app.methodology.service import PublicMethodologyService
 from app.profiles.methodology import TABLE_NAME
@@ -168,17 +169,25 @@ def test_exactly_one_live_row_is_current(zerodb: ZeroDBClient) -> None:
     assert sum(1 for entry in listed if entry.is_current) == 1
 
 
-def test_the_live_row_reports_the_two_unpublished_weight_groups(zerodb: ZeroDBClient) -> None:
-    """The live row carries only `tiers`, as measured.
+def test_the_live_row_reports_its_unpublished_weight_groups(zerodb: ZeroDBClient) -> None:
+    """The live `2026.1` row carries only `tiers`, as measured.
 
     Confirmed against the live project on 2026-10-16: `weights` held exactly
-    one key. `evidence_blend` and `vote_types` are epic 6's, and the page says
-    so rather than inventing them. When epic 6 publishes one, this test is the
-    thing to update — deliberately, with a new live measurement.
+    one key. That measurement is what this test replays, and it has not
+    changed — `2026.1` is append-only history and its weights are never edited.
+
+    What the row REPORTS as missing has changed, twice, and is therefore
+    derived from `DOCUMENTED_WEIGHT_GROUPS` rather than written out: story 6.1
+    gave `evidence_blend` and `vote_types` real numbers in `2026.2`, and story
+    6.5 added `badge_thresholds` in `2026.3`. Neither touched `2026.1`, which
+    is the point — a version's own weights are frozen, while the list of
+    groups the methodology has since come to publish keeps growing.
     """
     published = PublicMethodologyService(zerodb).current()
     assert set(published.weights) == {"tiers"}
-    assert published.weights_not_yet_published == ["evidence_blend", "vote_types"]
+    assert published.weights_not_yet_published == [
+        group for group in DOCUMENTED_WEIGHT_GROUPS if group != "tiers"
+    ]
 
 
 def test_the_live_http_statuses_are_reproduced(api: TestClient) -> None:

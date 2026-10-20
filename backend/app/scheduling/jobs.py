@@ -52,6 +52,14 @@ Eight jobs today, one per story that flagged the scheduling gap:
     closed. No precondition: the memory API needs no credential beyond the
     project's own, so this job and the two integrity jobs are the three that
     always actually run.
+  * `recompute_candidate_positions` — story 6.2's consumer of
+    datamodel.md's `rollcall.ingested` event
+    (`app.scoring.positions.PositionRecomputeConsumer`). Hourly, matching the
+    roll-call ingest that is its only producer. No precondition, but an honest
+    no-op today: nothing in this codebase emits `rollcall.ingested` yet, so it
+    reads an empty event list and writes nothing. The mirror image of story
+    6.1's finding, which emitted `methodology.published` with no consumer —
+    see `run_recompute_candidate_positions`'s own docstring.
 
 Each job calls directly into the already-tested `app.ingest.*` / `app.corrections.*`
 / `app.integrity.*` logic, using the `ZeroDBClient` the runner injects — exactly
@@ -115,6 +123,7 @@ from app.integrity.checks import run_all_checks
 from app.integrity.repair import repair_member_votes_drift
 from app.panel_review.gate import check_panel_gate
 from app.scheduling.registry import JobRegistration
+from app.scoring.positions import PositionRecomputeConsumer
 from app.seed_elections import UPCOMING_ELECTIONS, ElectionSeeder
 from app.zerodb.client import ZeroDBClient
 from app.zerodb.errors import ZeroDBError
@@ -465,6 +474,50 @@ def run_sweep_qa_session_memory(client: ZeroDBClient) -> None:
     logger.info("sweep_qa_session_memory: %s", result.summary())
 
 
+# --- story 6.2: recompute_candidate_positions -------------------------------
+
+
+def run_recompute_candidate_positions(client: ZeroDBClient) -> None:
+    """Recompute candidate positions for every unhandled `rollcall.ingested`.
+
+    datamodel.md's Events table gives `rollcall.ingested` the consumer
+    "Position recompute", and story 6.2 built it
+    (`app.scoring.positions.PositionRecomputeConsumer`). This job is how it
+    runs, because the alternative — `ZeroDBClient.subscribe_events` — registers
+    a webhook and needs a publicly reachable URL this deployment does not have.
+
+    **Hourly, matching `load_house_rollcalls`.** The roll-call ingest is the
+    only producer of the events this consumes, so recomputing on a slower
+    cadence than the ingest would leave positions a fixed amount of time stale
+    for no saving, and a faster one would poll an empty event list.
+
+    No precondition. Unlike `load_house_rollcalls` (blocked on
+    `CONGRESS_GOV_API_KEY`) this needs only the project's own credentials.
+    What it needs and does not have is *events to consume*: nothing in this
+    codebase emits `rollcall.ingested` yet — story 5.1's loader does not, and
+    `app.scoring.positions.emit_rollcall_ingested` exists for that story to
+    call when it is wired. So today this job reads an empty list and does
+    nothing, which is an honest no-op rather than a failure, and the day the
+    ingest emits its first event the recompute starts running with no further
+    change here. The mirror image of story 6.1's finding, which emitted
+    `methodology.published` with no consumer.
+
+    The log line carries counts and ids only. Nothing voter-derived is
+    reachable from the scorer's position path — positions are computed from
+    public votes against public stance cards (see
+    `app.scoring.positions.RecomputeResult`).
+    """
+    result = PositionRecomputeConsumer(client, pace=_pacer(1.0)).run()
+    logger.info(
+        "recompute_candidate_positions: %d person(s), %d position(s) written, "
+        "%d unchanged, methodology %s",
+        result.people_recomputed,
+        result.positions_written,
+        result.positions_unchanged,
+        result.methodology_version or "(none read)",
+    )
+
+
 # --- the registry itself ----------------------------------------------------
 
 
@@ -539,6 +592,15 @@ def default_jobs() -> list[JobRegistration]:
             interval=timedelta(hours=6),
             run=run_sweep_qa_session_memory,
         ),
+        JobRegistration(
+            # Story 6.2. Hourly, matching `load_house_rollcalls` — the ingest
+            # is the only producer of the events this consumes. A no-op today
+            # because nothing emits `rollcall.ingested` yet; see
+            # `run_recompute_candidate_positions` for the full note.
+            name="recompute_candidate_positions",
+            interval=timedelta(hours=1),
+            run=run_recompute_candidate_positions,
+        ),
     ]
 
 
@@ -561,6 +623,7 @@ __all__ = [
     "run_load_senate_rollcalls",
     "run_nightly_integrity_checks",
     "run_panel_gate_check",
+    "run_recompute_candidate_positions",
     "run_repair_member_votes_drift",
     "run_sweep_correction_emails",
     "run_sweep_qa_session_memory",

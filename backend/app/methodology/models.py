@@ -28,15 +28,32 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 
-#: The weight groups datamodel.md documents for `methodology_versions.weights`.
-#: `tiers` is in force today (prd.md's Feature 1 table, seeded by story 4.2).
-#: `evidence_blend` and `vote_types` belong to epic 6's scorer, which does not
-#: exist in this codebase — so they are reported as unpublished rather than
-#: invented. Declared here, in the published document, because this is the
-#: module that has to answer "what is missing"; the stored model deliberately
-#: keeps `weights` a free-form dict so story 6.1 can add a group without
-#: editing a schema (see `app.profiles.methodology.MethodologyVersion`).
-DOCUMENTED_WEIGHT_GROUPS: tuple[str, ...] = ("tiers", "evidence_blend", "vote_types")
+#: The weight groups published on `methodology_versions.weights`.
+#:
+#: The first three are datamodel.md's own: `tiers` (prd.md's Feature 1 table,
+#: seeded by story 4.2) and `evidence_blend` / `vote_types` (prd.md's Feature 3
+#: and Feature 2, given real numbers by story 6.1).
+#:
+#: `badge_thresholds` is story 6.5's addition, and it is an EXTENSION of
+#: datamodel.md's documented three rather than one of them. The justification
+#: is the same shape as story 6.1's: backlog.md 6.5's acceptance criterion is
+#: "Badges are High, Medium, Low or Insufficient, with thresholds **from the
+#: methodology**", and datamodel.md's rule that live values "come from
+#: `methodology_versions` and are never hard-coded" applies to the ">=10
+#: relevant votes" boundary prd.md publishes just as it applies to a tier
+#: weight. The stored model deliberately keeps `weights` a free-form dict so a
+#: story can add a group without editing a schema (see
+#: `app.profiles.methodology.MethodologyVersion`), and naming it here is what
+#: makes the new group appear on the public `/v1/methodology` page rather than
+#: becoming a private side channel — including being reported in
+#: `weights_not_yet_published` for the already-published `2026.1` row that
+#: predates it. See `app.scoring.badges` for the numbers and their sourcing.
+DOCUMENTED_WEIGHT_GROUPS: tuple[str, ...] = (
+    "tiers",
+    "evidence_blend",
+    "vote_types",
+    "badge_thresholds",
+)
 
 #: Where a version's public page lives. One definition, used by the router to
 #: declare the route and by this model to publish the link, so the two cannot
