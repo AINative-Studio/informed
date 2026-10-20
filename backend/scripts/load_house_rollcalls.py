@@ -10,18 +10,18 @@ house-vote endpoints (`app.ingest.house_rollcalls`), transforms them into
 1.4 repository layer, writing a `provenance_log` entry alongside each one,
 paced against the ~60 req/min ceiling datamodel.md records.
 
-**THIS SCRIPT HAS NOT BEEN RUN AGAINST THE LIVE API.** No real
-`CONGRESS_GOV_API_KEY` was available during story 5.1 -- see
-`app/ingest/house_rollcalls.py`'s module docstring and the story's PR for the
-full blocker writeup. It is included, fully wired and ready to run, exactly
-as `scripts/load_legislators.py` is for its own source, so that running it is
-a matter of supplying a real key, not writing new code.
+**This script's blocker is cleared.** Story 5.1 shipped it with "THIS SCRIPT
+HAS NOT BEEN RUN AGAINST THE LIVE API" at the top, for want of a
+`CONGRESS_GOV_API_KEY`. A real key exists as of 2026-10-19 and the pipeline
+this script drives has been run live (stories 5.6/5.7/5.8) -- which is also
+how the two silent transform defects story 5.1 could not have found were
+found and fixed. See `app/ingest/house_rollcalls.py`'s module docstring.
 
 `--limit` defaults to a SMALL bounded sample deliberately: this script's job
 is to prove the pipeline works end to end on real data, not to backfill every
-roll call since the 118th Congress in one run (thousands of item-level
-fetches, each paced at >=1.1s, would take well over an hour and is explicitly
-story 5.8's job per backlog.md, not this story's).
+roll call since the 118th Congress in one run. The full backfill now exists
+as its own script -- `scripts/backfill_house_rollcalls.py` (story 5.8), which
+pages, resumes and reconciles against the source's own totals.
 
 Reads ZeroDB credentials from the environment via `ZeroDBClient.from_env()`,
 exactly like `scripts/load_legislators.py` -- this script never opens

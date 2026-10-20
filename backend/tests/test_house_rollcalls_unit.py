@@ -158,10 +158,24 @@ def test_transform_skips_a_record_with_no_result() -> None:
     assert "result" in skipped[0].reason
 
 
-def test_transform_skips_a_record_with_no_url() -> None:
+def test_transform_derives_source_url_for_a_record_with_no_url() -> None:
+    """Story 5.8 reversed this test, and the reversal is the point.
+
+    Story 5.1 wrote it as `test_transform_skips_a_record_with_no_url`,
+    because the endpoint's DOCUMENTATION lists a `url` field. Story 5.8 got
+    the first working `CONGRESS_GOV_API_KEY` this repo has ever had and
+    found that **no live record carries `url` at all** (12 real item-level
+    records probed, 2026-10-19). Under the old behaviour the live backfill
+    skipped 100% of records and the loader exited 0 having written nothing.
+
+    So a missing `url` is the NORMAL case, not a malformed record, and the
+    adapter derives the URL it actually fetched. See
+    `house_rollcalls.roll_call_item_url` for why that is the honest
+    `source_url` rather than a workaround.
+    """
     rows, skipped = transform_roll_calls([_envelope(url=None)])
-    assert rows == []
-    assert "url" in skipped[0].reason
+    assert skipped == []
+    assert rows[0]["source_url"] == ("https://api.congress.gov/v3/house-vote/119/2/452")
 
 
 def test_transform_many_collects_skips_without_failing_the_batch() -> None:
@@ -304,6 +318,38 @@ def test_tally_skips_a_non_dict_entry_in_the_item_list() -> None:
     assert tally.yea == 7
 
 
+def test_a_speaker_election_tally_is_zero_and_the_record_still_ingests() -> None:
+    """The third `votePartyTotal` shape, found in story 5.8's live backfill.
+
+    "Election of the Speaker" roll calls (the January 2023 McCarthy ballots)
+    publish `{"candidate": ..., "total": ...}` entries with no
+    `yeaTotal`/`nayTotal` at all, because members vote for a NAME rather than
+    yea/nay. 15 of the first 151 live rows backfilled were these.
+
+    Two things must both hold, and this pins both: the record still ingests
+    (it is a real roll call and dropping it would lose it from the record),
+    and its tally is ZERO rather than a guess -- mapping "216 for McCarthy"
+    onto `yea` would make a Speaker ballot read as a 216-212 policy vote.
+    See `_tally_from`'s docstring.
+    """
+    row = transform_roll_call(
+        _envelope(
+            voteQuestion="Election of the Speaker",
+            votePartyTotal=[
+                {"candidate": "McCarthy", "total": 216},
+                {"candidate": "Jeffries", "total": 212},
+                {"candidate": "Present", "total": 6},
+            ],
+        )
+    )
+    tally = row["tally"]
+    assert (tally.yea, tally.nay, tally.present, tally.not_voting) == (0, 0, 0, 0)
+    # Still a stored roll call, classified at the weakest weight rather than
+    # dropped or mistaken for a substantive vote.
+    assert row["id"] == "us-house:119-2:452"
+    assert row["vote_type"] == "other"
+
+
 # --- fetching (mocked httpx) ---------------------------------------------------
 
 
@@ -318,7 +364,13 @@ def test_fetch_roll_call_numbers_returns_every_roll_call_number(
 
     monkeypatch.setattr(house_rollcalls_module.httpx, "get", fake_get)
     numbers = fetch_roll_call_numbers(congress=118, session=2, api_key="test-key")
-    assert numbers == [397, 398]
+    # Descending (most recent first) since story 5.8: both callers of this
+    # function already re-sorted the result descending themselves to take
+    # "the N most recent", so sorting here removes that duplication and
+    # makes the ordering a property of the listing rather than of each
+    # caller remembering to impose it. Order, not membership, is what
+    # changed.
+    assert numbers == [398, 397]
 
 
 def test_fetch_roll_call_numbers_raises_on_non_200(monkeypatch: pytest.MonkeyPatch) -> None:

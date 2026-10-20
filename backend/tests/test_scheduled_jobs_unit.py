@@ -233,10 +233,17 @@ def test_run_load_house_rollcalls_loads_the_most_recent_sample(
     numbers = [10, 11, 12]
     fetched: list[int] = []
 
-    def fake_fetch_roll_call_numbers(*, congress: int, session: int, api_key: str):
+    def fake_fetch_roll_call_numbers(
+        *, congress: int, session: int, api_key: str, pace=None, page_size=None
+    ):
         assert congress == jobs_module.HOUSE_ROLLCALLS_CONGRESS
         assert session == jobs_module.HOUSE_ROLLCALLS_SESSION
-        return numbers
+        # Returned DESCENDING, because that is what the real
+        # `fetch_roll_call_numbers` returns since story 5.8 (the listing sorts
+        # once, so its two callers no longer each re-sort). A stub that
+        # returned ascending would be asserting the job re-sorts a listing
+        # that is already ordered -- testing the stub, not the job.
+        return sorted(numbers, reverse=True)
 
     def fake_fetch_roll_call_item(
         *, congress: int, session: int, roll_call_number: int, api_key: str

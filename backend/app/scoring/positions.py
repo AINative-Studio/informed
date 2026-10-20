@@ -96,9 +96,23 @@ agent; follower alerts".
 
 Story 6.1 found the mirror image of this gap and said so: it emitted
 `methodology.published` and recorded that "no consumer exists for it yet".
-Here, the consumer is what is missing — **nothing in this codebase emits
-`rollcall.ingested`**. Story 5.1's loader does not, and the live project holds
-none of them.
+When this module shipped, the PRODUCER was the missing half — nothing in the
+codebase emitted `rollcall.ingested`, so the consumer below was live code
+with no input.
+
+**Story 5.7 closed that.** `app.ingest.house_rollcalls.HouseRollCallLoader`
+now calls `emit_rollcall_ingested` (below) for every roll call whose content
+actually changed, and the live project holds real events. Confirmed end to
+end on 2026-10-19: a real roll call ingested from Congress.gov emitted
+exactly one event, and `PositionRecomputeConsumer.run()` read it back from
+the live event log.
+
+What has NOT changed is that no position comes out of it yet — and the reason
+is the scoping decision at the top of this docstring, not a wiring gap: roll
+calls carry `topic_ids: []` until story 5.5 classifies them, and
+`votes_for_stance` matches on `topic_ids`. So the consumer now exercises its
+real path (reads events, resolves voters, recomputes) and correctly declines
+to invent a position.
 
 So this story ships both halves of the wiring rather than half of each:
 
@@ -111,9 +125,10 @@ So this story ships both halves of the wiring rather than half of each:
     reachable URL this deployment does not have), and it is registered as a
     scheduled job in `app.scheduling.jobs` so it runs without one.
   * `emit_rollcall_ingested` is here so the producing side has one definition
-    of the documented payload to call. Wiring it into story 5.1's loader is
-    that story's change to make, not this one's — this story does not edit an
-    ingest path it has no acceptance criterion for.
+    of the documented payload to call. Wiring it into the House loader was
+    left to the story that owned that ingest path, and story 5.7 did exactly
+    that — it calls this function rather than spelling the payload a second
+    time, which is why there is still only one definition of it.
 
 Idempotence across runs is the consumer's own: it tracks the last event it
 processed in-process and, more importantly, `recompute_person_positions` writes
@@ -745,11 +760,22 @@ def emit_rollcall_ingested(
     """Emit datamodel.md's `rollcall.ingested` event.
 
     Defined here, beside the consumer, so the documented payload has one
-    definition rather than one per producer. The producing call belongs in
-    story 5.1's loader (`app.ingest.house_rollcalls`) and this story does not
-    put it there: editing an ingest path for which it has no acceptance
-    criterion is how a story grows a second story inside it. See the module
-    docstring's note on the gap this leaves and why both halves still ship.
+    definition rather than one per producer.
+
+    **Callers.** `app.ingest.house_rollcalls.HouseRollCallLoader` (story 5.7),
+    once per roll call whose content actually changed — it keys the call off
+    the repository's content-addressed provenance write, so the hourly sync
+    re-fetching the same window does not re-emit. A Senate-side producer
+    (`app.ingest.senate_rollcalls`) is the obvious next caller and does not
+    emit yet; that is a real remaining gap, flagged in story 5.7's PR rather
+    than fixed there, because 5.7's acceptance criterion is about the House
+    ingest and quietly widening it to another chamber's adapter is how a
+    story grows a second story inside it.
+
+    `bill_id` and `topic_ids` are passed through as the producer stored them.
+    Both are still null/empty from the House ingest until stories 5.3 and 5.5
+    land; the consumer tolerates an empty `topic_ids` by re-reading the stored
+    row (see `PositionRecomputeConsumer.handle_event`).
     """
     client.create_event(
         topic=ROLLCALL_INGESTED_TOPIC,

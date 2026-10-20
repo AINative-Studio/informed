@@ -22,9 +22,9 @@
     "the singular -- mirrored here as houseRollCallVotes / houseRollCallVote.",
     "",
     "Used by tests/step_defs/test_house_rollcalls_steps.py and",
-    "tests/test_house_rollcalls_unit.py. Never fetched over the network in CI."
+    "tests/test_house_rollcalls_unit.py. Never fetched over the network in CI.",
+    "item_live_shape_119_2_74 was captured VERBATIM from the live endpoint GET /v3/house-vote/119/2/74 on 2026-10-19 (story 5.8's live run -- the first time any story in this repo had a working CONGRESS_GOV_API_KEY). It differs from the hand-built fixtures above in two ways the documentation story 5.1 was built from got wrong: votePartyTotal is a BARE LIST, not {\"item\": [...]}, and there is NO url field at all. Do not 'tidy' it to match the others -- it is the real shape, and the others are the documented one."
   ],
-
   "list_page_118_2": {
     "houseRollCallVotes": [
       {
@@ -67,7 +67,6 @@
       "contentType": "application/json"
     }
   },
-
   "item_final_passage": {
     "houseRollCallVote": {
       "startDate": "2025-03-11T14:22:00-04:00",
@@ -84,14 +83,20 @@
       "votePartyTotal": {
         "item": [
           {
-            "party": {"type": "R", "name": "Republican"},
+            "party": {
+              "type": "R",
+              "name": "Republican"
+            },
             "yeaTotal": 210,
             "nayTotal": 5,
             "presentTotal": 0,
             "notVotingTotal": 3
           },
           {
-            "party": {"type": "D", "name": "Democratic"},
+            "party": {
+              "type": "D",
+              "name": "Democratic"
+            },
             "yeaTotal": 198,
             "nayTotal": 10,
             "presentTotal": 1,
@@ -103,7 +108,6 @@
       "url": "https://api.congress.gov/v3/house-vote/119/2/452"
     }
   },
-
   "item_amendment": {
     "houseRollCallVote": {
       "startDate": "2025-03-10T11:05:00-04:00",
@@ -121,14 +125,20 @@
       "votePartyTotal": {
         "item": [
           {
-            "party": {"type": "R", "name": "Republican"},
+            "party": {
+              "type": "R",
+              "name": "Republican"
+            },
             "yeaTotal": 2,
             "nayTotal": 214,
             "presentTotal": 0,
             "notVotingTotal": 2
           },
           {
-            "party": {"type": "D", "name": "Democratic"},
+            "party": {
+              "type": "D",
+              "name": "Democratic"
+            },
             "yeaTotal": 150,
             "nayTotal": 55,
             "presentTotal": 2,
@@ -140,7 +150,6 @@
       "url": "https://api.congress.gov/v3/house-vote/119/2/451"
     }
   },
-
   "item_motion_to_recommit": {
     "houseRollCallVote": {
       "startDate": "2025-03-11T13:50:00-04:00",
@@ -157,14 +166,20 @@
       "votePartyTotal": {
         "item": [
           {
-            "party": {"type": "R", "name": "Republican"},
+            "party": {
+              "type": "R",
+              "name": "Republican"
+            },
             "yeaTotal": 0,
             "nayTotal": 215,
             "presentTotal": 0,
             "notVotingTotal": 3
           },
           {
-            "party": {"type": "D", "name": "Democratic"},
+            "party": {
+              "type": "D",
+              "name": "Democratic"
+            },
             "yeaTotal": 205,
             "nayTotal": 1,
             "presentTotal": 0,
@@ -176,7 +191,6 @@
       "url": "https://api.congress.gov/v3/house-vote/119/2/453"
     }
   },
-
   "item_cloture_like_procedural": {
     "houseRollCallVote": {
       "startDate": "2025-03-11T13:10:00-04:00",
@@ -191,14 +205,20 @@
       "votePartyTotal": {
         "item": [
           {
-            "party": {"type": "R", "name": "Republican"},
+            "party": {
+              "type": "R",
+              "name": "Republican"
+            },
             "yeaTotal": 213,
             "nayTotal": 2,
             "presentTotal": 0,
             "notVotingTotal": 3
           },
           {
-            "party": {"type": "D", "name": "Democratic"},
+            "party": {
+              "type": "D",
+              "name": "Democratic"
+            },
             "yeaTotal": 3,
             "nayTotal": 200,
             "presentTotal": 0,
@@ -209,7 +229,6 @@
       "url": "https://api.congress.gov/v3/house-vote/119/2/454"
     }
   },
-
   "item_unrecognized_question": {
     "houseRollCallVote": {
       "startDate": "2025-03-11T12:00:00-04:00",
@@ -227,7 +246,6 @@
       "url": "https://api.congress.gov/v3/house-vote/119/2/455"
     }
   },
-
   "item_missing_totals": {
     "houseRollCallVote": {
       "startDate": "2025-03-09T09:00:00-04:00",
@@ -243,6 +261,58 @@
       "voteQuestion": "On Agreeing to the Resolution",
       "legislationUrl": "https://www.congress.gov/bill/119th-congress/house-resolution/88",
       "url": "https://api.congress.gov/v3/house-vote/119/2/450"
+    }
+  },
+  "item_live_shape_119_2_74": {
+    "houseRollCallVote": {
+      "congress": 119,
+      "identifier": 1192202674,
+      "legislationNumber": "1075",
+      "legislationType": "HRES",
+      "legislationUrl": "https://www.congress.gov/bill/119/house-resolution/1075",
+      "result": "Passed",
+      "rollCallNumber": 74,
+      "sessionNumber": 2,
+      "sourceDataURL": "https://clerk.house.gov/evs/2026/roll074.xml",
+      "startDate": "2026-02-24T14:18:00-05:00",
+      "updateDate": "2026-02-25T14:09:11-05:00",
+      "votePartyTotal": [
+        {
+          "nayTotal": 0,
+          "notVotingTotal": 10,
+          "party": {
+            "name": "Republican",
+            "type": "R"
+          },
+          "presentTotal": 0,
+          "voteParty": "R",
+          "yeaTotal": 208
+        },
+        {
+          "nayTotal": 187,
+          "notVotingTotal": 27,
+          "party": {
+            "name": "Democrat",
+            "type": "D"
+          },
+          "presentTotal": 0,
+          "voteParty": "D",
+          "yeaTotal": 0
+        },
+        {
+          "nayTotal": 0,
+          "notVotingTotal": 0,
+          "party": {
+            "name": "Independent",
+            "type": "I"
+          },
+          "presentTotal": 0,
+          "voteParty": "I",
+          "yeaTotal": 0
+        }
+      ],
+      "voteQuestion": "On Agreeing to the Resolution",
+      "voteType": "Recorded Vote"
     }
   }
 }
