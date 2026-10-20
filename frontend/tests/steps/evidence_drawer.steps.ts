@@ -170,10 +170,12 @@ Given('a voter opens the Informed app with a scored candidate whose citation has
   await world.page.getByRole('button', { name: /representatives/i }).click();
 });
 
-When("they open that candidate's detail page", async () => {
-  const ballot = world.page.getByRole('region', { name: /your ballot/i });
-  await ballot.getByRole('button', { name: /view details|details/i }).first().click();
-});
+// "they open that candidate's detail page" is already defined by
+// candidate_detail.steps.ts (story 7.3) — Cucumber's registry is shared
+// across every step file matched by cucumber.cjs, and a duplicate step
+// definition is a Cucumber error (AMBIGUOUS), not a silent override. Reused
+// here rather than redefined, same posture `ballot_view.steps.ts`'s own note
+// on this documents for its sibling features.
 
 When('they open the evidence drawer for that citation', async () => {
   const detail = world.page.getByRole('region', { name: /candidate detail/i });

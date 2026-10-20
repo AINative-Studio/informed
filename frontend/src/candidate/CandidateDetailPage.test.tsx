@@ -168,18 +168,18 @@ describe('CandidateDetailPage', () => {
     expect(screen.getByText(/3/)).toBeInTheDocument();
   });
 
-  it('renders at least one real, clickable citation link per row', async () => {
+  it('renders at least one real, clickable citation control per row', async () => {
+    // Story 7.5: a citation with a bill attached is now a button that opens
+    // the evidence drawer (`CandidateDetailPage evidence drawer` describe
+    // block below covers the drawer's own real links), rather than being a
+    // bare `<a>` itself — still real and clickable, just one interaction
+    // away from the link instead of being the link.
     respondWith(ALIGNMENT);
     renderWithQuery(<CandidateDetailPage candidacyId={ALIGNMENT.candidacy_id} profileId="demo-user-1" />);
 
     await screen.findByRole('list', { name: /interest-by-interest|breakdown/i });
-    const links = screen.getAllByRole('link');
-    expect(links.length).toBeGreaterThanOrEqual(2);
-    for (const link of links) {
-      const href = link.getAttribute('href');
-      expect(href).toBeTruthy();
-      expect(href).not.toBe('#');
-    }
+    const controls = screen.getAllByRole('button', { name: /roll call/i });
+    expect(controls.length).toBeGreaterThanOrEqual(2);
   });
 
   it('shows the roll call as plain text, never a fabricated link, when no bill is attached', async () => {

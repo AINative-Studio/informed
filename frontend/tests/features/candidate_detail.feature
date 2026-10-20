@@ -25,9 +25,15 @@ Feature: Candidate detail, broken down interest by interest
     And each row shows whether the candidate's record agrees or disagrees with that interest
     And each row shows how many pieces of evidence it rests on
 
-  Scenario: Every row's evidence links to a real, clickable source
+  Scenario: Every row's evidence has a real, clickable control to open it
     When they open that candidate's detail page
-    Then every row has at least one link a voter can actually open
+    Then every row has at least one control a voter can actually open
+
+  # Story 7.5 adds the evidence drawer each of these controls opens — see
+  # tests/features/evidence_drawer.feature for its own scenarios (the full
+  # roll-call detail, the bill link and the archived source link, closing by
+  # Escape or by its own close button, and focus returning to the control
+  # that opened it).
 
   Scenario: A candidate with no measured positions shows an honest empty state
     Given a voter opens the Informed app with a candidate who has no measured positions

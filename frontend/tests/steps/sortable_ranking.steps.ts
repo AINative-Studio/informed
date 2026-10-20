@@ -12,7 +12,6 @@ import { expect } from '@playwright/test';
 
 import { visit, world } from './common.steps';
 
-const ADDRESS = '1 Synthetic Way, Example, CA 90000';
 const DISTRICT_ID = 'ocd-division/country:us/state:ca/cd:19';
 const ELECTION_ID = 'us-2026-11-03-general';
 
@@ -120,10 +119,11 @@ Given('a voter opens the Informed app with a ballot where one candidate in a rac
   );
 });
 
-When('they submit their address for the whole-ballot view', async () => {
-  await world.page.getByLabel(/address/i).fill(ADDRESS);
-  await world.page.getByRole('button', { name: /representatives/i }).click();
-});
+// "they submit their address for the whole-ballot view" is already defined
+// by ballot_view.steps.ts (story 7.1) — reused rather than redefined, for
+// the same reason `evidence_drawer.steps.ts` reuses
+// candidate_detail.steps.ts's "they open that candidate's detail page": a
+// duplicate step definition is a Cucumber AMBIGUOUS error, not an override.
 
 function raceList() {
   const ballot = world.page.getByRole('region', { name: /your ballot/i });

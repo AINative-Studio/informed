@@ -68,11 +68,41 @@
  * instead of a fabricated link, matching prd.md's "evidence over opinion"
  * in the direction that matters here: it would rather show nothing
  * clickable than something that looks like a link and goes nowhere real.
+ *
+ * The evidence drawer (story 7.5)
+ * ================================
+ * "As a voter, I want to open any vote or promise behind a score and see
+ * the source, so that I can verify it." A citation with a bill attached
+ * (see above) is now a button that opens a `Drawer` (`src/ui/Drawer.tsx`)
+ * showing the full roll-call detail: the roll-call number and date it
+ * already names in its link text, plus `position` and `vote_type` (both
+ * already on `Citation` but previously never shown), a link to the bill,
+ * and — new in this story — the real archived copy of that bill's text via
+ * story 5.4's `GET /v1/bills/{bill_id}/text`, fetched only once the drawer
+ * actually opens (same lazy-fetch posture `billText.ts`'s own docstring
+ * requires: the presigned URL it returns is short-lived, so it must not be
+ * fetched speculatively on render).
+ *
+ * `roll_calls.question` (datamodel.md) is a real backend field, but no
+ * endpoint publishes it — `Citation`'s `extra="forbid"` means the backend
+ * response literally cannot carry it, and adding it would be new backend
+ * work this story's brief says is likely unnecessary. Rather than fabricate
+ * a "question" sentence from nothing, the drawer shows `vote_type` (what
+ * *kind* of vote this was) in its place, named plainly as that — the same
+ * "show what exists, not what doesn't" posture `CitationLink` already takes
+ * for a citation with no bill page.
+ *
+ * A citation with no `bill_id` has nothing for this drawer to add beyond
+ * what `CitationLink` already renders as plain text (no bill page, so no
+ * archived bill text either) — so it gets no drawer control at all, rather
+ * than a drawer that opens onto mostly empty space.
  */
 import { useQuery } from '@tanstack/react-query';
-import { useId } from 'react';
+import { useId, useRef, useState } from 'react';
 
 import { type AlignmentReason, type Citation, fetchAlignment } from '../api/alignment';
+import { type BillText, BillTextError, fetchBillText, versionLabelFor } from '../api/billText';
+import { Drawer } from '../ui/Drawer';
 
 export function CandidateDetailPage({
   candidacyId,
@@ -181,17 +211,140 @@ function CitationLinks({ citations }: { citations: Citation[] }) {
 
 function CitationLink({ citation }: { citation: Citation }) {
   const url = citation.bill_id ? billUrlFor(citation.bill_id) : null;
+  const openerRef = useRef<HTMLButtonElement>(null);
+  const [isOpen, setIsOpen] = useState(false);
+
   if (!url) {
     // No bill attached (a procedural or nomination vote) — no
-    // backend-published browsable resource exists for the bare roll call.
-    // See this module's docstring: shown as text, never a fabricated link.
+    // backend-published browsable resource exists for the bare roll call,
+    // and so nothing for a drawer to add beyond this line. See this
+    // module's docstring: shown as text, never a fabricated link or an
+    // empty drawer.
     return <span>Roll call {citation.roll_call_id} (no bill page available)</span>;
   }
+
   return (
-    <a href={url} target="_blank" rel="noreferrer">
-      Roll call {citation.roll_call_id}
-    </a>
+    <>
+      <button type="button" ref={openerRef} onClick={() => setIsOpen(true)}>
+        Roll call {citation.roll_call_id}
+      </button>
+      <Drawer
+        isOpen={isOpen}
+        onClose={() => setIsOpen(false)}
+        label={`Evidence for roll call ${citation.roll_call_id}`}
+        returnFocusTo={openerRef}
+      >
+        <EvidenceDrawerContent citation={citation} billUrl={url} />
+      </Drawer>
+    </>
   );
+}
+
+/**
+ * The drawer's body: everything story 7.5's acceptance criterion asks for —
+ * roll-call number, date, question, position, bill link and archived
+ * source — using the field this backend actually publishes in place of
+ * "question" (see this module's docstring).
+ */
+function EvidenceDrawerContent({ citation, billUrl }: { citation: Citation; billUrl: string }) {
+  const headingId = useId();
+  const billTextQuery = useQuery({
+    queryKey: ['bill-text', citation.bill_id],
+    queryFn: ({ signal }) => fetchBillText(citation.bill_id as string, signal),
+  });
+
+  return (
+    <section aria-labelledby={headingId}>
+      <h3 id={headingId}>Roll call {citation.roll_call_id}</h3>
+      <dl>
+        <dt>Date</dt>
+        <dd>{formatDate(citation.voted_at)}</dd>
+        <dt>Kind of vote</dt>
+        <dd>{voteTypeLabel(citation.vote_type)}</dd>
+        <dt>This candidate&apos;s position</dt>
+        <dd>{positionLabel(citation.position)}</dd>
+        {citation.is_bundled ? (
+          <>
+            <dt>Bundled vote</dt>
+            <dd>{bundledReasonLabel(citation.bundled_reason)}</dd>
+          </>
+        ) : null}
+      </dl>
+      <p>
+        <a href={billUrl} target="_blank" rel="noreferrer">
+          Open the bill
+        </a>
+      </p>
+      <ArchivedSource query={billTextQuery} />
+    </section>
+  );
+}
+
+/** The archived copy of the bill's text — story 5.4's presigned URL, not the live source. */
+function ArchivedSource({
+  query,
+}: {
+  query: { isPending: boolean; isError: boolean; error: unknown; isSuccess: boolean; data?: BillText };
+}) {
+  if (query.isPending) return <p>Loading the archived copy of this bill&apos;s text…</p>;
+  if (query.isError) {
+    return (
+      <p role="alert">
+        {query.error instanceof BillTextError
+          ? query.error.message
+          : 'We could not open the archived bill text just now. Please try again.'}
+      </p>
+    );
+  }
+  if (!query.isSuccess || !query.data) return null;
+  const text = query.data;
+  const version = versionLabelFor(text);
+  return (
+    <p>
+      <a href={text.url} target="_blank" rel="noreferrer">
+        Open the archived source{version ? ` (${version})` : ''}
+      </a>
+    </p>
+  );
+}
+
+function formatDate(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+}
+
+/** A readable label for `Citation.vote_type` — datamodel.md's enum, spelled out. */
+function voteTypeLabel(voteType: string): string {
+  const labels: Record<string, string> = {
+    final_passage: 'Final passage',
+    amendment: 'Amendment',
+    cloture: 'Cloture',
+    motion_to_recommit: 'Motion to recommit',
+    procedural: 'Procedural',
+    other: 'Other',
+  };
+  return labels[voteType] ?? voteType;
+}
+
+/** A readable label for `Citation.position` — datamodel.md's enum, spelled out. */
+function positionLabel(position: string): string {
+  const labels: Record<string, string> = {
+    yea: 'Yea',
+    nay: 'Nay',
+    present: 'Present',
+    not_voting: 'Not voting',
+  };
+  return labels[position] ?? position;
+}
+
+/** `bundled_reason`'s two documented codes, in plain language (datamodel.md). */
+function bundledReasonLabel(reason: string | null): string {
+  if (reason === 'omnibus_marker') return 'The measure itself was titled as an omnibus bill.';
+  if (reason === 'measure_count_exceeds_threshold') {
+    return 'This one vote disposed of several separate measures at once.';
+  }
+  return 'Marked as bundled.';
 }
 
 /**
