@@ -81,22 +81,20 @@ export function CandidateDetailPage({
   candidacyId: string;
   profileId: string;
 }) {
-  const headingId = useId();
-
   const query = useQuery({
     queryKey: ['alignment', candidacyId, profileId],
     queryFn: ({ signal }) => fetchAlignment({ candidacyId, profileId }, signal),
   });
 
   return (
-    // `aria-label` alone, not alongside `aria-labelledby`: when both are
-    // present on one element, `aria-labelledby` wins per the ARIA spec, which
-    // would silently make this region's accessible name the heading text
-    // below rather than "Candidate detail" — exactly the kind of mismatch
-    // between what a test (and a screen reader) is told to look for and what
-    // is actually there that BDD exists to catch.
+    // `aria-label` alone, not `aria-labelledby`: when both are present on one
+    // element, `aria-labelledby` wins per the ARIA spec, which would silently
+    // make this region's accessible name the heading text below rather than
+    // "Candidate detail" — exactly the kind of mismatch between what a test
+    // (and a screen reader) is told to look for and what is actually there
+    // that BDD exists to catch.
     <section aria-label="Candidate detail">
-      <h2 id={headingId}>How this candidate matches your priorities</h2>
+      <h2>How this candidate matches your priorities</h2>
 
       {query.isPending ? <p>Loading this candidate&apos;s score breakdown…</p> : null}
       {query.isError ? <p role="alert">{messageFrom(query.error)}</p> : null}
