@@ -380,7 +380,7 @@ def member_vote_field_matches_roll_call(
 
 @then(parsers.parse('exactly 1 row carries the member_vote id "{member_vote_id}"'))
 def exactly_one_member_vote_row(zerodb: ZeroDBClient, member_vote_id: str) -> None:
-    rows = zerodb.list_rows(MemberVote.table_name, limit=1000).rows
+    rows = zerodb.query_rows(MemberVote.table_name, limit=1000).rows
     matching = [row for row in rows if row.row_data.get("id") == member_vote_id]
     assert len(matching) == 1, f"expected 1 row for {member_vote_id}, found {len(matching)}"
 

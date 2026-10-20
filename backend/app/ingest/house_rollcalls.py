@@ -107,8 +107,11 @@ Transform, field by field
     `legislators.py` took leaving `photo_url` null for a source gap.
   * **amendment_ref** -- `"{amendmentType} {amendmentNumber}"` when the vote
     is on an amendment (e.g. `"HAMDT 6"`), else None.
-  * **tally** -- summed from `votePartyTotal.item[]` across every party; see
-    `_tally_from`. A vote with no `votePartyTotal` at all (the documentation
+  * **tally** -- summed from `votePartyTotal` across every party; see
+    `_tally_from` and `_party_total_items`. The documentation says this
+    field is `{"item": [...]}`, but live Congress.gov v3 responses return
+    it as a bare list instead (confirmed against real rolls); both shapes
+    are accepted. A vote with no `votePartyTotal` at all (the documentation
     does not guarantee it is always present) gets an all-zero `Tally()`
     rather than failing the whole record -- the same "a gap is a zero, not a
     crash" posture `legislators.py` takes for a missing `end` date.
@@ -124,7 +127,11 @@ Transform, field by field
     this loader fetched, which is what datamodel.md's `source_url` and the
     integrity rule ("every row with a source_url has a matching
     provenance_log entry") are about -- not `legislationUrl`, which points at
-    a different resource (the bill, not the vote).
+    a different resource (the bill, not the vote). Falls back to
+    `sourceDataURL` (the clerk.house.gov XML) when `url` itself is absent --
+    confirmed live on real roll 240 of 119-1 (story 5.2) -- rather than
+    skipping an otherwise-complete record for a field this loader can
+    recover another way.
   * **content_hash** -- sha256 of the raw fetched item JSON (object, not
     string -- see `content_hash_for`), so a byte-identical re-fetch hashes
     identically and a changed vote (a correction, per datamodel.md's own
@@ -238,7 +245,8 @@ from typing import Any
 import httpx
 
 from app.repositories import ProvenanceContext, Repository
-from app.repositories.models import RollCall, Tally
+from app.repositories.errors import MissingReferenceError
+from app.repositories.models import MemberVote, RollCall, Tally
 from app.repositories.provenance import content_hash_for, write_provenance
 from app.scoring.positions import ROLLCALL_INGESTED_TOPIC, emit_rollcall_ingested
 from app.zerodb.client import ZeroDBClient
@@ -350,6 +358,17 @@ class LoadReport:
     #: the upsert restated. That difference is the "exactly once per roll
     #: call" criterion, measured.
     events_emitted: list[str] = field(default_factory=list)
+    #: `member_votes` row ids written this run (story 5.2). Populated only
+    #: when `HouseRollCallLoader.load` is called with
+    #: `member_vote_rows_by_roll_call`; empty for a 5.1-only roll-call load.
+    member_votes_written: list[str] = field(default_factory=list)
+    #: `member_votes` rows this run could not write because their
+    #: `person_id` had no matching `people` row (story 5.2's "a member whose
+    #: bioguide has no people row is skipped" scenario) -- the repository's
+    #: own reference check (datamodel.md rule 5), surfaced here rather than
+    #: left to abort the whole roll call's batch. Each entry is the row dict
+    #: that was rejected.
+    member_votes_skipped: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def row_count(self) -> int:
@@ -850,8 +869,19 @@ class HouseRollCallLoader:
                 on_write=lambda entry: self._newly_recorded.append(str(entry.id)),
             ),
         )
+        # `member_votes` has no `source_url` of its own (datamodel.md: a
+        # denormalized copy of the roll call, not an independently-sourced
+        # record -- see house_member_votes.py's module docstring), so this
+        # repository is built with no `ProvenanceContext` at all rather than
+        # one that would write a provenance entry nothing documents.
+        self._member_votes: Repository[MemberVote] = Repository(client=client, model=MemberVote)
 
-    def load(self, rows: Sequence[dict[str, Any]]) -> LoadReport:
+    def load(
+        self,
+        rows: Sequence[dict[str, Any]],
+        *,
+        member_vote_rows_by_roll_call: dict[str, Sequence[dict[str, Any]]] | None = None,
+    ) -> LoadReport:
         """Upsert every roll call; the repository records its provenance.
 
         For each row:
@@ -865,6 +895,26 @@ class HouseRollCallLoader:
              changed writes a second, distinct one. Same behaviour story 5.1
              implemented by hand, now a property of the write rather than a
              step this loader has to remember.
+          3. (story 5.2) if `member_vote_rows_by_roll_call` has an entry for
+             this row's id, upsert those `member_votes` rows one at a time
+             (NOT `Repository.upsert_many`: that primitive is documented as
+             fail-fast on the first `MissingReferenceError`, aborting every
+             later row in the batch, which is the wrong failure mode here --
+             "a member whose bioguide has no people row is skipped" is this
+             story's own acceptance criterion, and every OTHER member's
+             position on the same roll call must still be written). A row
+             whose `person_id` has no matching `people` row is caught and
+             recorded in `LoadReport.member_votes_skipped` rather than
+             aborting the rest.
+
+             This happens on EVERY run, not only the first: re-ingesting a
+             roll call re-stamps all of its member rows with the row's
+             current denormalized fields, which is what repairs drift without
+             waiting for the nightly job (see the module docstring on
+             `house_member_votes.py`). Rows for a roll call not present in the
+             dict are left untouched -- a caller ingesting roll calls without
+             fetching their member positions (e.g. a backfill pass split
+             across two runs) does not need an empty list for every id.
 
         `fetched_at` is stamped by the `ProvenanceContext`'s clock at write
         time -- when THIS loader fetched the data, which is distinct from
@@ -872,6 +922,7 @@ class HouseRollCallLoader:
         row's own fields.
         """
         report = LoadReport()
+        member_vote_rows_by_roll_call = member_vote_rows_by_roll_call or {}
         for row in rows:
             self._pace()
             self._newly_recorded.clear()
@@ -905,6 +956,29 @@ class HouseRollCallLoader:
                 report.events_emitted.append(stored.id)
 
             logger.info("house_rollcalls: wrote %s", stored.id)
+
+            member_rows = member_vote_rows_by_roll_call.get(stored.id)
+            if member_rows:
+                written_count = 0
+                for member_row in member_rows:
+                    try:
+                        stored_vote = self._member_votes.upsert(member_row)
+                    except MissingReferenceError as exc:
+                        report.member_votes_skipped.append(member_row)
+                        logger.warning(
+                            "house_rollcalls: skipping member_vote for roll call %s: %s",
+                            stored.id,
+                            exc,
+                        )
+                        continue
+                    assert stored_vote.id is not None  # noqa: S101 - upsert guarantees it
+                    report.member_votes_written.append(stored_vote.id)
+                    written_count += 1
+                logger.info(
+                    "house_rollcalls: wrote %d member_votes for %s",
+                    written_count,
+                    stored.id,
+                )
         return report
 
     def _emit_ingested(self, stored: RollCall) -> bool:
