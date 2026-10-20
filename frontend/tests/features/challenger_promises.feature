@@ -15,6 +15,15 @@ Feature: Challenger promises view (story 9.6)
   # `/v1/candidates/{id}/promises` is stubbed at the network boundary, same
   # posture as `candidate_detail.feature`: this feature proves the browser
   # renders what it gets back, not the grouping logic itself.
+  #
+  # "Linked" (backlog.md 9.6's own word) is rendered as a plain, surfaced
+  # notice naming the body and dates -- not a clickable hyperlink. There is
+  # no separate view of "what this person did in their prior office" for it
+  # to point at yet (that would be the vote-based record, which only exists
+  # for a sitting incumbent), so an `<a>` here would be a link to nowhere
+  # real -- the same "never a fabricated link" rule
+  # `CandidateDetailPage.tsx`'s own `CitationLink` already holds for a
+  # citation with no bill page.
 
   Background:
     Given a voter opens the Informed app with a challenger who has promises
@@ -34,15 +43,15 @@ Feature: Challenger promises view (story 9.6)
     When they open that challenger's promises view
     Then that promise is labeled not testable
 
-  Scenario: A prior office is linked when the challenger has one
+  Scenario: A prior office is surfaced when the challenger has one
     Given that challenger previously served in another office
     When they open that challenger's promises view
-    Then the view shows a link to the challenger's prior office
+    Then the view names the challenger's prior office
 
   Scenario: No prior office is shown when the challenger has never held one
     Given that challenger has never held elected office
     When they open that challenger's promises view
-    Then the view shows no prior-office link
+    Then the view names no prior office
 
   Scenario: A challenger with no promises yet shows an honest empty state
     Given a voter opens the Informed app with a challenger who has no promises yet
