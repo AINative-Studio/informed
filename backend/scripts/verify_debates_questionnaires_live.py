@@ -130,7 +130,7 @@ from app.repositories.models import (  # noqa: E402
     PromiseSource,
 )
 from app.zerodb import ZeroDBClient  # noqa: E402
-from app.zerodb.errors import ZeroDBError  # noqa: E402
+from app.zerodb.errors import ZeroDBError, ZeroDBNotFoundError  # noqa: E402
 from app.zerodb.settings import ZeroDBSettings  # noqa: E402
 from app.zerodb.testing import FakeZeroDBTransport  # noqa: E402
 from app.zerodb.transport import HttpxZeroDBTransport  # noqa: E402
@@ -604,12 +604,14 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0915 - a verification narrative
     if args.cleanup:
         logger.info("")
         logger.info("=== cleanup ===")
-        # `ZeroDBClient` exposes upload_file / download_file / get_file and
-        # NO delete_file (checked, not assumed), so the stored objects cannot
-        # be removed from here. Said out loud rather than quietly skipped:
-        # "cleanup" that silently leaves files behind is the kind of claim
-        # this project's verification scripts exist to stop making.
-        orphaned_files = [
+        # `ZeroDBClient.delete_file` now exists, so --cleanup removes the
+        # stored objects for real. It did not when this script was written,
+        # and the note here used to say so out loud rather than quietly
+        # skipping them -- "cleanup" that silently leaves files behind is the
+        # kind of claim this project's verification scripts exist to stop
+        # making. What replaces that note is not a quieter skip but a real
+        # delete, re-checked below against the content route.
+        stored_files = [
             file_id
             for _, report in archived
             for file_id in (report.document_file_id, report.text_file_id)
@@ -638,14 +640,28 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0915 - a verification narrative
             "NOTE: provenance_log is append-only by design (datamodel.md), so this "
             "run's provenance entries are deliberately LEFT in place."
         )
-        if orphaned_files:
-            logger.warning(
-                "NOTE: %d stored file(s) could NOT be deleted -- ZeroDBClient has no "
-                "delete_file method, so these objects remain in the project with no "
-                "promise_sources row pointing at them: %s",
-                len(orphaned_files),
-                ", ".join(orphaned_files),
-            )
+        # Files last: their `promise_sources` rows are gone by now, so a failure
+        # here leaves a true orphan and must be reported as a failure, not a
+        # note. Each delete is confirmed against the CONTENT route rather than
+        # the metadata row -- story 9.1's lesson is that the two can disagree,
+        # so only an unreadable download proves the bytes actually left.
+        for file_id in dict.fromkeys(stored_files):
+            try:
+                client.delete_file(file_id=file_id)
+            except ZeroDBNotFoundError:
+                logger.info("stored file %s was already gone", file_id)
+                continue
+            except ZeroDBError as exc:
+                failures += 1
+                logger.error("FAIL  could not delete stored file %s: %s", file_id, exc)
+                continue
+            try:
+                client.download_file(file_id=file_id)
+            except ZeroDBNotFoundError:
+                logger.info("deleted stored file %s (confirmed unreadable)", file_id)
+            else:
+                failures += 1
+                logger.error("FAIL  stored file %s still downloadable after delete", file_id)
     else:
         logger.info("")
         logger.info(

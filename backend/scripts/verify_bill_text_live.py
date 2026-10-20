@@ -41,15 +41,13 @@ re-checked and reported. Specifically:
     these bills ARE real public record, but running this verification
     repeatedly must not accumulate duplicate rows against the shared live
     project.
-  * **the archived FILES cannot be deleted by this script, and this is
-    reported rather than glossed.** `ZeroDBClient` has no `delete_file` --
-    datamodel.md's own "Residual data debt" note records that the deletion
-    plumbing (`list_files`/`delete_file`) does not exist yet, which is why
-    story 9.1's three unretrievable archives are still there. So the files
-    this run uploads REMAIN in the live project's object store, orphaned once
-    their `bills` rows are deleted. That is a known, named gap, and the final
-    report prints each orphaned file id so a human can retire them when the
-    plumbing lands.
+  * **the archived FILES are deleted too, and the deletion is confirmed.**
+    This script used to leak every file it uploaded -- including H.R. 1's
+    2.8 MB public-law text, on every single run -- because `ZeroDBClient` had
+    no `delete_file`. It has one now, so each file this run uploads is deleted
+    through it and then re-checked: `download_file` on the deleted id must
+    answer `ZeroDBNotFoundError`, which is what proves the object actually
+    left the store rather than merely losing the row that pointed at it.
 
 Run it with the live credentials sourced into the shell -- never passed on the
 command line, never printed:
@@ -94,7 +92,7 @@ from app.repositories import ProvenanceContext, Repository  # noqa: E402
 from app.repositories.models import Bill  # noqa: E402
 from app.repositories.provenance import PROVENANCE_TABLE, provenance_id  # noqa: E402
 from app.zerodb import ZeroDBClient  # noqa: E402
-from app.zerodb.errors import ZeroDBError  # noqa: E402
+from app.zerodb.errors import ZeroDBError, ZeroDBNotFoundError  # noqa: E402
 from app.zerodb.settings import ZeroDBSettings  # noqa: E402
 from app.zerodb.transport import HttpxZeroDBTransport, ZeroDBResponse  # noqa: E402
 
@@ -171,7 +169,7 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0915 - a linear script of checks
     failures: list[str] = []
     written_bill_ids: list[str] = []
     written_provenance_ids: list[str] = []
-    orphaned_file_ids: list[str] = []
+    uploaded_file_ids: list[str] = []
 
     def check(label: str, condition: bool, detail: str = "") -> None:
         if condition:
@@ -261,7 +259,7 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0915 - a linear script of checks
         loader = BillTextLoader(client, pace=lambda: None, api_key=api_key)
         small_report = loader.archive(bill_id=small_bill_id)
         if small_report.text_file_id:
-            orphaned_file_ids.append(small_report.text_file_id)
+            uploaded_file_ids.append(small_report.text_file_id)
         logger.info(
             "archived %s: file=%s version=%r format=%r %d bytes sha256=%s",
             small_bill_id,
@@ -392,7 +390,7 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0915 - a linear script of checks
         logger.info("seeded %s from the live API", large_bill_id)
         large_report = loader.archive(bill_id=large_bill_id)
         if large_report.text_file_id:
-            orphaned_file_ids.append(large_report.text_file_id)
+            uploaded_file_ids.append(large_report.text_file_id)
         logger.info(
             "archived %s: file=%s version=%r format=%r %d bytes sha256=%s",
             large_bill_id,
@@ -463,8 +461,8 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0915 - a linear script of checks
         broken_row["text_file_id"] = "00000000-0000-0000-0000-000000000000"
         bills.upsert(broken_row)
         repaired = loader.archive(bill_id=small_bill_id)
-        if repaired.text_file_id and repaired.text_file_id not in orphaned_file_ids:
-            orphaned_file_ids.append(repaired.text_file_id)
+        if repaired.text_file_id and repaired.text_file_id not in uploaded_file_ids:
+            uploaded_file_ids.append(repaired.text_file_id)
         check(
             "a text_file_id with no readable file behind it is repaired by "
             "re-uploading, not trusted",
@@ -503,12 +501,25 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0915 - a linear script of checks
         logger.error("FAIL  live call failed: %s", exc)
 
     finally:
-        # ---- cleanup: rows yes, files no (and said plainly) ---------------
-        logger.info("cleaning up this run's own rows")
+        # ---- cleanup: rows AND files, each re-checked ---------------------
+        logger.info("cleaning up this run's own rows and files")
         for bill_row_id in dict.fromkeys(written_bill_ids):
             client.delete_row(Bill.table_name, bill_row_id)
         for prov_id in dict.fromkeys(written_provenance_ids):
             client.delete_row(PROVENANCE_TABLE, prov_id)
+
+        # The files this run uploaded. Before `ZeroDBClient.delete_file`
+        # existed this script leaked every one of them -- H.R. 1's 2.8 MB
+        # public-law text included -- on each run.
+        deleted_file_ids: list[str] = []
+        for file_id in dict.fromkeys(uploaded_file_ids):
+            try:
+                client.delete_file(file_id=file_id)
+            except ZeroDBNotFoundError:
+                # Already gone: an earlier repair step may have replaced it.
+                deleted_file_ids.append(file_id)
+            else:
+                deleted_file_ids.append(file_id)
 
         cleanup_failures: list[str] = []
         for bill_row_id in dict.fromkeys(written_bill_ids):
@@ -517,28 +528,29 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0915 - a linear script of checks
         for prov_id in dict.fromkeys(written_provenance_ids):
             if live_row_count(client, PROVENANCE_TABLE, prov_id):
                 cleanup_failures.append(f"provenance_log {prov_id} still present")
+        # A deleted file must be unreadable. Checking the CONTENT route, not
+        # just the metadata row, is the point: story 9.1's whole lesson is that
+        # a file row and the bytes behind it can disagree, so only a failed
+        # download proves the object itself is gone.
+        for file_id in deleted_file_ids:
+            try:
+                client.download_file(file_id=file_id)
+            except ZeroDBNotFoundError:
+                pass
+            else:
+                cleanup_failures.append(f"file {file_id} still downloadable after delete")
 
         if cleanup_failures:
             failures.extend(cleanup_failures)
             logger.error("FAIL  cleanup incomplete: %s", cleanup_failures)
         else:
             logger.info(
-                "PASS  cleanup confirmed: %d bills and %d provenance_log rows deleted",
+                "PASS  cleanup confirmed: %d bills, %d provenance_log rows and "
+                "%d archived file(s) deleted, each re-checked",
                 len(set(written_bill_ids)),
                 len(set(written_provenance_ids)),
+                len(deleted_file_ids),
             )
-
-        if orphaned_file_ids:
-            logger.warning(
-                "NOT CLEANED UP: %d archived file(s) remain in the live project's "
-                "object store, because ZeroDBClient has no delete_file "
-                "(datamodel.md's 'Residual data debt' note). Their bills rows are "
-                "gone, so these are orphans a human should retire when the "
-                "deletion plumbing lands:",
-                len(orphaned_file_ids),
-            )
-            for file_id in orphaned_file_ids:
-                logger.warning("  orphaned file: %s", file_id)
 
         recording.close()
 

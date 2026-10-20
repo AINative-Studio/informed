@@ -528,6 +528,89 @@ def test_generate_presigned_url_defaults_to_a_short_lived_download(
     assert 0 < call.json["expiration"] <= 3600
 
 
+def test_delete_file_uses_the_route_that_reports_what_it_removed(
+    client: ZeroDBClient, fake: FakeZeroDBTransport
+) -> None:
+    """`/files/{id}`, not `/database/files/{id}` — see `ZeroDBClient.delete_file`.
+
+    Both live routes remove the object (measured 2026-10-20). This one is
+    chosen because it is the only one that *names* the storage question in its
+    response and in its `delete_from_storage` parameter, so the dangerous
+    half-delete is visible and refusable here rather than silently reachable.
+    """
+    uploaded = client.upload_file(file_key="archive/scratch.html", content=b"<html></html>")
+    client.delete_file(file_id=uploaded.file_id)
+
+    call = fake.calls[-1]
+    assert call.method == "DELETE"
+    assert call.path == f"/projects/proj-test/files/{uploaded.file_id}"
+    # `delete_from_storage=false` keeps the bytes behind a deleted metadata row,
+    # which is an unreachable orphan forever. It must never be sent.
+    assert not call.params or "delete_from_storage" not in call.params
+
+
+def test_delete_file_removes_the_metadata_and_the_stored_bytes(
+    client: ZeroDBClient,
+) -> None:
+    """A deleted archive must be gone both ways round, not merely unlisted."""
+    uploaded = client.upload_file(file_key="archive/scratch.html", content=b"<html>bye</html>")
+    assert client.download_file(file_id=uploaded.file_id) == b"<html>bye</html>"
+
+    client.delete_file(file_id=uploaded.file_id)
+
+    with pytest.raises(ZeroDBNotFoundError):
+        client.get_file(file_id=uploaded.file_id)
+    with pytest.raises(ZeroDBNotFoundError):
+        client.download_file(file_id=uploaded.file_id)
+
+
+def test_deleting_a_file_twice_reports_it_as_already_gone(client: ZeroDBClient) -> None:
+    """Live, a second delete answers a clean 404 — not the wrapped 500
+    `delete_memory` has to reinterpret. A cleanup path that already removed a
+    file must be able to treat that as success.
+    """
+    uploaded = client.upload_file(file_key="archive/scratch.html", content=b"x")
+    client.delete_file(file_id=uploaded.file_id)
+
+    with pytest.raises(ZeroDBNotFoundError):
+        client.delete_file(file_id=uploaded.file_id)
+
+
+def test_delete_file_rejects_an_empty_id_before_spending_a_request(
+    client: ZeroDBClient, fake: FakeZeroDBTransport
+) -> None:
+    """An empty id would address the collection route and delete nothing."""
+    before = len(fake.calls)
+    with pytest.raises(ZeroDBValidationError):
+        client.delete_file(file_id="")
+    assert len(fake.calls) == before
+
+
+def test_delete_file_refuses_a_file_whose_bytes_were_never_stored(
+    client: ZeroDBClient, fake: FakeZeroDBTransport
+) -> None:
+    """A metadata-only row is the one case where deletion loses evidence.
+
+    Live, deleting such a row succeeds and leaves any object at its key
+    untouched and unreachable. Story 5.4's unmendable `promise_sources`
+    citations are exactly these rows, and datamodel.md records that retiring
+    them is a human decision. So the ordinary path refuses, and a caller that
+    genuinely means it passes `allow_missing_content=True`.
+    """
+    metadata_only_id = "22222222-2222-2222-2222-222222222222"
+    fake.files[metadata_only_id] = {
+        "file_id": metadata_only_id,
+        "file_key": "archive/ghost.html",
+    }
+
+    with pytest.raises(ZeroDBValidationError):
+        client.delete_file(file_id=metadata_only_id)
+    assert metadata_only_id in fake.files, "the row must survive a refused delete"
+
+    client.delete_file(file_id=metadata_only_id, allow_missing_content=True)
+    assert metadata_only_id not in fake.files
+
+
 # --- events ---------------------------------------------------------------
 
 
