@@ -331,9 +331,7 @@ def transform_member_votes_for(
         except _SkipMemberVote as exc:
             bioguide = entry.get("bioguideID") if isinstance(entry, dict) else None
             skipped.append(
-                SkippedMemberVote(
-                    bioguide=str(bioguide) if bioguide else None, reason=str(exc)
-                )
+                SkippedMemberVote(bioguide=str(bioguide) if bioguide else None, reason=str(exc))
             )
             logger.warning("skipping member position %r: %s", bioguide, exc)
     return rows, skipped

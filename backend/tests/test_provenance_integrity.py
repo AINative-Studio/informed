@@ -74,9 +74,7 @@ SAMPLE_ROWS: dict[str, dict[str, Any]] = {
         "introduced_on": "2025-05-15",
         "subjects": ["Government Operations and Politics", "Congressional oversight"],
         "policy_area": "Government Operations and Politics",
-        "sponsors": [
-            {"person_id": "person:O000177", "role": "sponsor", "joined_on": "2025-05-15"}
-        ],
+        "sponsors": [{"person_id": "person:O000177", "role": "sponsor", "joined_on": "2025-05-15"}],
         "source_url": "https://api.congress.gov/v3/bill/119/hr/3424?format=json",
         "content_hash": "b" * 64,
     },

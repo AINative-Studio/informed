@@ -165,8 +165,7 @@ def _ingest(
 
 @when(
     parsers.parse(
-        'I ingest the sample House roll call "{rollcall_key}" '
-        'with member positions "{members_key}"'
+        'I ingest the sample House roll call "{rollcall_key}" with member positions "{members_key}"'
     )
 )
 def ingest_with_members(

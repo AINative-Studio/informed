@@ -467,9 +467,7 @@ def _source_url(*, congress: int, bill_type: str, number: Any) -> str:
     bills). Building it from the same congress/type/number this loader
     fetched by is exact and needs no source field that does not exist.
     """
-    return (
-        f"{CONGRESS_GOV_BASE_URL}/bill/{congress}/{bill_type.lower()}/{number}?format=json"
-    )
+    return f"{CONGRESS_GOV_BASE_URL}/bill/{congress}/{bill_type.lower()}/{number}?format=json"
 
 
 class HouseBillLoader:
@@ -552,9 +550,7 @@ class HouseBillLoader:
         return resolved, skipped
 
 
-def resolve_roll_call_bill_id(
-    envelope: dict[str, Any], *, client: ZeroDBClient
-) -> str | None:
+def resolve_roll_call_bill_id(envelope: dict[str, Any], *, client: ZeroDBClient) -> str | None:
     """The verified `bills` id for a roll call's own legislation, or None.
 
     Reads `houseRollCallVote.legislationType`/`legislationNumber`/`congress`

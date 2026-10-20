@@ -245,8 +245,7 @@ def main() -> int:  # noqa: C901 - a linear script of checks reads better as one
             "member_votes written count matches the resolvable positions "
             "(len(member_rows) minus any with no people row)",
             len(loaded_member_vote_ids) == len(member_rows) - len(unresolved),
-            f"wrote {len(loaded_member_vote_ids)}, expected "
-            f"{len(member_rows) - len(unresolved)}",
+            f"wrote {len(loaded_member_vote_ids)}, expected {len(member_rows) - len(unresolved)}",
         )
         check(
             "no member_vote write was itself skipped by the reference check "
@@ -334,9 +333,7 @@ def main() -> int:  # noqa: C901 - a linear script of checks reads better as one
 
         check(
             "H.R. 3424 has cosponsors (the ordinary case)",
-            any(
-                r["id"] == "us-house:119:hr-3424" and len(r["sponsors"]) > 1 for r in bill_rows
-            ),
+            any(r["id"] == "us-house:119:hr-3424" and len(r["sponsors"]) > 1 for r in bill_rows),
         )
         check(
             "H.R. 3424 has a CRS policy_area",
@@ -453,9 +450,7 @@ def main() -> int:  # noqa: C901 - a linear script of checks reads better as one
             client.delete_row(Person.table_name, person_id)
 
         cleanup_failures: list[str] = []
-        if loaded_roll_call_id and live_row_count(
-            client, RollCall.table_name, loaded_roll_call_id
-        ):
+        if loaded_roll_call_id and live_row_count(client, RollCall.table_name, loaded_roll_call_id):
             cleanup_failures.append(f"roll call {loaded_roll_call_id} still present")
         for member_vote_id in loaded_member_vote_ids:
             if live_row_count(client, MemberVote.table_name, member_vote_id):

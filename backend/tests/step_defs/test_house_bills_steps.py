@@ -188,9 +188,7 @@ def source_adds_cosponsor(
         'I ingest the live-shaped House roll call "{rollcall_key}" linked to ingested bills'
     )
 )
-def ingest_rollcall_linked(
-    zerodb: ZeroDBClient, result: dict[str, Any], rollcall_key: str
-) -> None:
+def ingest_rollcall_linked(zerodb: ZeroDBClient, result: dict[str, Any], rollcall_key: str) -> None:
     """Story 5.1 left `roll_calls.bill_id` null on purpose: it had no `bills`
     rows to point at, and pointing at an unverified id would have violated the
     reference check. With 5.3's `bills` rows in place, `bill_id_for` resolves
@@ -263,9 +261,7 @@ def bill_has_no_sponsor(zerodb: ZeroDBClient, bill_id: str, person_id: str) -> N
 
 
 @then(parsers.parse('the sponsor "{person_id}" on bill "{bill_id}" has joined_on "{joined_on}"'))
-def sponsor_joined_on(
-    zerodb: ZeroDBClient, person_id: str, bill_id: str, joined_on: str
-) -> None:
+def sponsor_joined_on(zerodb: ZeroDBClient, person_id: str, bill_id: str, joined_on: str) -> None:
     sponsors = [s for s in _bill(zerodb, bill_id).sponsors if s.person_id == person_id]
     assert sponsors, f"{person_id} not a sponsor of {bill_id}"
     assert sponsors[0].joined_on == joined_on
