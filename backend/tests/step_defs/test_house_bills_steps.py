@@ -314,9 +314,44 @@ def bills_listing_cosponsor(zerodb: ZeroDBClient, count: int, person_id: str) ->
 
 @then(parsers.parse('exactly 1 row carries the bill id "{bill_id}"'))
 def exactly_one_bill_row(zerodb: ZeroDBClient, bill_id: str) -> None:
-    rows = zerodb.list_rows(Bill.table_name, limit=1000).rows
+    rows = zerodb.query_rows(Bill.table_name, limit=1000).rows
     matching = [row for row in rows if row.row_data.get("id") == bill_id]
     assert len(matching) == 1, f"expected 1 row for {bill_id}, found {len(matching)}"
+
+
+# --- provenance ----------------------------------------------------------------
+
+
+def _provenance_rows_for(fake: FakeZeroDBTransport, entity_id: str) -> list[dict[str, Any]]:
+    """Mirrors test_house_rollcalls_steps.py's own helper, for the `bills` table."""
+    stored = fake.rows.get("provenance_log", {})
+    return [
+        row["row_data"]
+        for row in stored.values()
+        if row["row_data"].get("entity_table") == "bills"
+        and row["row_data"].get("entity_id") == entity_id
+    ]
+
+
+@then(parsers.parse('a provenance_log entry exists for bills "{entity_id}"'))
+def provenance_entry_exists(
+    fake: FakeZeroDBTransport, entity_id: str, result: dict[str, Any]
+) -> None:
+    rows = _provenance_rows_for(fake, entity_id)
+    assert rows, f"no provenance_log entry for bills {entity_id!r}"
+    result["provenance_row"] = rows[0]
+
+
+@then(parsers.parse('that provenance_log entry has adapter_version "{adapter_version}"'))
+def provenance_entry_adapter_version(result: dict[str, Any], adapter_version: str) -> None:
+    assert result["provenance_row"]["adapter_version"] == adapter_version
+
+
+@then(parsers.parse('exactly {count:d} provenance_log row exists for bills "{entity_id}"'))
+@then(parsers.parse('exactly {count:d} provenance_log rows exist for bills "{entity_id}"'))
+def exact_provenance_row_count(fake: FakeZeroDBTransport, count: int, entity_id: str) -> None:
+    rows = _provenance_rows_for(fake, entity_id)
+    assert len(rows) == count, f"found {len(rows)} provenance_log row(s), expected {count}"
 
 
 @then(parsers.parse('the roll call "{roll_call_id}" has bill_id "{bill_id}"'))

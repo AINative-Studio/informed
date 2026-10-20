@@ -188,10 +188,19 @@ TABLE_SCHEMAS: dict[str, dict[str, str]] = {
         "status": "string",
         "introduced_on": "string",
         "subjects": "array",
+        # The single CRS policy area, kept alongside `subjects` (story 5.3).
+        # datamodel.md's field list names `subjects[]` only; this is the one
+        # term CRS assigns exactly once per bill, and a subject-to-topic
+        # mapping story needs it distinguishable from the flat list.
+        "policy_area": "string",
         "topic_ids": "array",
         "sponsors": "array",
         "text_file_id": "string",
         "source_url": "string",
+        # Story 5.3, same purpose as `roll_calls.content_hash`: a
+        # byte-identical re-fetch hashes identically, so the content-addressed
+        # provenance write records nothing the second time.
+        "content_hash": "string",
     },
     "roll_calls": {
         "id": "string",
