@@ -1,0 +1,265 @@
+{
+ "_comment": [
+  "REAL, LIVE Congress.gov API v3 responses, captured 2026-10-19 with a working",
+  "CONGRESS_GOV_API_KEY (stories 5.2 and 5.3). Unlike",
+  "tests/fixtures/house_rollcalls_sample.json -- hand-built from documentation",
+  "because story 5.1 had no key -- every response below was actually fetched and",
+  "is reproduced with its real field names, real bioguide ids and real voteCast",
+  "values. Only two edits were made, both size trims, both noted inline:",
+  "  * the `results` array of each members response is trimmed to a couple of",
+  "    members per distinct voteCast value (the real responses hold 430-435);",
+  "    `_live_result_count` records the real length.",
+  "  * `subjects.legislativeSubjects` is trimmed to the first 3 (HR 1 really has",
+  "    239); `_live_counts` records the real length.",
+  "",
+  "Why three separate members responses: the live source publishes TWO position",
+  "vocabularies, which story 5.1 could not have known about without a key.",
+  "  * roll 240 (and most recorded votes): Yea / Nay / Not Voting",
+  "  * roll 150 (a Committee of the Whole vote): Aye / No / Not Voting",
+  "  * roll 1 (the Speaker election quorum call): Present / Not Voting",
+  "Confirmed live across rolls 1, 5, 20, 50, 100, 150, 200, 250, 300 and 240 of",
+  "the 119th Congress session 1.",
+  "",
+  "`live_item_119_1_240` is the matching item-level roll call, included because",
+  "the real `votePartyTotal` is a BARE LIST, not the `{\"item\": [...]}` wrapper",
+  "story 5.1's hand-built fixture assumed -- see story 5.2's PR."
+ ],
+ "live_item_119_1_240": {
+  "houseRollCallVote": {
+   "congress": 119,
+   "identifier": 11912025240,
+   "legislationNumber": "3424",
+   "legislationType": "HR",
+   "legislationUrl": "https://www.congress.gov/bill/119/house-bill/3424",
+   "result": "Passed",
+   "rollCallNumber": 240,
+   "sessionNumber": 1,
+   "sourceDataURL": "https://clerk.house.gov/evs/2025/roll240.xml",
+   "startDate": "2025-09-08T18:56:00-04:00",
+   "updateDate": "2025-09-09T18:53:19-04:00",
+   "votePartyTotal": [
+    {
+     "nayTotal": 0,
+     "notVotingTotal": 16,
+     "party": {
+      "name": "Republican",
+      "type": "R"
+     },
+     "presentTotal": 0,
+     "voteParty": "R",
+     "yeaTotal": 202
+    },
+    {
+     "nayTotal": 1,
+     "notVotingTotal": 16,
+     "party": {
+      "name": "Democrat",
+      "type": "D"
+     },
+     "presentTotal": 0,
+     "voteParty": "D",
+     "yeaTotal": 195
+    },
+    {
+     "nayTotal": 0,
+     "notVotingTotal": 0,
+     "party": {
+      "name": "Independent",
+      "type": "I"
+     },
+     "presentTotal": 0,
+     "voteParty": "I",
+     "yeaTotal": 0
+    }
+   ],
+   "voteQuestion": "On Motion to Suspend the Rules and Pass",
+   "voteType": "2/3 Yea-And-Nay"
+  },
+  "request": {
+   "congress": "119",
+   "contentType": "application/json",
+   "format": "json",
+   "session": "1"
+  }
+ },
+ "members_aye_no": {
+  "houseRollCallVoteMemberVotes": {
+   "_live_result_count": 438,
+   "amendmentAuthor": "Pettersen of Colorado Part A Amendment No. 3",
+   "amendmentNumber": "25",
+   "amendmentType": "HAMDT",
+   "congress": 119,
+   "identifier": 11912025150,
+   "legislationNumber": "2483",
+   "legislationType": "HR",
+   "legislationUrl": "https://www.congress.gov/amendment/119/house-amendment/25",
+   "result": "Failed",
+   "results": [
+    {
+     "bioguideID": "A000148",
+     "firstName": "Jake",
+     "lastName": "Auchincloss",
+     "voteCast": "Aye",
+     "voteParty": "D",
+     "voteState": "MA"
+    },
+    {
+     "bioguideID": "A000370",
+     "firstName": "Alma",
+     "lastName": "Adams",
+     "voteCast": "Aye",
+     "voteParty": "D",
+     "voteState": "NC"
+    },
+    {
+     "bioguideID": "A000055",
+     "firstName": "Robert",
+     "lastName": "Aderholt",
+     "voteCast": "No",
+     "voteParty": "R",
+     "voteState": "AL"
+    },
+    {
+     "bioguideID": "A000369",
+     "firstName": "Mark",
+     "lastName": "Amodei",
+     "voteCast": "No",
+     "voteParty": "R",
+     "voteState": "NV"
+    },
+    {
+     "bioguideID": "B001317",
+     "firstName": "Josh",
+     "lastName": "Brecheen",
+     "voteCast": "Not Voting",
+     "voteParty": "R",
+     "voteState": "OK"
+    },
+    {
+     "bioguideID": "G000583",
+     "firstName": "Josh",
+     "lastName": "Gottheimer",
+     "voteCast": "Not Voting",
+     "voteParty": "D",
+     "voteState": "NJ"
+    }
+   ],
+   "rollCallNumber": 150,
+   "sessionNumber": 1,
+   "sourceDataURL": "https://clerk.house.gov/evs/2025/roll150.xml",
+   "startDate": "2025-06-04T16:59:00-04:00",
+   "updateDate": "2025-06-24T08:41:37-04:00",
+   "voteQuestion": "On Agreeing to the Amendment",
+   "voteType": "Recorded Vote"
+  }
+ },
+ "members_present": {
+  "houseRollCallVoteMemberVotes": {
+   "_live_result_count": 435,
+   "congress": 119,
+   "identifier": 119120251,
+   "result": "Passed",
+   "results": [
+    {
+     "bioguideID": "G000578",
+     "firstName": "Matt",
+     "lastName": "Gaetz",
+     "voteCast": "Not Voting",
+     "voteParty": "R",
+     "voteState": "FL"
+    },
+    {
+     "bioguideID": "J000288",
+     "firstName": "Henry",
+     "lastName": "Johnson",
+     "voteCast": "Not Voting",
+     "voteParty": "D",
+     "voteState": "GA"
+    },
+    {
+     "bioguideID": "A000055",
+     "firstName": "Robert",
+     "lastName": "Aderholt",
+     "voteCast": "Present",
+     "voteParty": "R",
+     "voteState": "AL"
+    },
+    {
+     "bioguideID": "A000148",
+     "firstName": "Jake",
+     "lastName": "Auchincloss",
+     "voteCast": "Present",
+     "voteParty": "D",
+     "voteState": "MA"
+    }
+   ],
+   "rollCallNumber": 1,
+   "sessionNumber": 1,
+   "sourceDataURL": "https://clerk.house.gov/evs/2025/roll001.xml",
+   "startDate": "2025-01-03T12:33:00-05:00",
+   "updateDate": "2025-06-24T08:34:22-04:00",
+   "voteQuestion": "Call by States",
+   "voteType": "Quorum"
+  }
+ },
+ "members_yea_nay": {
+  "houseRollCallVoteMemberVotes": {
+   "_live_result_count": 430,
+   "congress": 119,
+   "identifier": 11912025240,
+   "legislationNumber": "3424",
+   "legislationType": "HR",
+   "legislationUrl": "https://www.congress.gov/bill/119/house-bill/3424",
+   "result": "Passed",
+   "results": [
+    {
+     "bioguideID": "B001292",
+     "firstName": "Donald",
+     "lastName": "Beyer",
+     "voteCast": "Nay",
+     "voteParty": "D",
+     "voteState": "VA"
+    },
+    {
+     "bioguideID": "B001260",
+     "firstName": "Vern",
+     "lastName": "Buchanan",
+     "voteCast": "Not Voting",
+     "voteParty": "R",
+     "voteState": "FL"
+    },
+    {
+     "bioguideID": "C001063",
+     "firstName": "Henry",
+     "lastName": "Cuellar",
+     "voteCast": "Not Voting",
+     "voteParty": "D",
+     "voteState": "TX"
+    },
+    {
+     "bioguideID": "A000055",
+     "firstName": "Robert",
+     "lastName": "Aderholt",
+     "voteCast": "Yea",
+     "voteParty": "R",
+     "voteState": "AL"
+    },
+    {
+     "bioguideID": "A000148",
+     "firstName": "Jake",
+     "lastName": "Auchincloss",
+     "voteCast": "Yea",
+     "voteParty": "D",
+     "voteState": "MA"
+    }
+   ],
+   "rollCallNumber": 240,
+   "sessionNumber": 1,
+   "sourceDataURL": "https://clerk.house.gov/evs/2025/roll240.xml",
+   "startDate": "2025-09-08T18:56:00-04:00",
+   "updateDate": "2025-09-09T18:53:19-04:00",
+   "voteQuestion": "On Motion to Suspend the Rules and Pass",
+   "voteType": "2/3 Yea-And-Nay"
+  }
+ }
+}

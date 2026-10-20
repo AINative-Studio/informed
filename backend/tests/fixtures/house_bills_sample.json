@@ -1,0 +1,524 @@
+{
+ "_comment": [
+  "REAL, LIVE Congress.gov API v3 bill responses, captured 2026-10-19 with a",
+  "working CONGRESS_GOV_API_KEY (story 5.3). Each entry holds the three",
+  "responses this loader actually fetches per bill:",
+  "  * `detail`     -- GET /v3/bill/{congress}/{type}/{number}",
+  "                    (carries `sponsors[]` INLINE, plus title, policyArea,",
+  "                     introducedDate, latestAction)",
+  "  * `cosponsors` -- GET .../cosponsors  (a separate call; the detail response",
+  "                    only carries a COUNT and a url)",
+  "  * `subjects`   -- GET .../subjects    (CRS policyArea + legislativeSubjects)",
+  "",
+  "`bill_with_cosponsors` is H.R. 3424 (119th), the SPACE Act of 2025: 1 sponsor,",
+  "2 real cosponsors, a real CRS policy area and 2 real legislative subjects.",
+  "`bill_no_cosponsors` is H.R. 1 (119th), the reconciliation act: 1 sponsor,",
+  "ZERO cosponsors (the detail response omits the `cosponsors` block entirely --",
+  "a real edge case no hand-built fixture would have predicted).",
+  "",
+  "The only edits are size trims, recorded in each entry's `_live_counts`:",
+  "`subjects.legislativeSubjects` is trimmed to the first 3 (H.R. 1 really",
+  "publishes 239).",
+  "",
+  "`bill_original_cosponsor` is the ONE synthetic entry, and is labelled as such:",
+  "neither live bill above happened to have `isOriginalCosponsor: true`, and the",
+  "role distinction is a documented field of the real API, so it is exercised",
+  "here by flipping that one boolean on a copy of the real H.R. 3424 response",
+  "(renumbered to 9999 so it cannot collide with a real bill id)."
+ ],
+ "bill_no_cosponsors": {
+  "_live_counts": {
+   "cosponsors": 0,
+   "legislativeSubjects": 239
+  },
+  "cosponsors": {
+   "cosponsors": [],
+   "pagination": {
+    "count": 0,
+    "countIncludingWithdrawnCosponsors": 0
+   },
+   "request": {
+    "billNumber": "1",
+    "billType": "hr",
+    "billUrl": "https://api.congress.gov/v3/bill/119/hr/1?format=json",
+    "congress": "119",
+    "contentType": "application/json",
+    "format": "json"
+   }
+  },
+  "detail": {
+   "bill": {
+    "actions": {
+     "count": 59,
+     "url": "https://api.congress.gov/v3/bill/119/hr/1/actions?format=json"
+    },
+    "amendments": {
+     "count": 493,
+     "url": "https://api.congress.gov/v3/bill/119/hr/1/amendments?format=json"
+    },
+    "cboCostEstimates": [
+     {
+      "description": "As passed by the House of Representatives on May 22, 2025",
+      "pubDate": "2025-06-04T14:00:00Z",
+      "title": "Estimated Budgetary Effects of H.R. 1, the One Big Beautiful Bill Act",
+      "url": "https://www.cbo.gov/publication/61461"
+     },
+     {
+      "description": "As passed by the House of Representatives on May 22, 2025",
+      "pubDate": "2025-06-17T18:00:00Z",
+      "title": "H.R. 1, One Big Beautiful Bill Act (Dynamic Estimate)",
+      "url": "https://www.cbo.gov/publication/61486"
+     },
+     {
+      "description": "CBO and the staff of the Joint Committee on Taxation have estimated the effects of the amendment relative to the baseline used for budget enforcement for consideration in the Senate.",
+      "pubDate": "2025-06-28T23:32:00Z",
+      "title": "Information About the Budgetary Effects of an Amendment in the Nature of a Substitute to H.R. 1, the One Big Beautiful Bill Act, as posted on the website of the Senate Committee on the Budget on June 27, 2025",
+      "url": "https://www.cbo.gov/publication/61536"
+     },
+     {
+      "description": "As posted on the website of the Senate Committee on the Budget on June 27, 2025",
+      "pubDate": "2025-06-29T03:29:00Z",
+      "title": "Estimated Budgetary Effects of an Amendment in the Nature of a Substitute to H.R. 1, the One Big Beautiful Bill Act, Relative to the Budget Enforcement Baseline for Consideration in the Senate",
+      "url": "https://www.cbo.gov/publication/61533"
+     },
+     {
+      "description": "As posted on the website of the Senate Committee on the Budget on June 27, 2025",
+      "pubDate": "2025-06-29T14:31:00Z",
+      "title": "Estimated Budgetary Effects of an Amendment in the Nature of a Substitute to H.R. 1, the One Big Beautiful Bill Act, Relative to CBO&#039;s January 2025 Baseline",
+      "url": "https://www.cbo.gov/publication/61534"
+     },
+     {
+      "description": "As posted on the website of the Senate Committee on the Budget on June 27, 2025",
+      "pubDate": "2025-06-29T14:43:00Z",
+      "title": "Estimated Budgetary Effects of Title VII, Finance, Within an Amendment in the Nature of a Substitute to H.R. 1",
+      "url": "https://www.cbo.gov/publication/61535"
+     },
+     {
+      "description": "As passed by the Senate on July 1, 2025",
+      "pubDate": "2025-07-02T01:45:00Z",
+      "title": "Information Concerning the Budgetary Effects of H.R. 1, as Passed by the Senate on July 1, 2025",
+      "url": "https://www.cbo.gov/publication/61537"
+     },
+     {
+      "description": "Public Law 119-21 as enacted on July 4, 2025",
+      "pubDate": "2025-07-21T18:15:00Z",
+      "title": "Estimated Budgetary Effects of Public Law 119-21, to Provide for Reconciliation Pursuant to Title II of H. Con. Res. 14, Relative to the Budget Enforcement Baseline for Consideration in the Senate",
+      "url": "https://www.cbo.gov/publication/61569"
+     },
+     {
+      "description": "Public Law 119-21 as enacted on July 4, 2025",
+      "pubDate": "2025-07-21T18:29:00Z",
+      "title": "Estimated Budgetary Effects of Public Law 119-21, to Provide for Reconciliation Pursuant to Title II of H. Con. Res. 14, Relative to CBO\u2019s January 2025 Baseline",
+      "url": "https://www.cbo.gov/publication/61570"
+     }
+    ],
+    "committeeReports": [
+     {
+      "citation": "H. Rept. 119-106,Book 1",
+      "url": "https://api.congress.gov/v3/committee-report/119/HRPT/106?format=json"
+     },
+     {
+      "citation": "H. Rept. 119-106,Book 2",
+      "url": "https://api.congress.gov/v3/committee-report/119/HRPT/106?format=json"
+     }
+    ],
+    "committees": {
+     "count": 1,
+     "url": "https://api.congress.gov/v3/bill/119/hr/1/committees?format=json"
+    },
+    "congress": 119,
+    "introducedDate": "2025-05-20",
+    "latestAction": {
+     "actionDate": "2025-07-04",
+     "text": "Became Public Law No: 119-21."
+    },
+    "laws": [
+     {
+      "number": "119-21",
+      "type": "Public Law"
+     }
+    ],
+    "legislationUrl": "https://www.congress.gov/bill/119th-congress/house-bill/1",
+    "number": "1",
+    "originChamber": "House",
+    "originChamberCode": "H",
+    "policyArea": {
+     "name": "Economics and Public Finance"
+    },
+    "relatedBills": {
+     "count": 39,
+     "url": "https://api.congress.gov/v3/bill/119/hr/1/relatedbills?format=json"
+    },
+    "sponsors": [
+     {
+      "bioguideId": "A000375",
+      "district": 19,
+      "firstName": "Jodey",
+      "fullName": "Rep. Arrington, Jodey C. [R-TX-19]",
+      "isByRequest": "N",
+      "lastName": "Arrington",
+      "middleName": "C.",
+      "party": "R",
+      "state": "TX",
+      "url": "https://api.congress.gov/v3/member/A000375?format=json"
+     }
+    ],
+    "subjects": {
+     "count": 240,
+     "url": "https://api.congress.gov/v3/bill/119/hr/1/subjects?format=json"
+    },
+    "summaries": {
+     "count": 5,
+     "url": "https://api.congress.gov/v3/bill/119/hr/1/summaries?format=json"
+    },
+    "textVersions": {
+     "count": 6,
+     "url": "https://api.congress.gov/v3/bill/119/hr/1/text?format=json"
+    },
+    "title": "An act to provide for reconciliation pursuant to title II of H. Con. Res. 14.",
+    "titles": {
+     "count": 12,
+     "url": "https://api.congress.gov/v3/bill/119/hr/1/titles?format=json"
+    },
+    "type": "HR",
+    "updateDate": "2026-09-19T23:26:15Z",
+    "updateDateIncludingText": "2026-09-19T23:26:15Z"
+   },
+   "request": {
+    "billNumber": "1",
+    "billType": "hr",
+    "congress": "119",
+    "contentType": "application/json",
+    "format": "json"
+   }
+  },
+  "subjects": {
+   "pagination": {
+    "count": 240
+   },
+   "request": {
+    "billNumber": "1",
+    "billType": "hr",
+    "billUrl": "https://api.congress.gov/v3/bill/119/hr/1?format=json",
+    "congress": "119",
+    "contentType": "application/json",
+    "format": "json"
+   },
+   "subjects": {
+    "legislativeSubjects": [
+     {
+      "name": "Abortion",
+      "updateDate": "2025-05-29T18:08:12Z"
+     },
+     {
+      "name": "Accounting and auditing",
+      "updateDate": "2025-05-29T18:10:12Z"
+     },
+     {
+      "name": "Administrative law and regulatory procedures",
+      "updateDate": "2025-05-29T17:05:30Z"
+     }
+    ],
+    "policyArea": {
+     "name": "Economics and Public Finance",
+     "updateDate": "2025-05-21T15:28:51Z"
+    }
+   }
+  }
+ },
+ "bill_original_cosponsor": {
+  "_live_counts": {
+   "cosponsors": 2,
+   "legislativeSubjects": 2
+  },
+  "_synthetic": "H.R. 3424's real response, renumbered 9999 with isOriginalCosponsor flipped true on the first cosponsor. The ONLY non-live entry in this file.",
+  "cosponsors": {
+   "cosponsors": [
+    {
+     "bioguideId": "P000614",
+     "district": 1,
+     "firstName": "Chris",
+     "fullName": "Rep. Pappas, Chris [D-NH-1]",
+     "isOriginalCosponsor": true,
+     "lastName": "Pappas",
+     "party": "D",
+     "sponsorshipDate": "2025-06-05",
+     "state": "NH",
+     "url": "https://api.congress.gov/v3/member/P000614?format=json"
+    }
+   ],
+   "pagination": {
+    "count": 2,
+    "countIncludingWithdrawnCosponsors": 2
+   },
+   "request": {
+    "billNumber": "3424",
+    "billType": "hr",
+    "billUrl": "https://api.congress.gov/v3/bill/119/hr/3424?format=json",
+    "congress": "119",
+    "contentType": "application/json",
+    "format": "json"
+   }
+  },
+  "detail": {
+   "bill": {
+    "actions": {
+     "count": 19,
+     "url": "https://api.congress.gov/v3/bill/119/hr/3424/actions?format=json"
+    },
+    "committeeReports": [
+     {
+      "citation": "H. Rept. 119-238",
+      "url": "https://api.congress.gov/v3/committee-report/119/HRPT/238?format=json"
+     }
+    ],
+    "committees": {
+     "count": 2,
+     "url": "https://api.congress.gov/v3/bill/119/hr/3424/committees?format=json"
+    },
+    "congress": 119,
+    "constitutionalAuthorityStatementText": "<pre>\n[Congressional Record Volume 171, Number 82 (Thursday, May 15, 2025)]\n[House]\nFrom the Congressional Record Online through the Government Publishing Office [<a href=\"https://www.gpo.gov\">www.gpo.gov</a>]\nBy Mr. ONDER:\nH.R. 3424.\nCongress has the power to enact this legislation pursuant\nto the following:\nclause 2 of section 3 of article 4 of the constitution\n[Page H2104]\n</pre>",
+    "cosponsors": {
+     "count": 2,
+     "countIncludingWithdrawnCosponsors": 2,
+     "url": "https://api.congress.gov/v3/bill/119/hr/3424/cosponsors?format=json"
+    },
+    "introducedDate": "2025-05-15",
+    "latestAction": {
+     "actionDate": "2025-09-09",
+     "text": "Received in the Senate and Read twice and referred to the Committee on Environment and Public Works."
+    },
+    "legislationUrl": "https://www.congress.gov/bill/119th-congress/house-bill/3424",
+    "number": "9999",
+    "originChamber": "House",
+    "originChamberCode": "H",
+    "policyArea": {
+     "name": "Government Operations and Politics"
+    },
+    "sponsors": [
+     {
+      "bioguideId": "O000177",
+      "district": 3,
+      "firstName": "Robert",
+      "fullName": "Rep. Onder, Robert F. [R-MO-3]",
+      "isByRequest": "N",
+      "lastName": "Onder",
+      "middleName": "F.",
+      "party": "R",
+      "state": "MO",
+      "url": "https://api.congress.gov/v3/member/O000177?format=json"
+     }
+    ],
+    "subjects": {
+     "count": 3,
+     "url": "https://api.congress.gov/v3/bill/119/hr/3424/subjects?format=json"
+    },
+    "summaries": {
+     "count": 1,
+     "url": "https://api.congress.gov/v3/bill/119/hr/3424/summaries?format=json"
+    },
+    "textVersions": {
+     "count": 4,
+     "url": "https://api.congress.gov/v3/bill/119/hr/3424/text?format=json"
+    },
+    "title": "Synthetic original-cosponsor case (story 5.3)",
+    "titles": {
+     "count": 11,
+     "url": "https://api.congress.gov/v3/bill/119/hr/3424/titles?format=json"
+    },
+    "type": "HR",
+    "updateDate": "2026-09-08T18:12:22Z",
+    "updateDateIncludingText": "2026-09-08T18:12:22Z"
+   },
+   "request": {
+    "billNumber": "3424",
+    "billType": "hr",
+    "congress": "119",
+    "contentType": "application/json",
+    "format": "json"
+   }
+  },
+  "subjects": {
+   "pagination": {
+    "count": 3
+   },
+   "request": {
+    "billNumber": "3424",
+    "billType": "hr",
+    "billUrl": "https://api.congress.gov/v3/bill/119/hr/3424?format=json",
+    "congress": "119",
+    "contentType": "application/json",
+    "format": "json"
+   },
+   "subjects": {
+    "legislativeSubjects": [
+     {
+      "name": "Congressional oversight",
+      "updateDate": "2025-06-23T20:10:33Z"
+     },
+     {
+      "name": "Government buildings, facilities, and property",
+      "updateDate": "2025-06-23T20:10:27Z"
+     }
+    ],
+    "policyArea": {
+     "name": "Government Operations and Politics",
+     "updateDate": "2025-06-23T18:06:07Z"
+    }
+   }
+  }
+ },
+ "bill_with_cosponsors": {
+  "_live_counts": {
+   "cosponsors": 2,
+   "legislativeSubjects": 2
+  },
+  "cosponsors": {
+   "cosponsors": [
+    {
+     "bioguideId": "P000614",
+     "district": 1,
+     "firstName": "Chris",
+     "fullName": "Rep. Pappas, Chris [D-NH-1]",
+     "isOriginalCosponsor": false,
+     "lastName": "Pappas",
+     "party": "D",
+     "sponsorshipDate": "2025-06-05",
+     "state": "NH",
+     "url": "https://api.congress.gov/v3/member/P000614?format=json"
+    },
+    {
+     "bioguideId": "L000599",
+     "district": 17,
+     "firstName": "Michael",
+     "fullName": "Rep. Lawler, Michael [R-NY-17]",
+     "isOriginalCosponsor": false,
+     "lastName": "Lawler",
+     "party": "R",
+     "sponsorshipDate": "2025-09-08",
+     "state": "NY",
+     "url": "https://api.congress.gov/v3/member/L000599?format=json"
+    }
+   ],
+   "pagination": {
+    "count": 2,
+    "countIncludingWithdrawnCosponsors": 2
+   },
+   "request": {
+    "billNumber": "3424",
+    "billType": "hr",
+    "billUrl": "https://api.congress.gov/v3/bill/119/hr/3424?format=json",
+    "congress": "119",
+    "contentType": "application/json",
+    "format": "json"
+   }
+  },
+  "detail": {
+   "bill": {
+    "actions": {
+     "count": 19,
+     "url": "https://api.congress.gov/v3/bill/119/hr/3424/actions?format=json"
+    },
+    "committeeReports": [
+     {
+      "citation": "H. Rept. 119-238",
+      "url": "https://api.congress.gov/v3/committee-report/119/HRPT/238?format=json"
+     }
+    ],
+    "committees": {
+     "count": 2,
+     "url": "https://api.congress.gov/v3/bill/119/hr/3424/committees?format=json"
+    },
+    "congress": 119,
+    "constitutionalAuthorityStatementText": "<pre>\n[Congressional Record Volume 171, Number 82 (Thursday, May 15, 2025)]\n[House]\nFrom the Congressional Record Online through the Government Publishing Office [<a href=\"https://www.gpo.gov\">www.gpo.gov</a>]\nBy Mr. ONDER:\nH.R. 3424.\nCongress has the power to enact this legislation pursuant\nto the following:\nclause 2 of section 3 of article 4 of the constitution\n[Page H2104]\n</pre>",
+    "cosponsors": {
+     "count": 2,
+     "countIncludingWithdrawnCosponsors": 2,
+     "url": "https://api.congress.gov/v3/bill/119/hr/3424/cosponsors?format=json"
+    },
+    "introducedDate": "2025-05-15",
+    "latestAction": {
+     "actionDate": "2025-09-09",
+     "text": "Received in the Senate and Read twice and referred to the Committee on Environment and Public Works."
+    },
+    "legislationUrl": "https://www.congress.gov/bill/119th-congress/house-bill/3424",
+    "number": "3424",
+    "originChamber": "House",
+    "originChamberCode": "H",
+    "policyArea": {
+     "name": "Government Operations and Politics"
+    },
+    "sponsors": [
+     {
+      "bioguideId": "O000177",
+      "district": 3,
+      "firstName": "Robert",
+      "fullName": "Rep. Onder, Robert F. [R-MO-3]",
+      "isByRequest": "N",
+      "lastName": "Onder",
+      "middleName": "F.",
+      "party": "R",
+      "state": "MO",
+      "url": "https://api.congress.gov/v3/member/O000177?format=json"
+     }
+    ],
+    "subjects": {
+     "count": 3,
+     "url": "https://api.congress.gov/v3/bill/119/hr/3424/subjects?format=json"
+    },
+    "summaries": {
+     "count": 1,
+     "url": "https://api.congress.gov/v3/bill/119/hr/3424/summaries?format=json"
+    },
+    "textVersions": {
+     "count": 4,
+     "url": "https://api.congress.gov/v3/bill/119/hr/3424/text?format=json"
+    },
+    "title": "SPACE Act of 2025",
+    "titles": {
+     "count": 11,
+     "url": "https://api.congress.gov/v3/bill/119/hr/3424/titles?format=json"
+    },
+    "type": "HR",
+    "updateDate": "2026-09-08T18:12:22Z",
+    "updateDateIncludingText": "2026-09-08T18:12:22Z"
+   },
+   "request": {
+    "billNumber": "3424",
+    "billType": "hr",
+    "congress": "119",
+    "contentType": "application/json",
+    "format": "json"
+   }
+  },
+  "subjects": {
+   "pagination": {
+    "count": 3
+   },
+   "request": {
+    "billNumber": "3424",
+    "billType": "hr",
+    "billUrl": "https://api.congress.gov/v3/bill/119/hr/3424?format=json",
+    "congress": "119",
+    "contentType": "application/json",
+    "format": "json"
+   },
+   "subjects": {
+    "legislativeSubjects": [
+     {
+      "name": "Congressional oversight",
+      "updateDate": "2025-06-23T20:10:33Z"
+     },
+     {
+      "name": "Government buildings, facilities, and property",
+      "updateDate": "2025-06-23T20:10:27Z"
+     }
+    ],
+    "policyArea": {
+     "name": "Government Operations and Politics",
+     "updateDate": "2025-06-23T18:06:07Z"
+    }
+   }
+  }
+ }
+}
