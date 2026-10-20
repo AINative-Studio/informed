@@ -847,6 +847,30 @@ class RollCall(RowModel):
     bill_id: str | None = None
     amendment_ref: str | None = None
     is_bundled: bool = False
+    #: WHY this roll call is bundled, when it is: an
+    #: `app.ingest.senate_vote_typing.BundledReason` value (`omnibus_marker`
+    #: or `measure_count_exceeds_threshold`), else None.
+    #:
+    #: Not in datamodel.md's `roll_calls` field list, which stops at
+    #: `is_bundled` — added by story 8.4, whose acceptance criterion is
+    #: "bills over a configurable size or with omnibus markers get
+    #: `is_bundled`; **the UI explains it**". A bare boolean cannot be
+    #: explained: the UI would have to re-derive the reason from fields it
+    #: does not read, and a voter asking "why does this vote count for less?"
+    #: would get whatever answer each page happened to compute. Stored as a
+    #: short stable code rather than the prose, so the wording can change
+    #: (or be localized — prd.md's per-jurisdiction taxonomy posture)
+    #: without rewriting rows; the prose lives in
+    #: `senate_vote_typing.BUNDLED_REASON_EXPLANATIONS`.
+    #:
+    #: A plain `str | None` rather than a Literal over `BundledReason`:
+    #: importing an ingest module here would invert this codebase's
+    #: dependency direction (loaders import the models, never the reverse),
+    #: and a row written by a newer adapter version carrying a reason this
+    #: build has never heard of must still read back rather than fail
+    #: validation — `explain_bundled_reason` returns None for an unknown code
+    #: for exactly that reason.
+    bundled_reason: str | None = None
     topic_ids: list[str] = Field(default_factory=list)
     source_url: str | None = None
     content_hash: str | None = None
@@ -867,6 +891,13 @@ class MemberVote(RowModel):
     datamodel.md assigns to CI and the nightly audit, not to this write path:
     checking them here would mean re-reading the roll call's full row on every
     one of those 600k writes.
+
+    Story 8.4 adds `bundled_reason` to that denormalized set, for the same
+    reason the set exists: the screen that shows a voter why a vote counted
+    for less reads `member_votes` by (person, topic) and must not need a
+    second read of `roll_calls` to render the explanation. It is registered
+    in `app.integrity.checks.DENORMALIZED_MEMBER_VOTE_FIELDS` alongside the
+    other five, so the drift check and the repair both cover it.
     """
 
     table_name: ClassVar[str] = "member_votes"
@@ -886,6 +917,10 @@ class MemberVote(RowModel):
     bill_id: str | None = None
     topic_ids: list[str] = Field(default_factory=list)
     is_bundled: bool = False
+    #: Copied from the roll call (story 8.4) — see this class's docstring and
+    #: `RollCall.bundled_reason` for what the value means and why it is a
+    #: bare string.
+    bundled_reason: str | None = None
 
 
 # --- Promises, verdicts and positions ------------------------------------

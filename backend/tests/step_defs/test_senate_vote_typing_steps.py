@@ -29,7 +29,7 @@ from app.ingest.senate_vote_typing import (
 )
 from app.methodology.publish import DEFAULT_VOTE_TYPE_WEIGHTS
 from app.repositories import Repository
-from app.repositories.models import MemberVote, Person, RollCall
+from app.repositories.models import Person, RollCall
 from app.zerodb import ZeroDBClient
 from app.zerodb.testing import FakeZeroDBTransport
 
@@ -332,7 +332,7 @@ def stored_is_bundled(zerodb: ZeroDBClient, result: dict[str, Any]) -> None:
     assert stored.is_bundled is True
 
 
-@then(parsers.parse("the stored roll call's bundled reason is \"{reason}\""))
+@then(parsers.parse('the stored roll call\'s bundled reason is "{reason}"'))
 def stored_bundled_reason(zerodb: ZeroDBClient, result: dict[str, Any], reason: str) -> None:
     repo: Repository[RollCall] = Repository(client=zerodb, model=RollCall)
     stored = repo.get(result["stored_row"]["id"])

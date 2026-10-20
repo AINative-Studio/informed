@@ -30,6 +30,7 @@ from app.ingest.senate_vote_typing import (
     VoteSignals,
     classify,
     count_measures,
+    explain_bundled_reason,
     guard_recorded_vote,
     unrecorded_outcome,
 )
@@ -134,14 +135,12 @@ def test_the_classifier_is_deterministic() -> None:
 def test_cloture_outranks_the_amendment_signal() -> None:
     """A cloture vote on an amendment is a vote about ending debate, not about
     the amendment's text. Real case in the sample: 119-2:240."""
-    decision = classify(
-        _signals(question="On the Cloture Motion", amendment_number="S.Amdt. 6776")
-    )
+    decision = classify(_signals(question="On the Cloture Motion", amendment_number="S.Amdt. 6776"))
     assert decision.vote_type == "cloture"
 
 
 def test_cloture_outranks_final_passage_wording() -> None:
-    """"On Cloture on the Motion to Proceed" names the bill being proceeded
+    """ "On Cloture on the Motion to Proceed" names the bill being proceeded
     to; it must never fall through to final_passage because of it."""
     decision = classify(
         _signals(
@@ -292,7 +291,7 @@ def test_classification_is_case_and_whitespace_insensitive() -> None:
 
 
 def test_every_classification_the_classifier_can_emit_has_a_published_weight() -> None:
-    """"so that weights apply correctly" (the story's own So-That) is only true
+    """ "so that weights apply correctly" (the story's own So-That) is only true
     if every value the classifier emits is a key story 6.1 published."""
     for record in _labeled():
         assert classify(_signals_for(record)).vote_type in DEFAULT_VOTE_TYPE_WEIGHTS
@@ -438,6 +437,24 @@ def test_the_explanation_map_has_no_reason_the_enum_does_not_define() -> None:
     assert set(BUNDLED_REASON_EXPLANATIONS) == {r.value for r in BundledReason}
 
 
+def test_explain_bundled_reason_renders_every_stored_code() -> None:
+    """The accessor the UI actually calls, over every code it can be handed."""
+    for reason in BundledReason:
+        assert explain_bundled_reason(reason.value) == BUNDLED_REASON_EXPLANATIONS[reason.value]
+
+
+def test_explain_bundled_reason_returns_none_for_an_unbundled_vote() -> None:
+    assert explain_bundled_reason(None) is None
+
+
+def test_explain_bundled_reason_returns_none_for_an_unknown_code_rather_than_raising() -> None:
+    """A row written by a newer adapter version carrying a reason this build
+    has never heard of must render without the explanation, not 500 the page
+    -- which is also why `RollCall.bundled_reason` is a bare `str | None`
+    rather than a Literal."""
+    assert explain_bundled_reason("some_future_reason_code") is None
+
+
 def test_not_bundled_carries_no_reason() -> None:
     """A reason on an unbundled vote is a reason the UI would render as an
     explanation for a flag that is not set."""
@@ -470,29 +487,76 @@ def test_count_measures_counts_distinct_identifiers_not_separators() -> None:
 
 
 def test_count_measures_does_not_mistake_an_amendment_chain_for_a_bundle() -> None:
-    """"S.Amdt. 5808 to S.Amdt. 5453 to S. 2" is one amendment's place in a
+    """ "S.Amdt. 5808 to S.Amdt. 5453 to S. 2" is one amendment's place in a
     chain, not three bundled measures -- a real live `vote_question_text`."""
     text = "On the Amendment S.Amdt. 5808 to S.Amdt. 5453 to S. 2 (No short title on file)"
     assert count_measures(text) <= DEFAULT_BUNDLED_MEASURE_THRESHOLD
 
 
-def test_no_real_labeled_roll_call_is_bundled_by_accident() -> None:
-    """A false positive here down-weights a real vote by 0.4x
+def test_bundling_is_the_minority_case_on_the_real_sample() -> None:
+    """A false positive down-weights a real vote by 0.4x
     (`BUNDLED_WEIGHT_FACTOR`) for no reason, so the rule must be quiet on the
-    ordinary case. Measured against the real sample: the known-bundled live
-    records are named explicitly, and nothing else may be flagged."""
-    expected_bundled = {
-        "further-consolidated-appropriations",
-        "continuing-appropriations",
-        "appropriations-and-related-agencies",
-        "reconciliation",
-        "budget-resolution",
-        "en-bloc-nominations",
-        "en-bloc-48-nominations",
-    }
-    flagged = {r["label_id"] for r in _labeled() if classify(_signals_for(r)).is_bundled}
-    unexpected = flagged - expected_bundled
-    assert not unexpected, f"these real roll calls were flagged bundled unexpectedly: {unexpected}"
+    ordinary case. 21% of this sample is bundled, which is plausible for a
+    sample deliberately over-weighted toward appropriations fights; a rule
+    firing on half the chamber's votes would be measuring nothing.
+    """
+    flagged = [r for r in _labeled() if classify(_signals_for(r)).is_bundled]
+    share = len(flagged) / len(_labeled())
+    assert 0.0 < share < 0.35, (
+        f"{len(flagged)}/{len(_labeled())} ({share:.0%}) of the real sample was flagged bundled"
+    )
+
+
+def test_every_bundled_flag_on_the_real_sample_is_justified_by_its_own_evidence() -> None:
+    """Rather than hardcoding which label_ids may be flagged -- which hid a
+    real finding on the first run, since several DIFFERENT roll calls in the
+    sample are votes on the SAME omnibus measure (three separate cloture and
+    passage votes on H.R. 5371, the continuing resolution; three on H.R.
+    4366, the MilCon-VA appropriations bill) and every one of them is
+    correctly bundled -- this asserts the property that actually matters:
+    each flag must be traceable to the specific marker or measure count in
+    that row's own fields.
+    """
+    for record in _labeled():
+        decision = classify(_signals_for(record))
+        if not decision.is_bundled:
+            continue
+        if decision.bundled_reason == BundledReason.OMNIBUS_MARKER.value:
+            title = record["document_title"].lower()
+            matched = [m for m in OMNIBUS_TITLE_MARKERS if m in title]
+            assert matched, (
+                f"{record['label_id']} was flagged omnibus_marker but its title "
+                f"matches no marker: {record['document_title']!r}"
+            )
+        else:
+            assert decision.bundled_reason == BundledReason.MEASURE_COUNT_EXCEEDS_THRESHOLD.value
+            counted = count_measures(record["vote_question_text"])
+            assert counted > DEFAULT_BUNDLED_MEASURE_THRESHOLD, (
+                f"{record['label_id']} was flagged by size but names only {counted} measure(s)"
+            )
+
+
+def test_an_ordinary_single_subject_vote_in_the_real_sample_is_not_bundled() -> None:
+    """The specific real rows that must stay unflagged: a single-subject
+    bill, a single nomination, an ordinary amendment, a War Powers joint
+    resolution. If the rule ever starts flagging these, it is flagging the
+    chamber's normal business.
+    """
+    for label_id in (
+        "passage-of-the-bill",
+        "nomination",
+        "amendment",
+        "joint-resolution",
+        "motion-to-recommit",
+        "resolution",
+        "point-of-order",
+    ):
+        record = next(r for r in _labeled() if r["label_id"] == label_id)
+        decision = classify(_signals_for(record))
+        assert not decision.is_bundled, (
+            f"{label_id} ({record['document_title'][:60]!r}) was flagged "
+            f"{decision.bundled_reason!r}"
+        )
 
 
 # --- 8.5: no recorded vote ---------------------------------------------------

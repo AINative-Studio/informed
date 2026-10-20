@@ -212,6 +212,9 @@ TABLE_SCHEMAS: dict[str, dict[str, str]] = {
         "result": "string",
         "tally": "object",
         "is_bundled": "boolean",
+        # Story 8.4: WHY is_bundled is set, so the UI can explain it. See
+        # `RollCall.bundled_reason` for why it is a code rather than prose.
+        "bundled_reason": "string",
         "topic_ids": "array",
         "source_url": "string",
         "content_hash": "string",
@@ -226,6 +229,8 @@ TABLE_SCHEMAS: dict[str, dict[str, str]] = {
         "bill_id": "string",
         "topic_ids": "array",
         "is_bundled": "boolean",
+        # Story 8.4: denormalized from the roll call, like the five above.
+        "bundled_reason": "string",
     },
     # --- Promises, verdicts and positions -----------------------------------
     "promise_sources": {

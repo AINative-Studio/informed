@@ -38,10 +38,9 @@ Feature: Senate vote typing, bundling and no-recorded-vote handling (stories 8.3
       | cloture-motion-on-a-nomination    | cloture       |
       | cloture-on-the-motion-to-proceed  | cloture       |
 
-    Examples: amendment — the structural signal, even under a generic question
+    Examples: amendment — the structural signal under a question about adopting it
       | label_id                          | vote_type     |
       | amendment                         | amendment     |
-      | motion-on-an-amendment            | amendment     |
 
     Examples: motion to recommit
       | label_id                          | vote_type        |
@@ -61,6 +60,7 @@ Feature: Senate vote typing, bundling and no-recorded-vote handling (stories 8.3
       | motion-for-attendance             | procedural    |
       | motion-to-close-the-doors         | procedural    |
       | motion-to-waive-budgetary-discipline | procedural |
+      | motion-on-an-amendment            | procedural    |
 
     Examples: other — honestly unclassified, never forced into a wrong fit
       | label_id                          | vote_type     |

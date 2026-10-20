@@ -136,12 +136,20 @@ MAX_ROWS_SCANNED = 100_000
 #: from its referenced roll_calls row (the italicised fields in that table's
 #: field list). Shared by the detection check (16.2) and the repair (16.4) so
 #: the two cannot drift from each other about which fields are in scope.
+#: `bundled_reason` is story 8.4's addition and is not in datamodel.md's own
+#: italicised list, for the same reason it is not in the `roll_calls` list
+#: there: 8.4 added the field. It belongs here because it is copied onto
+#: `member_votes` exactly like `is_bundled`, so the same drift that would
+#: leave a member vote claiming "bundled" after its roll call was corrected
+#: would leave it claiming the wrong REASON too -- and a wrong explanation
+#: shown to a voter is worse than none.
 DENORMALIZED_MEMBER_VOTE_FIELDS: tuple[str, ...] = (
     "voted_at",
     "vote_type",
     "bill_id",
     "topic_ids",
     "is_bundled",
+    "bundled_reason",
 )
 
 #: Tables whose rows name an archived file that a citation depends on

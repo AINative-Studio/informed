@@ -95,14 +95,17 @@ Transform, field by field (the `roll_calls` row)
     of storing `voted_at` "verbatim" rather than reformatting a source's
     timestamp (datamodel.md types the field as a bare string, not a parsed
     datetime).
-  * **question** -- `question` verbatim (the short field, not
-    `vote_question_text`, which repeats the document identifier redundantly
-    -- `question` alone is what `_classify_vote_type` reads, and is also the
-    cleaner evidence-citation text).
-  * **vote_type** -- classified by `_classify_vote_type`, below. This is
-    where cloture, a real and common Senate vote type the House generally
-    does not produce, actually gets exercised for the first time in this
-    codebase.
+  * **question** -- `question` verbatim: the short field, which is the
+    cleaner evidence-citation text. 8.1 stored this field and read only this
+    field, calling `vote_question_text` redundant. **Story 8.3 found that
+    judgment half wrong**: `question` is still the right thing to STORE, but
+    105 live roll calls carry the bare `question` "On the Motion" for several
+    different motions and only `vote_question_text` says which, so the
+    classifier now reads both. The stored value is unchanged.
+  * **vote_type** -- classified by `app.ingest.senate_vote_typing` (story
+    8.3), via `classify_vote`/`_signals_from` below. This is where cloture, a
+    real and common Senate vote type the House generally does not produce,
+    actually gets exercised for the first time in this codebase.
   * **result** -- `vote_result` verbatim (e.g. "Cloture on the Motion to
     Proceed Rejected", "Nomination Confirmed", "Bill Passed"). Like House's
     `result`, datamodel.md types this as a bare string with no vocabulary.
@@ -127,10 +130,21 @@ Transform, field by field (the `roll_calls` row)
     (confirmed possible: `<present/>` is a self-closing empty element on a
     vote where nobody voted "present") contributes 0, mirroring
     `house_rollcalls._tally_from`'s "a gap is a zero, not a crash".
-  * **is_bundled** -- always False in this story, same reasoning as House:
-    the LIS feed carries no "this vote covers multiple distinct bills"
-    marker, and 8.4 ("Bundled (omnibus) flag") is the story that adds one,
-    almost certainly from the bill's own size/text rather than this feed.
+  * **is_bundled** / **bundled_reason** -- **story 8.4 replaced 8.1's
+    always-False with a real rule.** 8.1 wrote here that the LIS feed
+    "carries no 'this vote covers multiple distinct bills' marker"; that
+    turned out to be half right. The feed carries no dedicated FIELD, but it
+    carries two usable signals that 8.4 reads: the measure's own
+    `document_title` (whose text names an omnibus by construction -- "further
+    consolidated appropriations", "continuing appropriations", "for
+    reconciliation pursuant to", "en bloc consideration", all captured live),
+    and `vote_question_text`, which on an en-bloc vote lists every measure
+    disposed of (confirmed: 119-1:524 names 48 separate nominations). 8.1's
+    guess that the signal would come from "the bill's own size/text rather
+    than this feed" was wrong only about WHERE: it is the feed's own copy of
+    the title, not a separate bill ingest. See
+    `app.ingest.senate_vote_typing`'s 8.4 section for the rule and the
+    reason codes.
   * **topic_ids** -- always `[]`, same reasoning as House: needs a bill's
     subject terms, which nothing ingests for the Senate yet.
   * **source_url** -- the exact item URL this loader fetched (built from
@@ -144,65 +158,48 @@ Transform, field by field (the `roll_calls` row)
     avoid a hash that silently changes if a future refactor reorders parsed
     fields without the underlying document changing at all).
 
-vote_type classification, and why cloture matters here
-==========================================================
+vote_type classification: where it lives now
+==============================================
 
 datamodel.md: "`vote_type` takes `final_passage`, `amendment`, `cloture`,
 `motion_to_recommit`, `procedural`, or `other`". `VoteType` (repositories/
-models.py) already carries all six values body-agnostically -- nothing in
-the model needed to change for this story, confirming it was built
-body-agnostic as the module docstring there states ("Later stories add their
-own tables' models as they start ingesting them").
+models.py) already carried all six values body-agnostically when 8.1 was
+written -- nothing in the model needed to change for it.
 
-**Cloture is the one value `house_rollcalls._classify_vote_type` documents
-as unreachable from the House source** ("the House has no cloture motion at
-all"). This story is where that enum value stops being theoretical: cloture
-under Senate Rule XXII is common and real, and prd.md's scoring weights it
-differently from a final-passage vote (a cloture vote is a procedural
-gatekeeping step, not a vote on the bill's substance -- the PRD's own
-"procedural vote" scenario this story's acceptance criterion names). Getting
-cloture right is this loader's highest-value classification case, which is
-why it is checked explicitly and FIRST among the substantive categories,
-before `final_passage` -- a vote whose `question` is "On Cloture on the
-Motion to Proceed" must never fall through to `final_passage` just because it
-also contains the bill being proceeded to.
+**Story 8.3 moved the rules out of this module into
+`app.ingest.senate_vote_typing`**, and substantially extended them. The
+reasoning for every rule, the priority order, the live evidence behind each
+phrase, and the measured accuracy against a 75-roll-call labeled sample all
+live in that module's docstring now, so there is one place to read and one
+place to correct. What remains here is `_signals_from` (this source's XML ->
+the classifier's plain strings) and `classify_vote` (the public seam).
 
-Priority order, `_classify_vote_type`:
+Two things worth keeping in this module's own record, because they were
+8.1's judgments and 8.3 confirmed both against live data:
 
-  1. **cloture** -- `question` contains "cloture", regardless of what else it
-     names (motion to proceed, a nomination, the bill itself -- cloture
-     wraps all three in live samples this story fetched: "On Cloture on the
-     Motion to Proceed", "On the Cloture Motion" for a nomination). Checked
-     before `amendment` too: a cloture vote on tabling an amendment is still,
-     substantively, a cloture vote -- ending debate is what it does.
-  2. **amendment** -- `amendment.amendment_number` is present and non-empty,
-     mirroring House's priority given to the structural signal over the
-     question text.
-  3. **final_passage** -- `question` is exactly (case-insensitively) "on
-     passage of the bill", "on passage of the joint resolution", "on the
-     joint resolution", "on the resolution", "on the concurrent resolution",
-     or "on agreeing to the conference report" -- the LIS vocabulary's
-     final-disposition questions, confirmed from live samples and the
-     Senate's own documented `question` value list. Senate nominations ("On
-     the Nomination") are deliberately NOT classified `final_passage`: a
-     nomination vote is not a vote on legislation, and datamodel.md's
-     `vote_type` vocabulary has no dedicated "confirmation" value -- it
-     falls to `other`, the same honest gap `house_rollcalls` documents for
-     an unrecognized House question rather than a forced, wrong fit.
-  4. **motion_to_recommit** -- `question` contains "motion to recommit", for
-     vocabulary completeness with the House loader even though no live
-     sample this story fetched ever produced one (the Senate has a recommit
-     motion in its rules but it is rare in practice; confirmed absent from
-     every roll call in the 118-1 and 119-2 menus this story scanned, 352 +
-     relevant live votes). Documented here as an honestly-untriggered case,
-     the same posture `house_rollcalls` takes for its own unreachable
-     `cloture` branch.
-  5. **procedural** -- `question` contains "motion to table", "motion to
-     reconsider", or "previous question" -- parliamentary-process questions,
-     not a vote on the substance of legislation or a nomination.
-  6. **other** -- everything else, INCLUDING "On the Nomination" (bare, no
-     cloture prefix) and any future question text this loader has never
-     seen. Falling back rather than raising, same posture as House.
+  * **Cloture was 8.1's highest-value case and still is.** It is checked
+    first, ahead of every other rule, because a cloture vote names the
+    measure it is about and so every later rule would also match it. Live
+    counts over congresses 118-119: 529 cloture votes out of 1,606. prd.md's
+    "procedural vote" scenario ("B voted Nay on a cloture motion but Yea on
+    final passage of the same bill / Then the verdict is 'Kept' with a
+    'procedural vote' note") only works if those two votes on the same bill
+    type differently, which is exactly what this ordering guarantees.
+  * **A bare "On the Nomination" stays `other`.** 446 of 1,606 live roll
+    calls, deliberately left unclassified rather than forced into
+    `final_passage` (a nomination is not a vote on legislation) or
+    `procedural` (it is substantive and consequential). datamodel.md's
+    vocabulary has no "confirmation" value; adding one is a data-model and
+    published-methodology change, not a classifier change. Recorded as an
+    open question on 8.3's PR.
+
+8.3 did reverse one of 8.1's orderings: **procedural is now checked BEFORE
+amendment.** 8.1 gave the structural `amendment_number` signal priority over
+the question text; two real live roll calls show that is wrong -- 119-2:17
+("On the Motion to Table", S.Amdt. 4286) and 119-2:159 ("On the Motion",
+"Motion to Waive All Applicable Budgetary Discipline Re: Cassidy Amdt. No.
+5812", S.Amdt. 5812). Neither is a vote on the amendment's substance, and
+8.1's order weighted both at 0.7 as if they were.
 
 Member positions: this story's scope, and why it differs from 5.1's
 ========================================================================
@@ -300,6 +297,13 @@ from xml.etree import ElementTree
 import httpx
 import yaml
 
+from app.ingest.senate_vote_typing import (
+    DEFAULT_BUNDLED_MEASURE_THRESHOLD,
+    VoteSignals,
+    VoteTypeDecision,
+    classify,
+    guard_recorded_vote,
+)
 from app.repositories import ProvenanceContext, Repository
 from app.repositories.models import MemberVote, RollCall, Tally
 from app.repositories.provenance import write_provenance
@@ -348,35 +352,12 @@ EARLIEST_CONGRESS = 118
 #: datamodel.md records for every other live source out of politeness.
 DEFAULT_MIN_INTERVAL_SECONDS = 1.1
 
-#: `question` values (lowercased, exact match) that classify as
-#: `final_passage`. Exact match rather than substring, unlike House's
-#: phrase list: the Senate LIS `question` field is short and close to a
-#: controlled vocabulary already (confirmed from live samples), so an exact
-#: match is both sufficient and less likely to misfire on an unseen
-#: compound question than a substring test would be.
-_FINAL_PASSAGE_QUESTIONS: frozenset[str] = frozenset(
-    {
-        "on passage of the bill",
-        "on passage of the joint resolution",
-        "on the joint resolution",
-        "on the resolution",
-        "on the concurrent resolution",
-        "on agreeing to the conference report",
-    }
-)
-
-#: `question` substrings that classify as `motion_to_recommit`. Substring
-#: (not exact-match), same posture as House's own list, for vocabulary
-#: completeness -- see the module docstring's classification section for why
-#: no live sample this story fetched ever actually produced one.
-_MOTION_TO_RECOMMIT_PHRASES: tuple[str, ...] = ("motion to recommit",)
-
-#: `question` substrings that classify as `procedural`.
-_PROCEDURAL_PHRASES: tuple[str, ...] = (
-    "motion to table",
-    "motion to reconsider",
-    "previous question",
-)
+#: Story 8.3 moved the classification phrase lists
+#: (`_FINAL_PASSAGE_QUESTIONS`, `_MOTION_TO_RECOMMIT_PHRASES`,
+#: `_PROCEDURAL_PHRASES`) to `app.ingest.senate_vote_typing`, together with
+#: the priority order and the live evidence behind each rule. They are not
+#: re-exported here: one definition, measured against a labeled sample in
+#: one place.
 
 
 class SenateRollCallSourceError(Exception):
@@ -595,10 +576,20 @@ class _SkipRollCall(Exception):
     """Internal signal: this one record cannot become a `RollCall` row."""
 
 
-def transform_roll_call(raw_xml: str, *, source_url: str) -> dict[str, Any]:
+def transform_roll_call(
+    raw_xml: str,
+    *,
+    source_url: str,
+    bundled_measure_threshold: int = DEFAULT_BUNDLED_MEASURE_THRESHOLD,
+) -> dict[str, Any]:
     """One fetched `<roll_call_vote>` document into a `RollCall`-shaped row
     dict. Raises `_SkipRollCall` (caught by `transform_roll_calls`) rather
     than a bare parse error, mirroring `house_rollcalls.transform_roll_call`.
+
+    `vote_type`, `is_bundled` and `bundled_reason` all come from
+    `app.ingest.senate_vote_typing.classify` (stories 8.3 and 8.4) --
+    `bundled_measure_threshold` is 8.4's "configurable size", passed through
+    so a caller can tune it without reaching into the classifier.
     """
     try:
         root = ElementTree.fromstring(raw_xml)
@@ -624,18 +615,30 @@ def transform_roll_call(raw_xml: str, *, source_url: str) -> dict[str, Any]:
     if not result:
         raise _SkipRollCall("record has no vote_result")
 
+    # Story 8.5: a voice-vote or unanimous-consent disposition must never be
+    # minted into a roll_calls row -- see senate_vote_typing's 8.5 section.
+    # In practice unreachable from THIS source (a voice vote gets no roll
+    # number, so the LIS index never lists it), and checked anyway because
+    # "unreachable" is a property of the current feed, not of the rule.
+    try:
+        guard_recorded_vote(result)
+    except Exception as exc:  # SkippedUnrecordedOutcome
+        raise _SkipRollCall(str(exc)) from exc
+
     question = root.findtext("question") or ""
+    decision = classify(_signals_from(root), bundled_measure_threshold=bundled_measure_threshold)
 
     return {
         "id": roll_call_id(congress=congress, session=session, vote_number=vote_number),
         "voted_at": voted_at.strip(),
         "question": question.strip(),
-        "vote_type": _classify_vote_type(root, question),
+        "vote_type": decision.vote_type,
         "result": result.strip(),
         "tally": _tally_from(root),
         "bill_id": None,
         "amendment_ref": _amendment_ref(root),
-        "is_bundled": False,
+        "is_bundled": decision.is_bundled,
+        "bundled_reason": decision.bundled_reason,
         "topic_ids": [],
         "source_url": source_url,
         "content_hash": content_hash_for_xml(raw_xml),
@@ -705,35 +708,58 @@ def _count_int(root: ElementTree.Element, tag: str) -> int:
     return int(stripped) if stripped.isdigit() else 0
 
 
+def _signals_from(root: ElementTree.Element) -> VoteSignals:
+    """Every field `senate_vote_typing.classify` reads, off one parsed item.
+
+    The one adapter between this module's XML and the classifier's plain
+    strings. Keeping it here rather than in `senate_vote_typing` is what lets
+    that module stay source-agnostic (and therefore measurable from a
+    fixture with no XML at all) -- see its module docstring's "Signals"
+    section.
+    """
+    return VoteSignals.from_source_fields(
+        question=root.findtext("question"),
+        vote_question_text=root.findtext("vote_question_text"),
+        vote_result=root.findtext("vote_result"),
+        vote_title=root.findtext("vote_title"),
+        document_type=root.findtext("document/document_type"),
+        document_number=root.findtext("document/document_number"),
+        document_title=root.findtext("document/document_title"),
+        amendment_number=root.findtext("amendment/amendment_number"),
+    )
+
+
+def classify_vote(
+    root: ElementTree.Element,
+    *,
+    bundled_measure_threshold: int = DEFAULT_BUNDLED_MEASURE_THRESHOLD,
+) -> VoteTypeDecision:
+    """This source's full classification for one parsed item (8.3 + 8.4).
+
+    The public seam for a caller that wants the decision -- vote type, the
+    rule that fired, the bundled flag and its reason -- without going
+    through the whole `transform_roll_call`. The live verification script
+    uses it to report classifications for real roll calls.
+    """
+    return classify(_signals_from(root), bundled_measure_threshold=bundled_measure_threshold)
+
+
 def _classify_vote_type(root: ElementTree.Element, question: str) -> str:
     """datamodel.md's `vote_type` vocabulary, from this source's fields.
 
-    See the module docstring's "vote_type classification" section for the
-    full reasoning and priority order (cloture first, deliberately ahead of
-    amendment and final_passage). Returns a plain string rather than the
-    `VoteType` Literal directly, same posture as
-    `house_rollcalls._classify_vote_type` -- `RollCall.model_validate` is
-    what actually enforces the vocabulary, at write time.
+    **Story 8.3 moved the rules themselves to
+    `app.ingest.senate_vote_typing`**, which is where the priority order,
+    the live evidence behind each rule, and the measured accuracy against a
+    labeled sample now live. This wrapper remains because 8.1's own tests
+    and call sites name it, and because it keeps the XML-element signature
+    (`question` is now redundant -- it is read off `root` -- and is accepted
+    for signature compatibility with 8.1's callers).
+
+    Returns a plain string rather than the `VoteType` Literal, same posture
+    as before: `RollCall.model_validate` enforces the vocabulary at write
+    time.
     """
-    lowered = question.strip().lower()
-
-    if "cloture" in lowered:
-        return "cloture"
-
-    amendment_ref = _amendment_ref(root)
-    if amendment_ref:
-        return "amendment"
-
-    if lowered in _FINAL_PASSAGE_QUESTIONS:
-        return "final_passage"
-
-    if any(phrase in lowered for phrase in _MOTION_TO_RECOMMIT_PHRASES):
-        return "motion_to_recommit"
-
-    if any(phrase in lowered for phrase in _PROCEDURAL_PHRASES):
-        return "procedural"
-
-    return "other"
+    return classify_vote(root).vote_type
 
 
 # --- transform: member_votes --------------------------------------------------
@@ -838,6 +864,12 @@ def transform_member_votes_for(
                 "bill_id": row["bill_id"],
                 "topic_ids": row["topic_ids"],
                 "is_bundled": row["is_bundled"],
+                # Story 8.4: the reason travels with the flag, so the screen
+                # that reads member_votes by (person, topic) can explain the
+                # discount without a second read of roll_calls. `.get` rather
+                # than `[...]` so a row built by 8.1-era code (no such key)
+                # still transforms -- it simply carries no reason.
+                "bundled_reason": row.get("bundled_reason"),
             }
         )
     return rows, skipped
@@ -916,6 +948,7 @@ __all__ = [
     "SenateRollCallSourceError",
     "SkippedMemberVote",
     "SkippedRollCall",
+    "classify_vote",
     "content_hash_for_xml",
     "fetch_lis_to_bioguide_map",
     "fetch_roll_call_xml",
