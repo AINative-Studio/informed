@@ -34,6 +34,7 @@ import { ProfileSaveError, followPerson, unfollowPerson } from './api/profiles';
 import { SummaryCardError, fetchSummaryCard, shareTextFor } from './api/summaryCard';
 import { BallotView } from './ballot/BallotView';
 import { CandidateDetailPage } from './candidate/CandidateDetailPage';
+import { ChallengerPromisesView } from './candidate/ChallengerPromisesView';
 import { CompareView } from './compare/CompareView';
 
 export function BallotPage() {
@@ -54,6 +55,16 @@ export function BallotPage() {
    * page is this plain piece of state rather than a URL.
    */
   const [detailCandidacyId, setDetailCandidacyId] = useState<string | null>(null);
+  /**
+   * Whether `detailCandidacyId` names a challenger rather than the sitting
+   * incumbent (story 9.6). An incumbent has a voting record to break down
+   * interest by interest (`CandidateDetailPage`); a challenger does not, by
+   * definition, so "View details" for one opens `ChallengerPromisesView`'s
+   * promises-grouped-by-interest view instead — the only evidence that
+   * candidate has. `BallotView`'s own `onViewDetails` callback carries this
+   * flag alongside the id for exactly this branch; see its docstring.
+   */
+  const [detailIsChallenger, setDetailIsChallenger] = useState(false);
   /**
    * The candidacy ids a voter has asked to compare (story 7.4), or null when
    * they are looking at the ballot. Same plain-state posture as
@@ -88,7 +99,11 @@ export function BallotPage() {
         <button type="button" onClick={() => setDetailCandidacyId(null)}>
           Back to my ballot
         </button>
-        <CandidateDetailPage candidacyId={detailCandidacyId} profileId={ensureDemoUserId()} />
+        {detailIsChallenger ? (
+          <ChallengerPromisesView candidacyId={detailCandidacyId} profileId={ensureDemoUserId()} />
+        ) : (
+          <CandidateDetailPage candidacyId={detailCandidacyId} profileId={ensureDemoUserId()} />
+        )}
       </main>
     );
   }
@@ -144,7 +159,10 @@ export function BallotPage() {
       {query.isSuccess ? (
         <Delegation
           ballot={query.data}
-          onViewDetails={setDetailCandidacyId}
+          onViewDetails={(candidacyId, isIncumbent) => {
+            setDetailIsChallenger(!isIncumbent);
+            setDetailCandidacyId(candidacyId);
+          }}
           onCompare={setCompareCandidacyIds}
         />
       ) : null}
@@ -200,7 +218,7 @@ function Delegation({
   onCompare,
 }: {
   ballot: Ballot;
-  onViewDetails: (candidacyId: string) => void;
+  onViewDetails: (candidacyId: string, isIncumbent: boolean) => void;
   onCompare: (candidacyIds: string[]) => void;
 }) {
   const house = ballot.officeholders.filter((person) => person.body_id === HOUSE_BODY_ID);

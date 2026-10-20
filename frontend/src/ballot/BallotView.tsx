@@ -100,13 +100,22 @@ export function BallotView({
 }: {
   races: Race[];
   /**
-   * Called with a candidacy id when a voter asks to see that candidate's
-   * detail page. Optional: a caller that has not wired up a detail screen
-   * yet (or a BDD fixture proving only the card list) simply omits it, and
-   * no button is rendered — no per-candidate affordance has to exist before
-   * the view it points at does.
+   * Called with a candidacy id and whether that candidate is the sitting
+   * incumbent, when a voter asks to see that candidate's detail page.
+   * Optional: a caller that has not wired up a detail screen yet (or a BDD
+   * fixture proving only the card list) simply omits it, and no button is
+   * rendered — no per-candidate affordance has to exist before the view it
+   * points at does.
+   *
+   * `isIncumbent` travels alongside the id (story 9.6) so the caller can
+   * route a challenger to `ChallengerPromisesView` (promises, grouped by
+   * interest — the only evidence a candidate with no voting record has) and
+   * an incumbent to `CandidateDetailPage` (the vote-based alignment
+   * breakdown) without this view needing to know which screen either one
+   * is — it already has `candidate.is_incumbent` on hand per row, so
+   * passing it through costs nothing new to compute.
    */
-  onViewDetails?: (candidacyId: string) => void;
+  onViewDetails?: (candidacyId: string, isIncumbent: boolean) => void;
   /**
    * Called with 2-4 candidacy ids, in the order the voter selected them,
    * when a voter uses one race's "Compare" button (story 7.4). Optional for
@@ -135,7 +144,7 @@ function RaceView({
   onCompare,
 }: {
   race: Race;
-  onViewDetails?: (candidacyId: string) => void;
+  onViewDetails?: (candidacyId: string, isIncumbent: boolean) => void;
   onCompare?: (candidacyIds: string[]) => void;
 }) {
   const headingId = useId();
@@ -256,7 +265,7 @@ function CandidateRow({
 }: {
   candidate: Race['candidates'][number];
   card: CandidateCardView | undefined;
-  onViewDetails?: (candidacyId: string) => void;
+  onViewDetails?: (candidacyId: string, isIncumbent: boolean) => void;
   isSelectedForCompare: boolean;
   compareSelectionDisabled: boolean;
   onToggleCompareSelection?: () => void;
@@ -292,7 +301,7 @@ function CandidateRow({
           <button
             type="button"
             aria-label={`View details for ${candidate.name}`}
-            onClick={() => onViewDetails(candidate.candidacy_id as string)}
+            onClick={() => onViewDetails(candidate.candidacy_id as string, candidate.is_incumbent)}
           >
             View details
           </button>

@@ -27,7 +27,8 @@ def test_routes_are_only_the_ones_built_so_far(client: TestClient) -> None:
     lookup; story 14.2 adds the published consent language and story 14.4 the
     one-action export and delete. Story 14.6 adds the shareable,
     candidate-data-only summary card; story 14.7 adds the privacy-safe
-    analytics event recorder and its k-anonymous aggregate read.
+    analytics event recorder and its k-anonymous aggregate read. Story 9.6
+    adds a challenger's promises grouped by the voter's own interests.
 
     Replaces story 1.1's "health is the only route" assertion, whose own
     docstring named 1.5 as the story that would change it, and that story's
@@ -125,6 +126,14 @@ def test_routes_are_only_the_ones_built_so_far(client: TestClient) -> None:
         # candidacy id embeds an OCD-ID containing slashes — the OpenAPI
         # schema still renders it as `{candidacy_id}`.
         "/v1/candidates/{candidacy_id}/alignment",
+        # Story 9.6: a challenger's promises, grouped by the voter's own
+        # interests, with any prior office they held linked from their own
+        # `people.terms[]` record. The companion read to `/alignment` above
+        # for a candidate who has no voting record to be scored from — see
+        # `app.promises.models`'s module docstring for why this is a
+        # separate endpoint rather than a widened `/alignment`. Same
+        # `{candidacy_id:path}` converter and the same reason.
+        "/v1/candidates/{candidacy_id}/promises",
         # Story 5.4: a short-lived presigned URL for one bill's archived text,
         # so a voter can open what a vote was actually on and verify it
         # themselves. Public and identity-free like 14.6's summary card above:
