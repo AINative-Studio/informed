@@ -310,6 +310,13 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
+    # Congress.gov takes its credential as a QUERY PARAMETER, and httpx logs
+    # full request URLs at INFO -- so this must be silenced or the key is
+    # printed on every one of this script's ~2,000 requests. Observed leaking
+    # on the first live run of this branch's verify script; see
+    # `verify_house_sync_event_backfill_live.py` for the full note.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     args = parse_args(argv if argv is not None else sys.argv[1:])
 
     targets = _targets(args)
