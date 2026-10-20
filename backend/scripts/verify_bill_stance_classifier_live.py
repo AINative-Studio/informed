@@ -84,12 +84,13 @@ WHAT IT PROVES, IN ORDER
      proven wired, then the real count is reported as zero.
 
 ===============================================================================
-TWO REAL BUGS THIS SCRIPT FOUND, BOTH FIXED IN THIS BRANCH
+THREE REAL BUGS THIS SCRIPT FOUND
 ===============================================================================
 
-Neither was visible to any test. Both are recorded here because the value of a
+None was visible to any test. They are recorded here because the value of a
 live verification script is precisely the class of bug that a fake transport and
-a captured fixture cannot reach.
+a captured fixture cannot reach. The first two are fixed in this branch; the
+third belongs to story 13.1 and is reported rather than fixed here.
 
 **1. `house_bills.fetch_bill_subjects` silently truncated to 20 terms**
 (story 5.3). The endpoint's default page size is 20 and it reports the real
@@ -113,6 +114,40 @@ the same in-memory list twice -- this script, and any backfill -- got
 `bills_changed=1` on both runs and rewrote an identical row. Fixed by comparing
 against the stored row, so idempotence is a property of the data rather than of
 how the caller loaded it.
+
+**3. `graph_create_edge` is NOT idempotent on the live API, and story 13.1's
+docstring says it is.** NOT FIXED HERE -- it is story 13.1's to own, and
+changing the evidence-graph writer's contract is well outside story 5.5's
+scope. Reported so it is not lost.
+
+`app/evidence_graph/writer.py`'s docstring states: "`graph_create_edge` on an
+existing (source, predicate, target) triple does not create a duplicate --
+confirmed against the live API during story 1.2 and mirrored by the fake. So
+re-running the writer over the same data converges rather than accumulating,
+and this module keeps no 'already written' ledger of its own."
+
+Measured against the live API on 2026-10-19, with the entities already
+upserted, writing one identical triple three times:
+
+    1 OK id=c79c03ed-0dba-41f9-add6-28188483b407
+    2 OK id=6688e903-133f-4bb3-934b-d06cb55f201a
+    3 OK id=07ea9e18-94e2-4b01-b2a1-07be52fb100f
+
+**Three distinct edges.** It accumulates. And inconsistently: on some
+pre-existing triples the same call answers `409 Conflict` instead, which is how
+this script found it (the second execution failed where the first passed).
+`graph_upsert_entity` IS idempotent as documented -- the same canonical name
+returned the same entity id both times -- so the problem is specific to edges.
+
+Why it matters beyond this script: story 13.1 relies on that convergence
+explicitly to justify keeping no ledger, so any writer re-run -- a backfill, a
+scheduled job, a repeated verification -- silently multiplies edges in the
+evidence graph, and a traversal that counts them would over-count the evidence
+behind a cited claim. The two things story 13.1 should decide: whether to
+de-duplicate before writing, and whether to treat 409 as success.
+
+This script treats a 409 on the wiring probe as "the edge is already there",
+which is what it means, and reports it in the check's own detail line.
 
 ===============================================================================
 CLEANUP
@@ -188,6 +223,7 @@ from app.repositories.models import (  # noqa: E402
 )
 from app.scoring.positions import PositionComputer  # noqa: E402
 from app.zerodb.client import ZeroDBClient, ZeroDBError  # noqa: E402
+from app.zerodb.errors import ZeroDBConflictError  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("verify_bill_stance_classifier_live")
@@ -662,14 +698,29 @@ def main() -> int:
                 is_subtopic=source_tag.is_subtopic,
                 direction=BillDirection.EXPANDS,
             )
-            written = classifier.write_stance_edges([probe], probe_stances)
+            # `ZeroDBConflictError` is caught and reported rather than failing
+            # the run, because of a live finding this script made on its second
+            # execution -- see "THREE REAL BUGS" in the module docstring. The
+            # short version: `graph_create_edge` is NOT idempotent (the same
+            # triple written three times produced three distinct edge ids,
+            # measured 2026-10-19), and on some pre-existing triples it answers
+            # 409 instead. Story 13.1's docstring asserts the opposite. Neither
+            # behaviour is this story's to fix, so the wiring proof treats a 409
+            # as "the edge is already there", which is what it means, and the
+            # finding is reported for story 13.1 to own.
+            try:
+                written = classifier.write_stance_edges([probe], probe_stances)
+                conflict = ""
+            except ZeroDBConflictError as exc:
+                written = 0
+                conflict = f" (409 Conflict: the edge already exists — {exc})"
             check(
                 "the advances/opposes write path IS wired (proven with a forced direction)",
-                written > 0,
+                written > 0 or bool(conflict),
                 f"{written} edge(s) written against the live graph for "
-                f"{len(probe_stances)} live stance(s) under {probe.slug} — a WIRING "
-                f"PROOF, not a real classification: the direction was SUPPLIED by "
-                f"this script, not derived from any evidence",
+                f"{len(probe_stances)} live stance(s) under {probe.slug}{conflict} — a "
+                f"WIRING PROOF, not a real classification: the direction was SUPPLIED "
+                f"by this script, not derived from any evidence",
             )
             # Both predicates must appear, or the projection is not symmetric on
             # real stance cards -- prd.md's "nonpartisan by construction".
