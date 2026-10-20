@@ -31,15 +31,20 @@ from datetime import UTC, datetime
 import pytest
 
 from app.bootstrap import Bootstrapper
+from app.methodology.publish import MethodologyPublisher
 from app.neutrality.audit import (
     SYMMETRY_TOLERANCE,
     MirroredPairResult,
+    SymmetryAuditor,
     SymmetryAuditReport,
+    _is_synthetic,
     audit_runs_table_row_id,
     check_symmetry_gate,
     mirrored_direction_code,
     mirrored_position,
 )
+from app.profiles.crypto import ProfileKeyring, ProfileRootKey
+from app.profiles.service import VoterProfileService
 from app.zerodb import ZeroDBClient
 from app.zerodb.testing import FakeZeroDBTransport
 
@@ -448,3 +453,91 @@ def test_the_gate_reads_the_newest_row_not_whichever_one_came_back_first() -> No
 
 
 _NOW = datetime(2026, 10, 20, 9, 0, tzinfo=UTC)
+
+
+# --- the cleanup sweep -----------------------------------------------------
+#
+# `run()` cleans up in a `finally`, which covers an exception but NOT a
+# SIGKILL — a nightly runner killed by a CI timeout or an OOM mid-fixture
+# leaves rows the in-process tracking list died with. The marker sweep is what
+# makes the next run remove them, so the audit self-heals instead of
+# accumulating fabricated voting records one interrupted run at a time.
+
+
+def test_the_sweep_recognises_a_row_by_its_own_id() -> None:
+    assert _is_synthetic({"id": "person:SYMMETRY-AUDIT-dealbreaker-L"})
+    assert _is_synthetic({"id": "us-house:119-2:symmetry-audit-dealbreaker-40"})
+
+
+def test_the_sweep_recognises_a_row_by_the_synthetic_entity_it_names() -> None:
+    """A `candidate_positions` or `member_votes` row's own id may be a hash or
+    a composed key, but it always names the synthetic person; a
+    `provenance_log` row always names the synthetic entity.
+    """
+    assert _is_synthetic({"id": "whatever", "person_id": "person:SYMMETRY-AUDIT-x-L"})
+    assert _is_synthetic({"id": "prov:abc123", "entity_id": "us-house:119-2:symmetry-audit-1"})
+
+
+def test_the_sweep_leaves_a_real_row_alone() -> None:
+    assert not _is_synthetic({"id": "person:B000944", "canonical_name": "A real member"})
+    assert not _is_synthetic({"id": "us-house:119-2:452", "person_id": "person:B000944"})
+    assert not _is_synthetic({})
+
+
+def test_the_sweep_will_not_delete_a_real_row_that_merely_mentions_the_marker() -> None:
+    """Scoped to the three id-bearing fields, never the whole serialised row.
+
+    A real stance card or roll-call question that happened to contain the
+    words "symmetry audit" would match a whole-row check — and a sweep that
+    can delete real data is far worse than one that occasionally misses a
+    synthetic row. The next run catches a missed row; nothing brings back a
+    deleted roll call.
+    """
+    assert not _is_synthetic(
+        {
+            "id": "us-house:119-2:452",
+            "question": "On agreeing to the SYMMETRY-AUDIT Transparency Act of 2026",
+        }
+    )
+    assert not _is_synthetic(
+        {"id": "en-US:elections:v1:fund-audits", "label": "Fund symmetry audits of voting machines"}
+    )
+
+
+def test_an_interrupted_run_is_cleaned_up_by_the_next_one() -> None:
+    """The behaviour, end to end: rows left behind with no tracking list are
+    gone after the next audit, and the next audit still passes.
+    """
+    transport = FakeZeroDBTransport()
+    transport.break_server_side_filter()
+    client = ZeroDBClient(
+        transport=transport, project_id="proj-sweep", backoff_base=0.0, sleep=lambda _: None
+    )
+    Bootstrapper(client, pace=lambda: None).run()
+    MethodologyPublisher(client).publish_new_version("2027.1")
+    profiles = VoterProfileService(
+        client=client,
+        keyring=ProfileKeyring(client=client, root_key=ProfileRootKey(bytes(range(32)))),
+    )
+
+    # Orphans exactly as a SIGKILL mid-fixture would leave them: written
+    # straight to storage, with nothing tracking them.
+    orphans = [
+        ("people", "person:SYMMETRY-AUDIT-orphan-L"),
+        ("roll_calls", "us-house:119-2:symmetry-audit-orphan-1"),
+        ("candidate_positions", "person:SYMMETRY-AUDIT-orphan-L:en-US:x:v1:for:2027.1:v1"),
+    ]
+    for table, row_id in orphans:
+        client.upsert_row(table, row_id, {"id": row_id, "person_id": orphans[0][1]})
+    real = ("people", "person:B000944")
+    client.upsert_row(real[0], real[1], {"id": real[1], "canonical_name": "A real member"})
+
+    report = SymmetryAuditor(client=client, profiles=profiles).run()
+
+    assert report.passed, report.summary()
+    for table, row_id in orphans:
+        assert client.get_row(table, row_id) is None, (
+            f"{table}/{row_id} survived the next run's sweep; an interrupted audit would "
+            "leave a fabricated voting record in the project indefinitely"
+        )
+    assert client.get_row(*real) is not None, "the sweep deleted a real row"

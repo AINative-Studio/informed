@@ -1071,7 +1071,28 @@ class SymmetryAuditor:
         self._written.append((table, row_id))
 
     def _clean_up(self) -> None:
-        """Delete every synthetic row, newest-written first.
+        """Delete every synthetic row this audit could have left anywhere.
+
+        Two passes, deliberately, because they catch different failures:
+
+        **1. The tracked list**, newest-written first. Exact, cheap, and what
+        handles the normal case including an exception (`run()` calls this in
+        a `finally`).
+
+        **2. A marker sweep over every table the fixture writes.** This is the
+        pass that matters for a nightly job, because `finally` does not run on
+        SIGKILL — a runner killed by a CI timeout or an OOM mid-fixture leaves
+        rows that the in-process list died with. Sweeping by `MARKER` means
+        the NEXT night's run removes them, so the audit self-heals rather than
+        accumulating fabricated voting records one interrupted run at a time.
+        It is also what makes `verify_symmetry_audit_live.py`'s "clean start"
+        check a meaningful assertion rather than a tripwire a human has to
+        clear by hand.
+
+        The sweep is marker-scoped, never table-wide: it matches only rows
+        whose own id or `person_id`/`entity_id` carries `SYMMETRY-AUDIT`, so
+        it cannot touch a real member, a real roll call or a real stance card
+        however badly a future edit mangles the fixture.
 
         `candidate_positions` is append-only and `Repository.delete` refuses
         it by design (datamodel.md keeps positions indefinitely for
@@ -1083,21 +1104,17 @@ class SymmetryAuditor:
         out here for the same reason.
 
         A delete that fails is logged and the loop continues: a partial
-        cleanup is bad, but abandoning the rest of it is worse, and the
-        marker in every id is what lets a human finish the job.
+        cleanup is bad, but abandoning the rest of it is worse, and the marker
+        in every id is what lets the next run (or a human) finish the job.
         """
-        for table in ("candidate_positions",):
-            for row in self._client.query_rows(table, limit=500).rows:
-                if MARKER in str(row.row_data.get("person_id", "")):
-                    self._delete(table, str(row.row_data["id"]))
-
-        for row in self._client.query_rows("provenance_log", limit=500).rows:
-            if MARKER.lower() in str(row.row_data.get("entity_id", "")).lower():
-                self._delete("provenance_log", str(row.row_data["id"]))
-
         for table, row_id in reversed(self._written):
             self._delete(table, row_id)
         self._written.clear()
+
+        for table in _SWEPT_TABLES:
+            for row in self._client.query_rows(table, limit=_SWEEP_PAGE_SIZE).rows:
+                if _is_synthetic(row.row_data):
+                    self._delete(table, str(row.row_data.get("id")))
 
         for user_id in (_VOTER_ID, _MIRRORED_VOTER_ID):
             try:
@@ -1110,6 +1127,52 @@ class SymmetryAuditor:
             self._client.delete_row(table, row_id)
         except Exception as exc:  # noqa: BLE001 — keep cleaning up
             logger.warning("symmetry audit: could not delete %s/%s: %s", table, row_id, exc)
+
+
+#: Every table the fixture writes, swept by marker on each cleanup so an
+#: interrupted run (SIGKILL, CI timeout, OOM) self-heals on the next one.
+#: `candidate_positions` first, because it is the one whose rows are claims
+#: about how a named person voted and therefore the one that must never
+#: survive; the rest follow in reverse dependency order so a reference check
+#: cannot refuse a delete.
+_SWEPT_TABLES = (
+    "candidate_positions",
+    "member_votes",
+    "provenance_log",
+    "roll_calls",
+    "candidacies",
+    "stances",
+    "issue_topics",
+    "people",
+    "districts",
+    "elections",
+)
+
+#: How many rows one sweep pass reads per table. Generous rather than tuned:
+#: the sweep's whole job is to find rows a previous run failed to delete, and
+#: a page that truncated would leave exactly those behind. The tables it reads
+#: are small today, and the same open question datamodel.md already tracks for
+#: every other paged read in this codebase applies when they are not.
+_SWEEP_PAGE_SIZE = 500
+
+
+def _is_synthetic(row_data: dict[str, Any]) -> bool:
+    """Whether this row was written by the symmetry audit.
+
+    Checked against the three fields that carry the marker — the row's own
+    id, and the two fields that name a synthetic entity from another table
+    (`person_id` on a position or vote, `entity_id` on a provenance row) —
+    rather than against the whole serialised row. A whole-row match would also
+    hit a real row that merely MENTIONED the marker in a label or question
+    text, and a sweep that can delete real data is far worse than one that
+    occasionally misses a synthetic row (the next run catches that; nothing
+    brings back a deleted roll call).
+    """
+    for field_name in ("id", "person_id", "entity_id"):
+        value = row_data.get(field_name)
+        if isinstance(value, str) and MARKER.lower() in value.lower():
+            return True
+    return False
 
 
 def _skewed(score: float | None, skew: float) -> float | None:
