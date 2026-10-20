@@ -30,9 +30,11 @@ Feature: Archive debates and questionnaires (story 9.2)
     And the stored text contains the questionnaire's answer wording
     And the stored text carries no HTML markup
 
-  Scenario: Archiving a questionnaire writes a promise_sources row keyed by its sha256
+  # The id hashes the EXTRACTED TEXT, not the fetched bytes -- see the volatile
+  # cache-comment scenarios further down for the live finding that forced this.
+  Scenario: Archiving a questionnaire writes a promise_sources row keyed by its text sha256
     When I archive the sample questionnaire for that candidacy
-    Then a promise_sources row exists with id "src:{document_sha256}"
+    Then a promise_sources row exists with id "src:{text_sha256}"
     And that promise_sources row references the candidacy
     And that promise_sources row has source_type "candidate_questionnaire"
     And that promise_sources row has the questionnaire's own url
@@ -40,7 +42,7 @@ Feature: Archive debates and questionnaires (story 9.2)
 
   Scenario: Archiving a questionnaire records a provenance_log entry
     When I archive the sample questionnaire for that candidacy
-    Then a provenance_log entry exists for promise_sources "src:{document_sha256}"
+    Then a provenance_log entry exists for promise_sources "src:{text_sha256}"
     And that provenance_log entry has source_url equal to the questionnaire's own url
     And that provenance_log entry has adapter_version "debates_questionnaires/v1"
     And that provenance_log entry has the questionnaire's own content hash
@@ -104,6 +106,27 @@ Feature: Archive debates and questionnaires (story 9.2)
   Scenario: A genuinely changed questionnaire produces a second, distinct promise_sources row
     Given I have already archived the sample questionnaire for that candidacy once
     When I archive a changed version of the questionnaire for that candidacy
+    Then 2 promise_sources rows exist for that candidacy
+
+  # --- volatile boilerplate must NOT count as a changed source --------------
+
+  # Found live, 2026-10-20, not hypothesised: VOTE411 embeds a server-side
+  # cache countdown in an HTML comment ("BEGIN CACHE HIT key=... expires-in=138m")
+  # that ticks down every minute. Two fetches a minute apart carry byte-for-byte
+  # identical ANSWERS and different bytes, so a naive content-addressed capture
+  # mints a fresh promise_sources row per minute and the same promise would be
+  # extracted, mapped and counted again and again. The capture's identity has to
+  # be the source's TEXT, not its wrapper.
+
+  Scenario: A page whose only change is a volatile cache comment is not re-archived
+    Given I have already archived the sample questionnaire for that candidacy once
+    When I archive the same questionnaire whose cache countdown has ticked
+    Then exactly 1 promise_sources row exists for that candidacy
+    And no new file is uploaded by the second capture
+
+  Scenario: A page whose answers changed is still re-archived even if the cache comment also ticked
+    Given I have already archived the sample questionnaire for that candidacy once
+    When I archive a changed version of the questionnaire whose cache countdown has also ticked
     Then 2 promise_sources rows exist for that candidacy
 
   # --- no invented sources, and no invented source types ----------------------

@@ -246,6 +246,43 @@ def archive_transcript(zerodb: ZeroDBClient, result: dict[str, Any]) -> None:
     _archive(zerodb, result, url=TRANSCRIPT_URL, source_type=SOURCE_TYPE_DEBATE_TRANSCRIPT)
 
 
+def _with_ticked_cache_comment(html: str, minutes: int) -> str:
+    """The same page as served a minute later by VOTE411.
+
+    The real marker, copied from a live fetch (2026-10-20): an HTML comment
+    carrying the server's cache TTL, which ticks down every minute while the
+    candidate's answers do not change at all.
+    """
+    return html.replace(
+        "<body>",
+        f"<body>\n  <!-- BEGIN CACHE HIT key=VOTE41122.index-desktop.25687874..en "
+        f"expires-in={minutes}m -->",
+        1,
+    )
+
+
+@when("I archive the same questionnaire whose cache countdown has ticked")
+def archive_questionnaire_cache_ticked(zerodb: ZeroDBClient, result: dict[str, Any]) -> None:
+    _archive(
+        zerodb,
+        result,
+        url=QUESTIONNAIRE_URL,
+        source_type=SOURCE_TYPE_QUESTIONNAIRE,
+        documents={QUESTIONNAIRE_URL: _with_ticked_cache_comment(QUESTIONNAIRE_HTML, 137)},
+    )
+
+
+@when("I archive a changed version of the questionnaire whose cache countdown has also ticked")
+def archive_questionnaire_changed_and_ticked(zerodb: ZeroDBClient, result: dict[str, Any]) -> None:
+    _archive(
+        zerodb,
+        result,
+        url=QUESTIONNAIRE_URL,
+        source_type=SOURCE_TYPE_QUESTIONNAIRE,
+        documents={QUESTIONNAIRE_URL: _with_ticked_cache_comment(QUESTIONNAIRE_CHANGED_HTML, 137)},
+    )
+
+
 # --- refusals ----------------------------------------------------------------
 
 
@@ -332,7 +369,7 @@ def archive_unknown_candidacy(zerodb: ZeroDBClient, result: dict[str, Any]) -> N
 def document_file_stored(fake: FakeZeroDBTransport, result: dict[str, Any]) -> None:
     report: SourceArchiveReport = result["report"]
     expected = hashlib.sha256(result["body"].encode("utf-8")).hexdigest()
-    assert report.document_sha256 == expected
+    assert report.document_bytes_sha256 == expected
     stored = fake.files.get(report.document_file_id)
     assert stored is not None, "no file stored for the fetched document"
     assert stored["file_metadata"]["sha256"] == expected
@@ -349,7 +386,7 @@ def document_downloads(zerodb: ZeroDBClient, result: dict[str, Any]) -> None:
 def document_hash_matches(zerodb: ZeroDBClient, result: dict[str, Any]) -> None:
     report: SourceArchiveReport = result["report"]
     downloaded = zerodb.download_file(file_id=report.document_file_id)
-    assert hashlib.sha256(downloaded).hexdigest() == report.document_sha256
+    assert hashlib.sha256(downloaded).hexdigest() == report.document_bytes_sha256
 
 
 @then("a text file is stored alongside the document")
@@ -398,10 +435,10 @@ def _promise_source_rows(fake: FakeZeroDBTransport, candidacy_id: str) -> list[d
     ]
 
 
-@then(parsers.parse('a promise_sources row exists with id "src:{{document_sha256}}"'))
+@then(parsers.parse('a promise_sources row exists with id "src:{{text_sha256}}"'))
 def promise_source_row_exists(result: dict[str, Any]) -> None:
     report: SourceArchiveReport = result["report"]
-    assert report.promise_source_id == f"src:{report.document_sha256}"
+    assert report.promise_source_id == f"src:{report.text_sha256}"
 
 
 @then(parsers.parse('a promise_sources row exists with source_type "{source_type}"'))
@@ -515,7 +552,7 @@ def _provenance_rows_for(fake: FakeZeroDBTransport, entity_id: str) -> list[dict
     ]
 
 
-@then(parsers.parse('a provenance_log entry exists for promise_sources "src:{{document_sha256}}"'))
+@then(parsers.parse('a provenance_log entry exists for promise_sources "src:{{text_sha256}}"'))
 @then("a provenance_log entry exists for that transcript's promise_sources row")
 def provenance_entry_exists(fake: FakeZeroDBTransport, result: dict[str, Any]) -> None:
     report: SourceArchiveReport = result["report"]
@@ -548,7 +585,7 @@ def provenance_entry_content_hash(fake: FakeZeroDBTransport, result: dict[str, A
     from app.repositories.provenance import provenance_id
 
     report: SourceArchiveReport = result["report"]
-    expected_id = provenance_id(report.document_sha256)
+    expected_id = provenance_id(report.text_sha256)
     rows = fake.rows.get("provenance_log", {})
     ids = {row["row_data"].get("id") for row in rows.values()}
     assert expected_id in ids, (

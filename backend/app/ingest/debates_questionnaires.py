@@ -193,16 +193,40 @@ Idempotency, and why the id is the document's hash
 ====================================================
 
 Same posture as 9.1 and for the same reason: `promise_sources.id` is
-`src:{sha256}` of the fetched bytes, so re-archiving an unchanged document
-lands on the row that already exists (idempotent re-archival for free) while
-a genuinely changed page hashes differently and gets a second row — a second
-capture at a second time, which is history worth keeping.
+`src:{sha256}`, so re-archiving an unchanged document lands on the row that
+already exists (idempotent re-archival for free) while a genuinely changed
+page hashes differently and gets a second row — a second capture at a second
+time, which is history worth keeping.
+
+**But the hash is of the EXTRACTED TEXT, not of the fetched bytes, and that
+difference was forced by a real live failure rather than chosen on taste.**
+Story 9.1 hashes the raw HTML, which is right for a campaign page whose
+markup is itself the artefact. It is wrong here, found live on 2026-10-20 by
+running this story's own verification script twice: VOTE411 embeds its
+server-side cache TTL in an HTML comment —
+
+    <!-- BEGIN CACHE HIT key=VOTE41122.index-desktop.25687874..en expires-in=138m -->
+
+— which ticks down **every minute**. Two fetches a minute apart carried
+byte-for-byte identical answers, differed in exactly that one number, and
+produced two `promise_sources` rows with two different `src:` ids. Left
+alone, that is not a cosmetic duplicate: story 9.3 would extract the same
+promise from each row, story 10.1 would map each copy to the same bill, and
+story 11's verdict aggregation would count one commitment many times over —
+so a candidate's say/do record would drift purely as a function of how often
+the archiver ran. Hashing the text the extractor actually reads makes the
+capture's identity the source's *content*, which is what a promise cites.
+
+The raw bytes are still stored and still hashed (`document_bytes_sha256` on
+the report, and the file's own `sha256` metadata), so the byte-exact capture
+remains verifiable — nothing is lost, the identity is just taken at the right
+level.
 
 And as in 9.1, an existing row is **not** taken as proof its archive is
-intact. `_archive_is_retrievable` checks that the bytes come back and still
-hash to the capture; a row whose stored object is missing is repaired by
-re-uploading, because that is the state every capture made before
-`ZeroDBClient.upload_file` was fixed to post the file body is in.
+intact. `_archive_is_retrievable` checks that the stored bytes come back and
+still extract to the same text as this fetch; a row whose stored object is
+missing is repaired by re-uploading, because that is the state every capture
+made before `ZeroDBClient.upload_file` was fixed to post the file body is in.
 
 No automated discovery, and no invented sources
 =================================================
@@ -318,16 +342,26 @@ class FetchedDocument:
 class SourceArchiveReport:
     """What one `SourceDocumentLoader.archive()` call actually did.
 
-    Carries both file ids and both hashes so a caller (and this story's live
+    Carries every file id and every hash so a caller (and this story's live
     verification script) can show a human exactly what was written without
     re-reading ZeroDB. `is_new_capture` is False for a no-op re-run.
+
+    THREE hashes, which are three different claims:
+
+      * `text_sha256` is the capture's IDENTITY -- `promise_source_id` is
+        `src:{text_sha256}`. See the module docstring on why identity is the
+        text rather than the bytes.
+      * `document_bytes_sha256` is the byte-exact hash of what the server
+        actually sent, recorded on the stored document's own metadata so the
+        archive stays verifiable at the byte level.
+      * `document_file_id`/`text_file_id` are where each one lives.
     """
 
     candidacy_id: str
     url: str
     source_type: str
     document_file_id: str
-    document_sha256: str
+    document_bytes_sha256: str
     text_file_id: str
     text_sha256: str
     text_characters: int
@@ -476,7 +510,7 @@ class SourceDocumentLoader:
 
         self._pace()
         document = self._fetch(url)
-        document_sha256 = sha256_hex(document.body)
+        document_bytes_sha256 = sha256_hex(document.body)
         text = extract_document_text(document.body)
         if not text.strip():
             raise SourceDocumentError(
@@ -486,14 +520,16 @@ class SourceDocumentLoader:
             )
         text_sha256 = sha256_hex(text)
         captured_at = self._now()
-        source_id = f"src:{document_sha256}"
+        # The IDENTITY is the text, not the bytes -- see the module docstring
+        # on VOTE411's per-minute cache comment, found live.
+        source_id = f"src:{text_sha256}"
 
         existing = self._sources.get(source_id)
-        if existing is not None and self._archive_is_retrievable(existing, document_sha256):
-            # Idempotent re-run: the same bytes were already captured under
-            # this exact content-addressed id and -- checked, not assumed --
-            # read back intact. Re-reading the stored row's file ids is then
-            # correct rather than re-uploading.
+        if existing is not None and self._archive_is_retrievable(existing, text_sha256):
+            # Idempotent re-run: the same TEXT was already captured under this
+            # exact content-addressed id and -- checked, not assumed -- read
+            # back intact. Re-reading the stored row's file ids is then correct
+            # rather than re-uploading.
             logger.info(
                 "debates_questionnaires: %s already archived for %s (%s); no new files uploaded",
                 source_id,
@@ -505,7 +541,7 @@ class SourceDocumentLoader:
                 url=existing.url,
                 source_type=existing.source_type,
                 document_file_id=existing.archived_file_id,
-                document_sha256=document_sha256,
+                document_bytes_sha256=document_bytes_sha256,
                 text_file_id=self._stored_text_file_id(existing.archived_file_id),
                 text_sha256=text_sha256,
                 text_characters=len(text),
@@ -516,9 +552,8 @@ class SourceDocumentLoader:
 
         if existing is not None:
             # The row is here but its archive is not readable, so this re-run
-            # is a REPAIR: fall through and re-upload. Same bytes, same
-            # sha256, so the row's id is unchanged and the repair is an
-            # upsert rather than a second capture.
+            # is a REPAIR: fall through and re-upload. Same text, same id, so
+            # the repair is an upsert rather than a second capture.
             logger.warning(
                 "debates_questionnaires: %s exists for %s but its archive is not "
                 "retrievable; re-uploading the captured files",
@@ -543,7 +578,7 @@ class SourceDocumentLoader:
                 # Ties the extractor's input back to the document of record,
                 # so a quote span can be checked against the exact text it
                 # was extracted from. See the module docstring.
-                "extracted_from_sha256": document_sha256,
+                "extracted_from_bytes_sha256": document_bytes_sha256,
             },
         )
 
@@ -553,7 +588,7 @@ class SourceDocumentLoader:
             file_name=f"{source_id}{self._document_suffix(document)}",
             content_type=document.content_type,
             file_metadata={
-                "sha256": document_sha256,
+                "sha256": document_bytes_sha256,
                 "source_url": url,
                 "captured_at": captured_at,
                 "source_type": source_type,
@@ -580,7 +615,7 @@ class SourceDocumentLoader:
             entity_id=stored.id,
             source_url=url,
             fetched_at=captured_at,
-            content_hash=document_sha256,
+            content_hash=text_sha256,
             adapter_version=ADAPTER_VERSION,
         )
 
@@ -597,7 +632,7 @@ class SourceDocumentLoader:
             url=url,
             source_type=source_type,
             document_file_id=document_file.file_id,
-            document_sha256=document_sha256,
+            document_bytes_sha256=document_bytes_sha256,
             text_file_id=text_file.file_id,
             text_sha256=text_sha256,
             text_characters=len(text),
@@ -633,15 +668,20 @@ class SourceDocumentLoader:
             return ""
         return str(stored.file_metadata.get(TEXT_FILE_ID_METADATA_KEY) or "")
 
-    def _archive_is_retrievable(self, existing: PromiseSource, document_sha256: str) -> bool:
+    def _archive_is_retrievable(self, existing: PromiseSource, text_sha256: str) -> bool:
         """Can the already-stored archive be read back, and is it right?
 
         An existing row is not proof its archive is intact -- that reasoning
         assumes bytes were stored at all, which they were not for any capture
         made before `ZeroDBClient.upload_file` was fixed to post the file
-        body. So the claim is checked. A missing archive, an unreadable one,
-        or one whose bytes no longer hash to the capture is treated as not
-        retrievable, and `archive` re-uploads.
+        body. So the claim is checked.
+
+        The comparison is on the EXTRACTED TEXT, matching what the id means
+        (see the module docstring). Checking the raw bytes here would
+        reintroduce the VOTE411 bug from the other side: a stored document
+        whose cache comment has since ticked holds the same answers, so it
+        hashes differently at the byte level and would be judged "not
+        retrievable" and needlessly re-uploaded on every single run.
         """
         if not existing.archived_file_id:
             return False
@@ -654,13 +694,14 @@ class SourceDocumentLoader:
                 exc,
             )
             return False
-        actual = sha256_hex(archived)
-        if actual != document_sha256:
+        actual = sha256_hex(extract_document_text(archived.decode("utf-8", errors="replace")))
+        if actual != text_sha256:
             logger.warning(
-                "debates_questionnaires: archive %s hashes to %s, not the captured %s",
+                "debates_questionnaires: archive %s extracts to text hashing %s, "
+                "not the captured %s",
                 existing.archived_file_id,
                 actual,
-                document_sha256,
+                text_sha256,
             )
             return False
         return True
