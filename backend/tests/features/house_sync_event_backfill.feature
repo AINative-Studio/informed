@@ -76,6 +76,16 @@ Feature: House incremental sync, roll-call events and full backfill (stories 5.6
     When I sync the sample roll call "item_final_passage"
     Then the position recompute consumer handles the emitted event without error
 
+  # An event-log outage must not lose the roll call (it is already written and
+  # its provenance recorded), and must not be reported as though the event was
+  # sent: a run logging "1 event emitted" during an outage would hide it.
+  Scenario: An event-log outage still stores the roll calls and reports no events
+    Given the event log is unavailable
+    When I sync the sample roll calls "item_final_passage" and "item_amendment"
+    Then exactly 1 row carries the roll call id "us-house:119-2:452"
+    And exactly 1 row carries the roll call id "us-house:119-2:451"
+    And the load report claims 0 events emitted
+
   # --- story 5.8: backfill the 118th and 119th Congress -----------------------
   #
   # "Backfill completes; row counts match the source totals."
