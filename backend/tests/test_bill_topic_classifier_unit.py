@@ -955,3 +955,78 @@ def _one(tags: list[TopicTag], slug: str) -> TopicTag:
     matching = [tag for tag in tags if tag.slug == slug]
     assert len(matching) == 1, f"expected exactly one {slug} tag, got {[t.slug for t in tags]}"
     return matching[0]
+
+
+# =========================================================================
+# 5. The stale-row idempotence bug, found by the live run
+# =========================================================================
+
+
+def test_the_unchanged_check_reads_the_stored_row_not_the_argument() -> None:
+    """Regression: `_write_tags` compared against a stale in-memory `Bill`.
+
+    Found by `scripts/verify_bill_stance_classifier_live.py` on 2026-10-19, and
+    invisible to every test that existed at the time because they all re-read
+    the bill between runs.
+
+    The bug: the unchanged-check read `bill.topic_ids` off the `Bill` object the
+    caller passed in. That object goes stale the moment the method writes, so a
+    caller classifying the SAME in-memory list twice -- the live script, and any
+    backfill that loads a page of bills and classifies it -- got
+    `bills_changed=1` on both runs and rewrote a byte-identical row. The fix
+    reads the stored row, so idempotence is a property of the data rather than
+    of how the caller happened to load it.
+
+    Pinned by passing the same `Bill` instance to two runs, which is exactly the
+    shape that broke.
+    """
+    from app.bootstrap import Bootstrapper
+    from app.ingest.bill_topic_classifier import BillTopicClassifier
+    from app.repositories import ProvenanceContext, Repository
+    from app.repositories.models import Bill, IssueTopic
+    from app.zerodb import ZeroDBClient
+    from app.zerodb.testing import FakeZeroDBTransport
+
+    transport = FakeZeroDBTransport()
+    transport.break_server_side_filter()
+    client = ZeroDBClient(
+        transport=transport, project_id="proj-test", backoff_base=0.0, sleep=lambda _: None
+    )
+    Bootstrapper(client, pace=lambda: None).run()
+    Repository(client=client, model=IssueTopic).upsert(
+        {
+            "id": topic_id("healthcare"),
+            "name": "Healthcare",
+            "locale": "en-US",
+            "taxonomy_version": 1,
+        }
+    )
+    stored = Repository(
+        client=client,
+        model=Bill,
+        provenance=ProvenanceContext(adapter_version="idempotence-regression/v1"),
+    ).upsert(
+        {
+            "id": "us-house:119:hr-999998",
+            "title": "A synthetic bill for the idempotence regression",
+            "introduced_on": "2025-01-03",
+            "policy_area": "Health",
+            "subjects": ["Health"],
+            "topic_ids": [],
+            "sponsors": [],
+            "source_url": "https://example.invalid/idempotence-regression",
+            "content_hash": "1" * 64,
+        }
+    )
+
+    classifier = BillTopicClassifier(client)
+    # The SAME instance both times, deliberately: `stored.topic_ids` is still
+    # `[]` after the first run writes, which is what made the bug invisible.
+    first = classifier.run(bills=[stored], accept_threshold=DOCUMENTED_ACCEPT_THRESHOLD)
+    second = classifier.run(bills=[stored], accept_threshold=DOCUMENTED_ACCEPT_THRESHOLD)
+
+    assert first.bills_changed == 1, first
+    assert second.bills_changed == 0, (
+        "the second run rewrote an identical row: the unchanged-check is reading the "
+        "stale argument again, not the stored row"
+    )

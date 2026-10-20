@@ -838,14 +838,24 @@ class BillTopicClassifier:
         which is not a new sourced record. The `content_hash` is left exactly as
         story 5.3's loader computed it, so a later re-fetch still compares
         correctly against the source.
+
+        **The unchanged-check reads the STORED row, not the `Bill` argument**,
+        and that is a real bug this story's live run caught. Comparing against
+        `bill.topic_ids` compares against whatever the caller happened to load,
+        which goes stale the moment this method writes: a caller that classifies
+        the same in-memory `Bill` list twice (exactly what
+        `scripts/verify_bill_stance_classifier_live.py` does, and what a
+        backfill would do) saw `bills_changed=1` on both runs and rewrote an
+        identical row. Reading the stored row makes idempotence a property of
+        the data rather than of how the caller loaded it.
         """
         wanted = sorted({tag.topic_id for tag in accepted})
-        if sorted(bill.topic_ids) == wanted:
-            return False
         bill_id = _require_id(bill)
         current = self._client.get_row(Bill.table_name, bill_id)
         if current is None:
             logger.warning("bill %s is not stored; no topic_ids written", bill_id)
+            return False
+        if sorted(str(topic) for topic in (current.row_data.get("topic_ids") or [])) == wanted:
             return False
         row = dict(current.row_data)
         row["topic_ids"] = wanted
