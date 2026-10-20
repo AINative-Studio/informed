@@ -1,9 +1,11 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import type { ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { CandidateAlignment } from '../api/alignment';
+import type { BillText } from '../api/billText';
 import { CandidateDetailPage, billUrlFor } from './CandidateDetailPage';
 
 /**
@@ -217,6 +219,125 @@ describe('CandidateDetailPage', () => {
     renderWithQuery(<CandidateDetailPage candidacyId="x" profileId="demo-user-1" />);
 
     expect(await screen.findByRole('alert')).toBeInTheDocument();
+  });
+});
+
+/**
+ * Unit tests for story 7.5's evidence drawer.
+ *
+ * "As a voter, I want to open any vote or promise behind a score and see the
+ * source, so that I can verify it." Acceptance: shows roll-call number,
+ * date, question, position, bill link and archived source.
+ *
+ * `roll_calls.question` (datamodel.md) is not published by any endpoint this
+ * frontend can reach — `Citation` (`backend/app/scoring/models.py`) carries
+ * no such field, and `extra="forbid"` means the backend response cannot
+ * carry one either. The drawer shows `vote_type` (what kind of vote it was)
+ * in its place rather than fabricating question text no endpoint provides —
+ * the same "show nothing invented" posture `CitationLink`'s own docstring
+ * already takes for a missing bill page.
+ */
+const BILL_TEXT: BillText = {
+  bill_id: 'us-house:119:hr-1',
+  file_id: 'file:synthetic-1',
+  url: 'https://files.example.test/synthetic-archive.pdf?signature=fake',
+  expires_in_seconds: 300,
+  sha256: 'synthetic-sha-256',
+  size_bytes: 1024,
+  content_type: 'application/pdf',
+  source_url: 'https://www.congress.gov/bill/119th-congress/house-bill/1/text',
+  captured_at: '2026-03-02T00:00:00Z',
+  version_type: 'Engrossed in House',
+  version_date: '2026-03-01T00:00:00Z',
+  format_type: 'pdf',
+};
+
+describe('CandidateDetailPage evidence drawer', () => {
+  function respondSequence(bodies: { body: unknown; status?: number }[]) {
+    let call = 0;
+    fetchMock.mockImplementation(() => {
+      const next = bodies[Math.min(call, bodies.length - 1)];
+      call += 1;
+      return Promise.resolve(
+        new Response(JSON.stringify(next.body), {
+          status: next.status ?? 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    });
+  }
+
+  it('opens a dialog with the roll-call number, date, vote type and position when a citation is activated', async () => {
+    const user = userEvent.setup();
+    respondSequence([{ body: ALIGNMENT }, { body: BILL_TEXT }]);
+    renderWithQuery(<CandidateDetailPage candidacyId={ALIGNMENT.candidacy_id} profileId="demo-user-1" />);
+
+    await screen.findByRole('list', { name: /interest-by-interest|breakdown/i });
+    await user.click(screen.getAllByRole('button', { name: /roll call/i })[0]);
+
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText(/us-house:119-2:452/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/2026-03-01/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/final passage/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/yea/i)).toBeInTheDocument();
+  });
+
+  it('shows a link to the bill and, once the archive loads, a link to the archived source', async () => {
+    const user = userEvent.setup();
+    respondSequence([{ body: ALIGNMENT }, { body: BILL_TEXT }]);
+    renderWithQuery(<CandidateDetailPage candidacyId={ALIGNMENT.candidacy_id} profileId="demo-user-1" />);
+
+    await screen.findByRole('list', { name: /interest-by-interest|breakdown/i });
+    await user.click(screen.getAllByRole('button', { name: /roll call/i })[0]);
+
+    const dialog = await screen.findByRole('dialog');
+    const billLink = within(dialog).getByRole('link', { name: /bill/i });
+    expect(billLink.getAttribute('href')).toBe('https://www.congress.gov/bill/119th-congress/house-bill/1');
+
+    const archiveLink = await within(dialog).findByRole('link', { name: /archived/i });
+    expect(archiveLink.getAttribute('href')).toBe(BILL_TEXT.url);
+  });
+
+  it('shows an honest message when the archived source fails to load, without a fabricated link', async () => {
+    const user = userEvent.setup();
+    respondSequence([{ body: ALIGNMENT }, { body: { detail: 'not archived' }, status: 404 }]);
+    renderWithQuery(<CandidateDetailPage candidacyId={ALIGNMENT.candidacy_id} profileId="demo-user-1" />);
+
+    await screen.findByRole('list', { name: /interest-by-interest|breakdown/i });
+    await user.click(screen.getAllByRole('button', { name: /roll call/i })[0]);
+
+    const dialog = await screen.findByRole('dialog');
+    expect(await within(dialog).findByRole('alert')).toBeInTheDocument();
+    expect(within(dialog).queryByRole('link', { name: /archived/i })).not.toBeInTheDocument();
+  });
+
+  it('offers no drawer control for a citation with no bill attached', async () => {
+    respondWith(ALIGNMENT_WITH_NO_BILL_CITATION);
+    renderWithQuery(
+      <CandidateDetailPage
+        candidacyId={ALIGNMENT_WITH_NO_BILL_CITATION.candidacy_id}
+        profileId="demo-user-1"
+      />,
+    );
+
+    await screen.findByRole('list', { name: /interest-by-interest|breakdown/i });
+    expect(screen.getByText(/us-senate:119-2:12/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /roll call/i })).not.toBeInTheDocument();
+  });
+
+  it('closes the drawer on Escape and returns focus to the control that opened it', async () => {
+    const user = userEvent.setup();
+    respondSequence([{ body: ALIGNMENT }, { body: BILL_TEXT }]);
+    renderWithQuery(<CandidateDetailPage candidacyId={ALIGNMENT.candidacy_id} profileId="demo-user-1" />);
+
+    await screen.findByRole('list', { name: /interest-by-interest|breakdown/i });
+    const opener = screen.getAllByRole('button', { name: /roll call/i })[0];
+    await user.click(opener);
+    await screen.findByRole('dialog');
+
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(opener).toHaveFocus();
   });
 });
 
