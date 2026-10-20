@@ -35,10 +35,12 @@ Feature: Archive bill text (story 5.4)
     When I archive the text of bill "us-house:119:hr-3424"
     Then the report names version date "2025-09-09T04:00:00Z"
 
-  Scenario: A version with a null date still orders behind a dated one
-    Given the bill text source is the live H.R. 1 response, whose enrolled version has a null date
+  Scenario: The latest-dated version wins even though the source lists it last
+    Given the bill "us-house:119:hr-1" is already ingested
+    And the bill text source is the live H.R. 1 response, which lists an undated version first and its latest-dated version last
     When I archive the text of bill "us-house:119:hr-1"
-    Then the report names version type "Enrolled Bill"
+    Then the report names version type "Public Law"
+    And the report names version date "2025-07-05T03:59:59Z"
 
   # --- format preference ------------------------------------------------------
 

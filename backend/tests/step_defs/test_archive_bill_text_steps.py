@@ -6,10 +6,15 @@ CONGRESS_GOV_API_KEY, per CLAUDE.md.
 
 The fixture holds REAL, live-captured Congress.gov responses: the
 `/bill/119/hr/3424/text` and `/bill/119/hr/1/text` envelopes, plus the actual
-bytes of two of H.R. 3424's published documents. That is why the "a version
-with a null date" scenario exists at all -- the real H.R. 1 response's newest
-version (the Enrolled Bill) carries `"date": null`, so "sort by date" is not a
-total order on the live data and the loader has to say what it does about that.
+bytes of two of H.R. 3424's published documents.
+
+That is why the version-selection scenarios exist at all. The live H.R. 1
+envelope lists SIX versions, the first of them undated (the Enrolled Bill) and
+the LAST of them the latest-dated (the Public Law, 2025-07-05) -- so
+`textVersions[0]` is wrong, "the list is sorted" is wrong, and
+`max(..., key=lambda v: v["date"])` raises on the None. The first draft of
+`select_text_version` sorted undated versions FIRST and selected the Enrolled
+Bill; this fixture is what caught it. See that function's docstring.
 """
 
 from __future__ import annotations
@@ -30,9 +35,10 @@ from app.ingest.bill_text import (
     BillTextNotFoundError,
     FetchedDocument,
     TextVersion,
+    parse_bill_id,
     select_text_version,
 )
-from app.repositories import Repository
+from app.repositories import ProvenanceContext, Repository
 from app.repositories.models import Bill
 from app.zerodb import ZeroDBClient
 from app.zerodb.testing import FakeZeroDBTransport
@@ -113,18 +119,35 @@ def _client(zerodb: ZeroDBClient) -> ZeroDBClient:
 
 @given("the reference tables exist")
 def _tables(zerodb: ZeroDBClient) -> None:
-    Bootstrapper(zerodb).run()
+    # `pace=lambda: None`: the default paces against ZeroDB's real rate ceiling
+    # and would sleep ~44s per scenario against the in-memory fake.
+    Bootstrapper(zerodb, pace=lambda: None).run()
+
+
+def _bill_repo(zerodb: ZeroDBClient) -> Repository[Bill]:
+    """A `bills` repository with provenance, which story 16.3's structural rule
+    requires for any table declaring `source_url` (see
+    `Repository._refuse_if_untraceable`).
+    """
+    return Repository(
+        client=zerodb,
+        model=Bill,
+        provenance=ProvenanceContext(adapter_version="test/5.4"),
+    )
 
 
 @given(parsers.parse('the bill "{bill_id}" is already ingested'))
 def _bill_ingested(zerodb: ZeroDBClient, bill_id: str) -> None:
-    Repository(client=zerodb, model=Bill).upsert(
+    congress, bill_type, number = parse_bill_id(bill_id)
+    _bill_repo(zerodb).upsert(
         {
             "id": bill_id,
-            "title": "SPACE Act of 2025",
+            "title": f"A bill, {bill_type.upper()} {number} of the {congress}th Congress",
             "introduced_on": "2025-05-15",
-            "source_url": "https://api.congress.gov/v3/bill/119/hr/3424?format=json",
-            "content_hash": "seed",
+            "source_url": (
+                f"https://api.congress.gov/v3/bill/{congress}/{bill_type}/{number}?format=json"
+            ),
+            "content_hash": f"seed:{bill_id}",
         }
     )
 
@@ -139,11 +162,22 @@ def _four_versions(state: dict[str, Any], date: str) -> None:
     assert str(versions[0]["date"]).startswith(date)
 
 
-@given("the bill text source is the live H.R. 1 response, whose enrolled version has a null date")
+@given(
+    "the bill text source is the live H.R. 1 response, which lists an undated "
+    "version first and its latest-dated version last"
+)
 def _hr1_envelope(state: dict[str, Any]) -> None:
+    """Pins both live properties this scenario exists for, so a refreshed
+    fixture that no longer has them fails here rather than silently turning the
+    scenario into a tautology.
+    """
     state["envelope"] = HR1_TEXT_ENVELOPE
-    enrolled = [v for v in HR1_TEXT_ENVELOPE["textVersions"] if v["type"] == "Enrolled Bill"]
-    assert enrolled and enrolled[0]["date"] is None, "fixture changed: H.R. 1 enrolled date is set"
+    versions = HR1_TEXT_ENVELOPE["textVersions"]
+    assert versions[0]["date"] is None, "fixture changed: H.R. 1's first version now has a date"
+    dates = [v["date"] for v in versions if v["date"]]
+    assert versions[-1]["date"] == max(dates), (
+        "fixture changed: H.R. 1's last-listed version is no longer the latest-dated one"
+    )
 
 
 @given(parsers.parse('the newest text version offers "{a}", "{b}" and "{c}"'))
@@ -203,7 +237,7 @@ def _dangling_file(
         file_metadata={"sha256": DOC_SHA256},
     )
     fake.file_content.pop(stored.file_id, None)
-    bills: Repository[Bill] = Repository(client=zerodb, model=Bill)
+    bills = _bill_repo(zerodb)
     existing = bills.get(bill_id)
     assert existing is not None
     row = existing.row_data()
@@ -236,7 +270,9 @@ def _ui_request(zerodb: ZeroDBClient, state: dict[str, Any], bill_id: str) -> No
 
 
 @when("I fetch the presigned url")
-def _fetch_presigned(zerodb: ZeroDBClient, fake: FakeZeroDBTransport, state: dict[str, Any]) -> None:
+def _fetch_presigned(
+    zerodb: ZeroDBClient, fake: FakeZeroDBTransport, state: dict[str, Any]
+) -> None:
     """The fake's presigned URL is not a real HTTP endpoint, so "fetching" it
     means resolving it the way the fake's own object store does: by file id.
     The live round-trip over a real signed URL is proven by
@@ -428,7 +464,8 @@ def _provenance_exists(zerodb: ZeroDBClient, state: dict[str, Any]) -> None:
     matches = [
         row
         for row in _provenance_rows(zerodb)
-        if row.get("entity_table") == "files" and row.get("entity_id") == state["report"].text_file_id
+        if row.get("entity_table") == "files"
+        and row.get("entity_id") == state["report"].text_file_id
     ]
     assert matches, "no provenance_log row names the archived bill text file"
     state["provenance"] = matches[0]
@@ -450,13 +487,14 @@ def _provenance_hash(zerodb: ZeroDBClient, state: dict[str, Any]) -> None:
 
 
 def test_select_text_version_prefers_the_newest_dated_version() -> None:
-    """Direct cover for `select_text_version`'s ordering, including the live
-    null-date case the H.R. 1 scenario exercises end to end.
+    """Direct cover for `select_text_version`'s ordering against both live
+    envelopes: H.R. 1, which lists its latest-dated version (the Public Law)
+    LAST and an undated one first, and H.R. 3424, whose versions are in order.
     """
     chosen = select_text_version(HR1_TEXT_ENVELOPE)
     assert chosen is not None
-    assert chosen.version_type == "Enrolled Bill"
-    assert chosen.date is None
+    assert chosen.version_type == "Public Law"
+    assert chosen.date == "2025-07-05T03:59:59Z"
 
     chosen = select_text_version(HR3424_TEXT_ENVELOPE)
     assert chosen is not None
@@ -470,4 +508,6 @@ def test_select_text_version_returns_none_when_there_are_no_versions() -> None:
 
 
 def test_a_text_version_with_no_usable_format_selects_nothing() -> None:
-    assert TextVersion(version_type="Introduced in House", date=None, formats={}).best_format() is None
+    assert (
+        TextVersion(version_type="Introduced in House", date=None, formats={}).best_format() is None
+    )
