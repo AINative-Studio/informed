@@ -734,6 +734,89 @@ class Candidacy(RowModel):
 # --- Legislative record ---------------------------------------------------
 
 
+#: What one person's attachment to a bill is (story 5.3). datamodel.md types
+#: `bills.sponsors[]` as `(person_id, role, joined_on)` without naming the role
+#: vocabulary, so this is the vocabulary the one real source publishes:
+#:
+#:   * `sponsor` — the bill's own sponsor, from the detail response's inline
+#:     `sponsors[]`. Exactly one per bill in every live response observed.
+#:   * `original_cosponsor` — a cosponsor the source marks
+#:     `isOriginalCosponsor: true`: on the bill at introduction, which is a
+#:     materially stronger sponsorship signal than joining months later.
+#:   * `cosponsor` — any later cosponsor (`isOriginalCosponsor: false`).
+#:
+#: A `Literal` rather than a bare string for the same reason as `VotePosition`:
+#: story 6.3 blends sponsorship into evidence and weights these differently, so
+#: a fourth spelling arriving from a future source change must be rejected at
+#: the write rather than silently scored as "some other role".
+SponsorRole = Literal["sponsor", "original_cosponsor", "cosponsor"]
+
+
+class Sponsor(BaseModel):
+    """One person's sponsorship of one bill, embedded in the bill row.
+
+    Embedded rather than its own table because datamodel.md's "Embed what is
+    always read together" rule names this case explicitly: "sponsors inside
+    `bills`". A bill's sponsor list is never read without the bill.
+
+    `person_id` keeps its `person:` prefix (unlike `member_votes`' id
+    composition) so a consumer can hand it straight to `people` without
+    rebuilding it — this is a field, not an id segment.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    person_id: str
+    role: SponsorRole
+    #: The date this person's sponsorship began: the bill's `introducedDate`
+    #: for the sponsor, the source's own `sponsorshipDate` for a cosponsor.
+    #: Nullable because a source that reports a cosponsor without a date is a
+    #: gap in the date, not a reason to drop the sponsorship.
+    joined_on: str | None = None
+
+
+class Bill(RowModel):
+    """A bill, keyed `{body}:{session}:{number}` (`us-house:119:hr-3424`).
+
+    Note what the id does NOT contain: a session number in the roll-call sense.
+    datamodel.md's worked example is `us-house:119:hr-1234` — congress only,
+    because a bill belongs to a congress, not to one of its two sessions, while
+    a roll call belongs to a specific session (`us-house:119-2:452`). Composing
+    this id from `{congress}-{session}` would mint two different ids for one
+    bill depending on which session's roll call happened to reference it.
+
+    `sponsors[]` is the sponsorship evidence story 6.3 blends with the voting
+    record. It is one array holding both the sponsor and every cosponsor,
+    distinguished by `role`, rather than two fields: a consumer asking "what
+    did this person attach their name to" wants one list to scan, and the
+    strength difference is a weight on the role, not a different kind of
+    record.
+    """
+
+    table_name: ClassVar[str] = "bills"
+
+    title: str
+    summary: str | None = None
+    status: str | None = None
+    introduced_on: str | None = None
+    #: CRS subject terms: the policy area plus every legislative subject, in
+    #: one flat list, because a consumer filtering bills by subject does not
+    #: care which of the two CRS vocabularies a term came from.
+    subjects: list[str] = Field(default_factory=list)
+    #: The single CRS policy area, kept separately as well as inside
+    #: `subjects` because it is the one term CRS assigns to every bill exactly
+    #: once — the coarse bucket a subject-to-topic mapping story will key off,
+    #: which would be unrecoverable from the flat list.
+    policy_area: str | None = None
+    #: Always `[]` until a subject-to-topic mapping story exists. See
+    #: `app.ingest.house_bills`'s module docstring.
+    topic_ids: list[str] = Field(default_factory=list)
+    sponsors: list[Sponsor] = Field(default_factory=list)
+    text_file_id: str | None = None
+    source_url: str | None = None
+    content_hash: str | None = None
+
+
 class Tally(BaseModel):
     """A roll call's vote counts, embedded in the roll call row."""
 
@@ -1368,6 +1451,7 @@ class ProvenanceLog(RowModel):
 
 
 __all__ = [
+    "Bill",
     "Body",
     "CandidatePosition",
     "Chamber",
@@ -1382,6 +1466,8 @@ __all__ = [
     "QaStatus",
     "RollCall",
     "RowModel",
+    "Sponsor",
+    "SponsorRole",
     "Stance",
     "Tally",
     "Term",

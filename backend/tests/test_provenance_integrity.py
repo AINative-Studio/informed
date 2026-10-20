@@ -68,6 +68,16 @@ SAMPLE_ROWS: dict[str, dict[str, Any]] = {
         "source_url": "https://api.congress.gov/v3/house-vote/119/2/452",
         "content_hash": "a" * 64,
     },
+    "bills": {
+        "id": "us-house:119:hr-3424",
+        "title": "SPACE Act of 2025",
+        "introduced_on": "2025-05-15",
+        "subjects": ["Government Operations and Politics", "Congressional oversight"],
+        "policy_area": "Government Operations and Politics",
+        "sponsors": [{"person_id": "person:O000177", "role": "sponsor", "joined_on": "2025-05-15"}],
+        "source_url": "https://api.congress.gov/v3/bill/119/hr/3424?format=json",
+        "content_hash": "b" * 64,
+    },
 }
 
 
