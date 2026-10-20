@@ -30,14 +30,18 @@ from datetime import UTC, datetime
 
 import pytest
 
+from app.bootstrap import Bootstrapper
 from app.neutrality.audit import (
     SYMMETRY_TOLERANCE,
     MirroredPairResult,
     SymmetryAuditReport,
     audit_runs_table_row_id,
+    check_symmetry_gate,
     mirrored_direction_code,
     mirrored_position,
 )
+from app.zerodb import ZeroDBClient
+from app.zerodb.testing import FakeZeroDBTransport
 
 # --- the mirror operation itself -------------------------------------------
 
@@ -319,3 +323,128 @@ def test_the_summary_names_the_delta_the_tolerance_and_the_verdict() -> None:
     assert "1.0" in summary
     assert "0.5" in summary
     assert "FAIL" in summary or "fail" in summary
+
+
+def test_an_unscoreable_run_still_writes_a_row_rather_than_losing_the_failure() -> None:
+    """An `inf` delta is the worst possible result and must still be recorded.
+
+    JSON has no infinity, so a naive `float(inf)` would fail the write and
+    lose the record of exactly the run that went wrongest — leaving the
+    release gate to see "no recent audit" (which it blocks on, correctly) but
+    with no trace of WHY. A sentinel three orders of magnitude above the
+    0-100 score range is recorded instead: it cannot be misread as a
+    measurement, and `passed: False` carries the verdict regardless.
+    """
+    row = _report(_pair(None, None)).row()
+    assert row["passed"] is False
+    assert row["max_delta"] == 999.0
+    # The real test: it serialises.
+    import json
+
+    assert json.loads(json.dumps(row))["max_delta"] == 999.0
+
+
+def test_the_asymmetries_of_an_unscoreable_pair_say_so_in_words() -> None:
+    details = " ".join(_pair(None, None).asymmetries)
+    assert "could not be scored" in details
+    assert "unmeasured, not symmetric" in details
+
+
+def test_a_pair_whose_mirrored_voter_alone_is_unscoreable_is_reported() -> None:
+    """Distinguished from the both-sides case: the two candidates scored
+    fine, so the fault is in the mirrored PROFILE's path (flip 2) and not in
+    the candidates' records (flip 1). Saying which halves a human's search.
+    """
+    details = " ".join(_pair(70.0, 30.0, mirrored_voter_score=None).asymmetries)
+    assert "mirrored voter could not be scored" in details
+    assert "could not be scored at all (left=" not in details
+
+
+# --- the release gate's own edges ------------------------------------------
+#
+# The passing and blocking paths are in symmetry_audit.feature. These are the
+# edges a feature file would read badly for: a malformed stored timestamp, and
+# a stored failure the gate must relay when it cannot re-run the audit itself.
+
+
+def _gate_client() -> ZeroDBClient:
+    transport = FakeZeroDBTransport()
+    transport.break_server_side_filter()
+    client = ZeroDBClient(
+        transport=transport, project_id="proj-gate-edges", backoff_base=0.0, sleep=lambda _: None
+    )
+    Bootstrapper(client, pace=lambda: None).run()
+    return client
+
+
+def _store(client: ZeroDBClient, **overrides: object) -> None:
+    row: dict[str, object] = {
+        "id": "aud:2026-10-20",
+        "run_at": "2026-10-20T03:00:00Z",
+        "methodology_version": "2027.1",
+        "max_delta": 0.0,
+        "passed": True,
+        "report_file_id": None,
+    }
+    row.update(overrides)
+    client.upsert_row("audit_runs", str(row["id"]), row)
+
+
+def test_the_gate_blocks_on_a_stored_run_at_it_cannot_read() -> None:
+    """A row whose `run_at` is not a timestamp cannot be aged, so the gate
+    cannot tell whether it is current. It blocks and says which field it could
+    not read, rather than treating an unreadable row as fresh — which would
+    make a corrupted write indistinguishable from a healthy nightly run.
+    """
+    client = _gate_client()
+    _store(client, run_at="not-a-timestamp")
+    report = check_symmetry_gate(client, profiles=None, now=lambda: _NOW)
+    assert not report.ok
+    assert "could not be read as a timestamp" in " ".join(str(v) for v in report.violations)
+
+
+def test_the_gate_blocks_on_a_stored_run_at_that_is_missing_entirely() -> None:
+    client = _gate_client()
+    _store(client, run_at="")
+    report = check_symmetry_gate(client, profiles=None, now=lambda: _NOW)
+    assert not report.ok
+
+
+def test_the_gate_relays_a_stored_failure_when_it_cannot_rerun_the_audit() -> None:
+    """In recorded-only mode the stored verdict is all there is, so the gate
+    must block on it. (When it runs a fresh audit, that audit's own violations
+    already say what is wrong in detail, and repeating the stored verdict
+    would double every line — which is why this branch is conditional.)
+    """
+    client = _gate_client()
+    _store(client, passed=False, max_delta=7.5)
+    report = check_symmetry_gate(client, profiles=None, now=lambda: _NOW)
+    assert not report.ok
+    assert "did not pass" in " ".join(str(v) for v in report.violations)
+
+
+def test_the_gate_allows_on_a_fresh_passing_stored_row() -> None:
+    client = _gate_client()
+    _store(client)
+    report = check_symmetry_gate(client, profiles=None, now=lambda: _NOW)
+    assert report.ok, report.summary()
+    assert report.report is None, "recorded-only mode must not run an audit"
+    assert "the recorded audit_runs row" in report.summary()
+
+
+def test_the_gate_reads_the_newest_row_not_whichever_one_came_back_first() -> None:
+    """datamodel.md's documented query for this table is "Latest", and the id
+    is an ISO date — so lexicographic order IS chronological order. Sorted
+    locally rather than trusting the store's order, for story 1.4's reason:
+    live ZeroDB returns rows in whatever order it likes, and a gate that read
+    an old passing row over a new failing one would ship the skew.
+    """
+    client = _gate_client()
+    _store(client, id="aud:2026-10-18", passed=True, run_at="2026-10-18T03:00:00Z")
+    _store(client, id="aud:2026-10-20", passed=False, max_delta=4.0)
+    report = check_symmetry_gate(client, profiles=None, now=lambda: _NOW)
+    assert not report.ok
+    assert "aud:2026-10-20" in " ".join(str(v) for v in report.violations)
+
+
+_NOW = datetime(2026, 10, 20, 9, 0, tzinfo=UTC)

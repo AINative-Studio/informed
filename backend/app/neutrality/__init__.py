@@ -15,6 +15,7 @@ warnings rather than scores alone, and what it honestly does not cover.
 """
 
 from app.neutrality.audit import (
+    MARKER,
     MAX_AUDIT_AGE,
     SYMMETRY_TOLERANCE,
     MirroredPair,
@@ -34,6 +35,7 @@ from app.neutrality.audit import (
 )
 
 __all__ = [
+    "MARKER",
     "MAX_AUDIT_AGE",
     "SYMMETRY_TOLERANCE",
     "MirroredPair",

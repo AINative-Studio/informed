@@ -40,6 +40,21 @@ name: Scheduled jobs
 # then this workflow's run log will correctly show both jobs as BLOCKED, not
 # FAILED, on every tick — see `scripts/run_scheduled_jobs.py`'s module
 # docstring for why that distinction matters to anyone reading the run log.
+#
+# Story 12.1 adds a third such key: `run_nightly_symmetry_audit` needs
+# ZERODB_PROFILE_ROOT_KEY, and it must be the SAME root key the deployed API
+# uses rather than a fresh one (the keyring derives per-user data keys from
+# it). Unlike the two ingest keys, this one is not an external vendor's — it
+# is this product's own, and whoever provisions the API has it. Until the
+# secret exists the job reports BLOCKED, like the other two.
+#
+# Note what this means for story 12.1's "a failure blocks the next release":
+# that promise is kept TODAY by `.github/workflows/ci.yml`'s
+# `scripts/check_symmetry_audit.py` step, which runs on every push and PR
+# with no credentials at all — see that script's module docstring for why its
+# in-memory mode answers the real question completely, which is the one place
+# this gate is genuinely stronger than story 12.5's panel gate. This nightly
+# job is the live confirmation over the real store, not the release block.
 
 on:
   schedule:
@@ -91,4 +106,18 @@ jobs:
           ZERODB_API_KEY: ${{ secrets.ZERODB_API_KEY }}
           FEC_API_KEY: ${{ secrets.FEC_API_KEY }}
           CONGRESS_GOV_API_KEY: ${{ secrets.CONGRESS_GOV_API_KEY }}
+          # Story 12.1: run_nightly_symmetry_audit's precondition. The audit
+          # saves two encrypted synthetic profiles through the real
+          # VoterProfileService, so a bug in that path could skew a score and
+          # be caught — which means it needs the same key the API uses.
+          # Without this secret the job reports `blocked` (a human needs to
+          # configure it) rather than `failed`, exactly like FEC_API_KEY's
+          # own gap above; see run_nightly_symmetry_audit's docstring.
+          #
+          # It must be the SAME key the deployed API uses, not a fresh one:
+          # the keyring derives per-user data keys from it, and a second key
+          # in the same project would make the audit's own profile writes
+          # unreadable to the service that wrote them. The audit deletes
+          # both profiles before it returns either way.
+          ZERODB_PROFILE_ROOT_KEY: ${{ secrets.ZERODB_PROFILE_ROOT_KEY }}
         run: python scripts/run_scheduled_jobs.py

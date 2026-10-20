@@ -1428,6 +1428,7 @@ def run_symmetry_audit(client: ZeroDBClient) -> SymmetryAuditReport:
 
 
 __all__ = [
+    "MARKER",
     "MAX_AUDIT_AGE",
     "SYMMETRY_TOLERANCE",
     "MirroredPair",
