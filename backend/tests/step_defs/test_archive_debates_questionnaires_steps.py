@@ -88,9 +88,7 @@ def _loader(
             raise SourceDocumentError(f"could not reach {url}: simulated network failure")
         if url not in pages:
             raise SourceDocumentError(f"could not reach {url}: not in this test's fixture set")
-        return FetchedDocument(
-            url=url, body=pages[url], content_type="text/html; charset=utf-8"
-        )
+        return FetchedDocument(url=url, body=pages[url], content_type="text/html; charset=utf-8")
 
     return SourceDocumentLoader(
         zerodb,
@@ -221,9 +219,7 @@ def _archive(
 @when("I archive the sample questionnaire for that candidacy")
 @when("I archive the sample questionnaire for that candidacy again")
 def archive_questionnaire(zerodb: ZeroDBClient, result: dict[str, Any]) -> None:
-    _archive(
-        zerodb, result, url=QUESTIONNAIRE_URL, source_type=SOURCE_TYPE_QUESTIONNAIRE
-    )
+    _archive(zerodb, result, url=QUESTIONNAIRE_URL, source_type=SOURCE_TYPE_QUESTIONNAIRE)
 
 
 @given("I have already archived the sample questionnaire for that candidacy once")
@@ -247,9 +243,7 @@ def archive_questionnaire_changed(zerodb: ZeroDBClient, result: dict[str, Any]) 
 
 @when("I archive the sample debate transcript for that candidacy")
 def archive_transcript(zerodb: ZeroDBClient, result: dict[str, Any]) -> None:
-    _archive(
-        zerodb, result, url=TRANSCRIPT_URL, source_type=SOURCE_TYPE_DEBATE_TRANSCRIPT
-    )
+    _archive(zerodb, result, url=TRANSCRIPT_URL, source_type=SOURCE_TYPE_DEBATE_TRANSCRIPT)
 
 
 # --- refusals ----------------------------------------------------------------
@@ -276,9 +270,7 @@ def archive_no_url(zerodb: ZeroDBClient, result: dict[str, Any]) -> None:
 
 
 @when(parsers.parse('I try to archive a source for that candidacy with source type "{bad_type}"'))
-def archive_bad_source_type(
-    zerodb: ZeroDBClient, result: dict[str, Any], bad_type: str
-) -> None:
+def archive_bad_source_type(zerodb: ZeroDBClient, result: dict[str, Any], bad_type: str) -> None:
     loader = _loader(zerodb)
     _expect_refusal(
         lambda: loader.archive(
@@ -392,21 +384,15 @@ def text_has_no_markup(zerodb: ZeroDBClient, result: dict[str, Any]) -> None:
 
 
 def _promise_source_rows(fake: FakeZeroDBTransport, candidacy_id: str) -> list[dict[str, Any]]:
-    return [row for _, row in _promise_source_envelopes(fake, candidacy_id)]
+    """One candidacy's promise_sources rows, as the stored `row_data`.
 
-
-def _promise_source_envelopes(
-    fake: FakeZeroDBTransport, candidacy_id: str
-) -> list[tuple[str, dict[str, Any]]]:
-    """(row_id, row_data) for one candidacy's promise_sources rows.
-
-    The id lives on the fake's envelope rather than inside `row_data`, so a
-    step that needs to match a row against `provenance_log.entity_id` has to
-    read it from there.
+    The Informed id is `row_data["id"]`; the fake's envelope `row_id` is
+    ZeroDB's own internal uuid and is NOT what `provenance_log.entity_id`
+    points at, so a step matching the two must read the former.
     """
     stored = fake.rows.get("promise_sources", {})
     return [
-        (row["row_id"], row["row_data"])
+        row["row_data"]
         for row in stored.values()
         if row["row_data"].get("candidacy_id") == candidacy_id
     ]
@@ -437,9 +423,7 @@ def promise_source_references_candidacy(zerodb: ZeroDBClient, result: dict[str, 
 
 
 @then(parsers.parse('that promise_sources row has source_type "{source_type}"'))
-def promise_source_has_type(
-    zerodb: ZeroDBClient, result: dict[str, Any], source_type: str
-) -> None:
+def promise_source_has_type(zerodb: ZeroDBClient, result: dict[str, Any], source_type: str) -> None:
     repo: Repository[PromiseSource] = Repository(client=zerodb, model=PromiseSource)
     row = repo.get(result["report"].promise_source_id)
     assert row is not None
@@ -487,14 +471,11 @@ def no_promise_source_rows(fake: FakeZeroDBTransport) -> None:
         'source types other than "{excluded}"'
     )
 )
-def non_website_source_type_count(
-    fake: FakeZeroDBTransport, count: int, excluded: str
-) -> None:
+def non_website_source_type_count(fake: FakeZeroDBTransport, count: int, excluded: str) -> None:
     rows = _promise_source_rows(fake, CANDIDACY_ID)
     types = {row["source_type"] for row in rows} - {excluded}
     assert len(types) >= count, (
-        f"story 9.2 needs at least {count} source types beyond {excluded!r}; "
-        f"found {sorted(types)}"
+        f"story 9.2 needs at least {count} source types beyond {excluded!r}; found {sorted(types)}"
     )
 
 
@@ -514,9 +495,9 @@ def every_row_has_provenance(fake: FakeZeroDBTransport) -> None:
         if row["row_data"].get("entity_table") == "promise_sources"
     }
     missing = [
-        row_id
-        for row_id, row in _promise_source_envelopes(fake, CANDIDACY_ID)
-        if row.get("source_type") != "campaign_website" and row_id not in provenanced
+        row["id"]
+        for row in _promise_source_rows(fake, CANDIDACY_ID)
+        if row.get("source_type") != "campaign_website" and row["id"] not in provenanced
     ]
     assert not missing, f"promise_sources rows with no provenance_log entry: {missing}"
 
@@ -555,9 +536,25 @@ def provenance_entry_adapter_version(result: dict[str, Any], adapter_version: st
 
 
 @then("that provenance_log entry has the questionnaire's own content hash")
-def provenance_entry_content_hash(result: dict[str, Any]) -> None:
+def provenance_entry_content_hash(fake: FakeZeroDBTransport, result: dict[str, Any]) -> None:
+    """The hash is the provenance row's ID, per datamodel.md's `prov:{sha256}`.
+
+    `write_provenance` takes `content_hash` and encodes it in the id rather
+    than storing it as a field (datamodel.md's field list for
+    `provenance_log` has no `content_hash` column), so that is what this
+    asserts: the entry for this capture is the one keyed by the bytes this
+    capture actually fetched.
+    """
+    from app.repositories.provenance import provenance_id
+
     report: SourceArchiveReport = result["report"]
-    assert result["provenance_row"]["content_hash"] == report.document_sha256
+    expected_id = provenance_id(report.document_sha256)
+    rows = fake.rows.get("provenance_log", {})
+    ids = {row["row_data"].get("id") for row in rows.values()}
+    assert expected_id in ids, (
+        f"no provenance_log row keyed by the captured document's hash "
+        f"({expected_id}); found {sorted(i for i in ids if i)}"
+    )
 
 
 # --- assertions: readable back as extraction input ---------------------------
@@ -611,9 +608,7 @@ def archive_content_missing(fake: FakeZeroDBTransport) -> None:
 @then("the files are re-uploaded")
 def files_were_reuploaded(fake: FakeZeroDBTransport) -> None:
     uploads = _upload_calls(fake)
-    assert len(uploads) == 2, (
-        f"expected the document and its text re-uploaded, saw {len(uploads)}"
-    )
+    assert len(uploads) == 2, f"expected the document and its text re-uploaded, saw {len(uploads)}"
 
 
 # --- assertions: refusals ----------------------------------------------------
