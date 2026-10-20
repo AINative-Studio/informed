@@ -70,6 +70,14 @@ Feature: Archive bill text (story 5.4)
     Then no text was archived and the reason is recorded
     And no error was raised
 
+  # --- integrity: the one hash check made by something other than this code ---
+
+  Scenario: An upload whose stored bytes hash differently is refused, not recorded
+    Given the store measures a different sha256 over the uploaded bytes
+    When I archive the text of bill "us-house:119:hr-3424"
+    Then archiving fails because the stored hash disagrees
+    And the bill "us-house:119:hr-3424" still has no text_file_id
+
   Scenario: A bill that is not ingested yet cannot have its text archived
     When I archive the text of bill "us-house:119:hr-9999"
     Then archiving fails because the bill is unknown

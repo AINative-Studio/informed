@@ -586,6 +586,29 @@ class BillTextLoader:
             },
         )
 
+        # ZeroDB's binary-upload endpoint measures its own sha256 over the body
+        # it actually received and returns it as `sha256_hash`. Comparing it
+        # here is the one place in this whole path where the hash is checked by
+        # something other than the code that computed it — so if a byte were
+        # lost in transit, this is where it surfaces, before a `bills` row ever
+        # points at the file. Refusing is right: a `text_file_id` naming an
+        # object whose bytes are not the ones this hash promises is a citation
+        # that lies, which is worse than no archive.
+        #
+        # Live finding (2026-10-19): this field is ONLY on the upload response.
+        # `GET /projects/{id}/database/files/{file_id}` comes back with
+        # `sha256_hash: null` even for a file whose upload reported one, so the
+        # metadata route cannot be used for this check later; the caller-supplied
+        # `file_metadata["sha256"]` is what survives there. Hence the check
+        # happens here, at the only moment the independent measurement exists.
+        if stored.sha256_hash and stored.sha256_hash != digest:
+            raise BillTextSourceError(
+                f"ZeroDB measured sha256 {stored.sha256_hash} over the uploaded "
+                f"bytes of {document_url}, but this fetch hashed to {digest}; "
+                f"refusing to point {bill_id} at an archive whose bytes do not "
+                f"match the hash recorded for it"
+            )
+
         row = bill.row_data()
         row["id"] = bill_id
         row["text_file_id"] = stored.file_id

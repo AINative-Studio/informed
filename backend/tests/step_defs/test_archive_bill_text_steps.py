@@ -33,6 +33,7 @@ from app.bootstrap import Bootstrapper
 from app.ingest.bill_text import (
     BillTextLoader,
     BillTextNotFoundError,
+    BillTextSourceError,
     FetchedDocument,
     TextVersion,
     parse_bill_id,
@@ -216,6 +217,18 @@ def _already_archived(zerodb: ZeroDBClient, state: dict[str, Any], bill_id: str)
     state["first_report"] = report
 
 
+@given("the store measures a different sha256 over the uploaded bytes")
+def _corrupt_measured_hash(fake: FakeZeroDBTransport) -> None:
+    """Stand in for bytes lost in transit, which no test can cause directly.
+
+    The live `POST /files/upload` reports ZeroDB's OWN sha256 over the body it
+    received; `BillTextLoader.archive` refuses to record an archive when that
+    disagrees with what it hashed. Overriding the fake's measurement is the
+    only way to exercise that refusal.
+    """
+    fake.upload_sha256_override = "0" * 64
+
+
 @given("the bill text document has since changed")
 def _doc_changed(state: dict[str, Any]) -> None:
     state["doc_bytes"] = CHANGED_BYTES
@@ -253,7 +266,7 @@ def _dangling_file(
 def _archive(zerodb: ZeroDBClient, state: dict[str, Any], bill_id: str) -> None:
     try:
         state["report"] = _loader(zerodb, state).archive(bill_id=bill_id)
-    except BillTextNotFoundError as exc:
+    except (BillTextNotFoundError, BillTextSourceError) as exc:
         state["error"] = exc
 
 
@@ -376,6 +389,13 @@ def _no_error(state: dict[str, Any]) -> None:
 @then("archiving fails because the bill is unknown")
 def _unknown_bill(state: dict[str, Any]) -> None:
     assert isinstance(state.get("error"), BillTextNotFoundError)
+
+
+@then("archiving fails because the stored hash disagrees")
+def _hash_disagrees(state: dict[str, Any]) -> None:
+    error = state.get("error")
+    assert isinstance(error, BillTextSourceError), f"got {error!r}"
+    assert "sha256" in str(error)
 
 
 # --- asserting: idempotency ---------------------------------------------------

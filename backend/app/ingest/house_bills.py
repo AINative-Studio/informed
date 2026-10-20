@@ -110,10 +110,11 @@ What this module does NOT do
   * **It does not set `topic_ids`.** Always `[]` until a subject-to-topic
     mapping story exists to turn `subjects[]`/`policy_area` into
     `issue_topics` references.
-  * **It does not fetch a bill's full text.** `text_file_id` (datamodel.md's
-    field for an archived bill text file, mirroring story 9.1's campaign-page
-    PDF pattern) is left null; fetching and archiving bill text is a separate
-    story's scope.
+  * **It does not fetch a bill's full text.** `text_file_id` is left null by
+    this loader. Story 5.4's `app.ingest.bill_text` fills it, from a different
+    endpoint (`/text`) and a different host (www.congress.gov serves the
+    documents themselves), and runs after this loader because its archive
+    hangs off the `bills` row this one writes.
 """
 
 from __future__ import annotations
