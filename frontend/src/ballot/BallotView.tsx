@@ -21,11 +21,24 @@
  * so an "insufficient"/none state is the common case today, and that is a
  * true reflection of the data, not a bug in this view.
  *
- * Ballot order, never ranked: races render in the order `BallotPage` already
- * passes them (the API's own chamber-then-name order), and within a race,
- * candidates render in the stable name order `/v1/ballot/cards` returns
- * them. Nothing here re-sorts by score — prd.md: the app never recommends
- * who to vote for.
+ * Ballot order by default, and only by a voter's own choice otherwise
+ * (story 7.6): races render in the order `BallotPage` already passes them
+ * (the API's own chamber-then-name order), and within a race, candidates
+ * render in the stable name order `/v1/ballot/cards` returns them, unless
+ * the voter has turned on "Sort by alignment score" for that race — a
+ * per-race checkbox, off by default, see `SortToggle` below.
+ *
+ * "As a voter, I want to sort candidates by score if I choose, so that I
+ * control how results are presented." This is deliberately NOT this view
+ * re-sorting on its own judgment: prd.md's non-negotiable is that the app
+ * never recommends who to vote for, and a screen that silently reordered
+ * candidates by score would be doing exactly that, quietly, by default. The
+ * difference that keeps this story on the right side of that line is that
+ * nothing is reordered until the voter asks — `sortCardsByScore` runs only
+ * inside `RaceView`, gated on `sortByScore` state nothing sets but a click
+ * on this race's own checkbox — and the control is never captioned
+ * "recommended", "best match", "top pick" or any other endorsement language;
+ * see `SortToggle`'s own label.
  *
  * "View details" (story 7.3): each candidate with a `candidacy_id` gets a
  * button to this candidate's detail page
@@ -37,7 +50,7 @@
  * already takes for a different per-candidate action on this same row.
  */
 import { useQuery } from '@tanstack/react-query';
-import { useId } from 'react';
+import { useId, useState } from 'react';
 
 import type { Race } from '../api/ballot';
 import {
@@ -96,7 +109,14 @@ function RaceView({
   onViewDetails?: (candidacyId: string) => void;
 }) {
   const headingId = useId();
+  const sortToggleId = useId();
   const electionId = electionIdFor(race);
+
+  // Off by default (story 7.6's "default order is ballot order"), and
+  // local to this one race: a voter turning on sorting for a House race
+  // they're studying closely has no bearing on how a Senate race they
+  // haven't looked at yet is presented.
+  const [sortByScore, setSortByScore] = useState(false);
 
   const query = useQuery({
     queryKey: ['ballot-cards', electionId, race.district_id],
@@ -113,16 +133,41 @@ function RaceView({
     (query.data?.cards ?? []).map((card) => [card.candidacy_id, card]),
   );
 
+  // Ballot order unless the voter has turned sorting on for this race (see
+  // `sortByScore` above and this module's docstring on why that gate is
+  // what keeps this from being a silent recommendation).
+  const orderedCandidates = sortByScore
+    ? sortCardsByScore(
+        race.candidates,
+        (candidate) =>
+          (candidate.candidacy_id ? cardsByCandidacy.get(candidate.candidacy_id) : undefined)?.say_do_gap ??
+          null,
+      )
+    : race.candidates;
+
   return (
     <article aria-labelledby={headingId}>
       <h3 id={headingId}>{race.office_name}</h3>
+      {query.isSuccess ? (
+        <p>
+          <label htmlFor={sortToggleId}>
+            <input
+              id={sortToggleId}
+              type="checkbox"
+              checked={sortByScore}
+              onChange={(event) => setSortByScore(event.target.checked)}
+            />
+            {' '}Sort by alignment score
+          </label>
+        </p>
+      ) : null}
       {query.isPending ? <p>Loading candidates…</p> : null}
       {query.isError ? (
         <p role="alert">We could not load this race&apos;s scores just now. Please try again.</p>
       ) : null}
       {query.isSuccess ? (
         <ul aria-labelledby={headingId}>
-          {race.candidates.map((candidate) => (
+          {orderedCandidates.map((candidate) => (
             <li key={candidate.person_id}>
               <CandidateRow
                 candidate={candidate}
@@ -199,4 +244,31 @@ function CardScore({ card }: { card: CandidateCardView }) {
       )}
     </>
   );
+}
+
+/**
+ * Stable sort by descending score, with every `null`-scored item pushed
+ * after every scored one — never dropped, and never silently treated as a
+ * score of zero (story 7.6's own honesty requirement: a candidate with
+ * `say_do_gap: null` has not been measured, which is not the same claim as
+ * "measured and found worst").
+ *
+ * Generic over the item and its score accessor rather than hard-coded to
+ * `Race['candidates'][number]`, so this one function is directly unit
+ * testable against a plain fixture (`BallotView.test.tsx`) without having to
+ * construct a full `CandidateCardView`.
+ *
+ * `Array#sort` is stable per the ECMAScript spec (guaranteed since ES2019,
+ * which every browser and Node version this app targets implements), so two
+ * items with the same score — or two `null`-scored items — keep their
+ * original relative order rather than being shuffled.
+ */
+export function sortCardsByScore<T>(items: T[], scoreOf: (item: T) => number | null): T[] {
+  const scored: T[] = [];
+  const unscored: T[] = [];
+  for (const item of items) {
+    (scoreOf(item) === null ? unscored : scored).push(item);
+  }
+  scored.sort((a, b) => (scoreOf(b) as number) - (scoreOf(a) as number));
+  return [...scored, ...unscored];
 }

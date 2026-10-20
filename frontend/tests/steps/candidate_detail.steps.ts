@@ -210,23 +210,21 @@ Then('each row shows how many pieces of evidence it rests on', async () => {
   await expect(detail.getByText(/3.*evidence|evidence.*3/i).first()).toBeVisible();
 });
 
-Then('every row has at least one link a voter can actually open', async () => {
+Then('every row has at least one control a voter can actually open', async () => {
+  // Story 7.5: a citation with a bill attached is now a button that opens
+  // the evidence drawer (tests/features/evidence_drawer.feature covers the
+  // drawer's own real links), rather than being a bare `<a>` itself — still
+  // real and clickable, just one interaction away from the link.
   const detail = world.page.getByRole('region', { name: /candidate detail/i });
-  // Wait for the breakdown to actually render before counting links:
+  // Wait for the breakdown to actually render before counting controls:
   // `locator.count()` is a single snapshot with no auto-retry (unlike
   // `expect(...).toBeVisible()`, which polls), so without this the step can
-  // run before the alignment query resolves and see zero links that are
+  // run before the alignment query resolves and see zero controls that are
   // about to appear a moment later — found by this step flaking against the
   // real async render.
   await expect(detail.getByRole('listitem').first()).toBeVisible();
-  const links = detail.getByRole('link');
-  const count = await links.count();
-  expect(count).toBeGreaterThanOrEqual(2);
-  for (let index = 0; index < count; index += 1) {
-    const href = await links.nth(index).getAttribute('href');
-    expect(href).toBeTruthy();
-    expect(href).not.toBe('#');
-  }
+  const controls = detail.getByRole('button', { name: /roll call/i });
+  expect(await controls.count()).toBeGreaterThanOrEqual(2);
 });
 
 Then('the detail page says there is nothing measured yet', async () => {
