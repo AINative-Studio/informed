@@ -897,15 +897,22 @@ class HouseRollCallLoader:
             # Reusing the provenance signal rather than inventing a second
             # idempotency mechanism also means the two cannot disagree about
             # whether a roll call is new.
-            if self._newly_recorded:
-                self._emit_ingested(stored)
+            if self._newly_recorded and self._emit_ingested(stored):
+                # Recorded only when the emit actually SUCCEEDED. A report that
+                # listed an id whose event failed to send would make an
+                # event-log outage read as a clean run in the job log, which
+                # is the one thing `events_emitted` exists to make visible.
                 report.events_emitted.append(stored.id)
 
             logger.info("house_rollcalls: wrote %s", stored.id)
         return report
 
-    def _emit_ingested(self, stored: RollCall) -> None:
+    def _emit_ingested(self, stored: RollCall) -> bool:
         """Emit datamodel.md's `rollcall.ingested` for one newly-stored roll call.
+
+        Returns True only if the event was actually published, so the caller
+        reports `events_emitted` honestly rather than listing an id whose
+        event never left the process.
 
         Calls `app.scoring.positions.emit_rollcall_ingested`, which story 6.2
         wrote as the single definition of this documented payload
@@ -927,6 +934,19 @@ class HouseRollCallLoader:
         rest of the batch over an event the consumer polls for anyway, and
         the next genuine change re-emits. Logged at `error` so it is visible
         rather than silent.
+
+        **The cost of a lost event, stated plainly.** Because the emit is
+        keyed off the provenance write, an outage here means this roll call's
+        event is never retried: the next run re-fetches the same unchanged
+        record, records no new provenance, and so emits nothing. The roll
+        call is stored and correct, but the recompute it should have
+        triggered does not happen until that roll call next changes. That is
+        the accepted trade for not having a durable outbox -- the same
+        structural gap `PositionRecomputeConsumer`'s in-process `_handled`
+        set documents on the consuming side -- and it is survivable because
+        `recompute_person_positions` is callable directly for a backfill.
+        An outbox belongs with the durable job scheduler this codebase does
+        not have yet; flagged in this story's PR rather than half-built here.
         """
         assert stored.id is not None  # noqa: S101 - caller checked
         try:
@@ -943,6 +963,8 @@ class HouseRollCallLoader:
                 ROLLCALL_INGESTED_TOPIC,
                 exc,
             )
+            return False
+        return True
 
 
 @dataclass(frozen=True)
