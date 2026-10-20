@@ -11,10 +11,18 @@ Eight jobs today, one per story that flagged the scheduling gap:
     `app.ingest.candidacies`'s module docstring) — registered with a
     precondition that reports it as `blocked`, not crashed, until a real key
     is configured.
-  * `load_house_rollcalls` — story 5.1's roll-call ingest, registered here at
-    the hourly cadence story 5.6 specifies ("new votes picked up hourly while
-    the House is in session") even though 5.6 itself has not been built yet.
-    Blocked on `CONGRESS_GOV_API_KEY` for the same reason as `load_candidacies`.
+  * `load_house_rollcalls` — story 5.1's roll-call ingest, at the hourly
+    cadence story 5.6 specifies ("new votes picked up hourly while the House
+    is in session"). **Story 5.6 is now built**, and what it added is not the
+    registration (this entry pre-dated it) but the three things that make the
+    registration's promise true: the cadence is asserted against
+    `HOUSE_PUBLICATION_LAG_PROMISE` rather than restated as a number, the
+    underlying listing pages past the source's 250-row cap, and the ingest is
+    now verified idempotent rather than assumed so.
+    Still gated on `CONGRESS_GOV_API_KEY` via a precondition — but unlike
+    `load_candidacies`, that key now EXISTS and was confirmed live
+    (2026-10-19). The precondition stays because the deployment environment
+    may still lack it; it reports `blocked`, not `failed`, when it does.
   * `load_senate_rollcalls` — story 8.1's roll-call ingest, at the hourly
     cadence its own acceptance criterion names directly ("hourly sync while
     in session"). **No precondition, unlike `load_house_rollcalls`**: the
@@ -55,11 +63,13 @@ Eight jobs today, one per story that flagged the scheduling gap:
   * `recompute_candidate_positions` — story 6.2's consumer of
     datamodel.md's `rollcall.ingested` event
     (`app.scoring.positions.PositionRecomputeConsumer`). Hourly, matching the
-    roll-call ingest that is its only producer. No precondition, but an honest
-    no-op today: nothing in this codebase emits `rollcall.ingested` yet, so it
-    reads an empty event list and writes nothing. The mirror image of story
-    6.1's finding, which emitted `methodology.published` with no consumer —
-    see `run_recompute_candidate_positions`'s own docstring.
+    roll-call ingest that is its only producer. No precondition.
+    **No longer a no-op**: story 5.7 wired the producer, so
+    `app.ingest.house_rollcalls.HouseRollCallLoader` now emits
+    `rollcall.ingested` for every roll call whose content actually changed,
+    and this consumer has real events to read. It still writes no positions
+    until story 5.5 classifies roll calls into `topic_ids` (6.2's own
+    scoping note), but the wiring 6.2 documented as missing is closed.
 
 Each job calls directly into the already-tested `app.ingest.*` / `app.corrections.*`
 / `app.integrity.*` logic, using the `ZeroDBClient` the runner injects — exactly
@@ -129,6 +139,25 @@ from app.zerodb.client import ZeroDBClient
 from app.zerodb.errors import ZeroDBError
 
 logger = logging.getLogger(__name__)
+
+#: Story 5.6's acceptance criterion, as a number this codebase can assert
+#: against: "A new roll call appears within 2 hours of publication."
+#:
+#: The promise is a LATENCY bound, and nothing in the ingest code can satisfy
+#: it alone -- it is a property of the registered cadence. A roll call
+#: published just after one run becomes visible on the next, so worst-case
+#: visible lag is one interval plus one run's duration. Registering
+#: `load_house_rollcalls` at a 1-hour interval leaves a full hour of margin
+#: for the run itself, which is why the interval is half the promise rather
+#: than equal to it: an hourly job that occasionally takes 20 minutes still
+#: keeps the promise, where a 2-hourly one would break it the first time it
+#: ran long.
+#:
+#: Named here rather than left implicit in `timedelta(hours=1)` so the
+#: feature file can assert the promise instead of restating the cadence --
+#: see `house_sync_event_backfill.feature`, "meets the 2-hour publication
+#: promise".
+HOUSE_PUBLICATION_LAG_PROMISE = timedelta(hours=2)
 
 #: How many of the most recently listed House roll calls one hourly run loads.
 #: Deliberately small, matching `scripts/load_house_rollcalls.py --limit`'s own
@@ -259,6 +288,23 @@ def run_load_house_rollcalls(client: ZeroDBClient) -> None:
     but against the runner's own injected client and `CONGRESS_GOV_API_KEY`,
     at the cadence story 5.6 specifies rather than the CLI script's manual
     default.
+
+    Story 5.6's criterion is "a new roll call appears within 2 hours of
+    publication; reruns are no-ops". Both halves are properties of things
+    outside this function and are asserted where they live:
+
+      * the latency bound is the registered interval against
+        `HOUSE_PUBLICATION_LAG_PROMISE` (see that constant, and the
+        "meets the 2-hour publication promise" scenario);
+      * "reruns are no-ops" is the loader's content-addressed idempotency —
+        the `roll_calls` upsert restates the row, `provenance_log` gains
+        nothing, and (story 5.7) no `rollcall.ingested` event is emitted, so
+        a rerun costs reads and changes nothing downstream.
+
+    Loads a bounded recent window (`HOUSE_ROLLCALLS_SAMPLE_SIZE`), not a
+    backfill: catching new votes quickly is this job's job, and the full
+    118th/119th backfill is story 5.8's
+    (`scripts/backfill_house_rollcalls.py`).
     """
     api_key = os.environ["CONGRESS_GOV_API_KEY"]  # precondition already checked
     pace = _pacer(1.1)
@@ -267,7 +313,9 @@ def run_load_house_rollcalls(client: ZeroDBClient) -> None:
         numbers = fetch_roll_call_numbers(
             congress=HOUSE_ROLLCALLS_CONGRESS, session=HOUSE_ROLLCALLS_SESSION, api_key=api_key
         )
-        sample = sorted(numbers, reverse=True)[:HOUSE_ROLLCALLS_SAMPLE_SIZE]
+        # Already most-recent-first since story 5.8 (the listing sorts, so
+        # every caller does not have to); sliced, not re-sorted.
+        sample = numbers[:HOUSE_ROLLCALLS_SAMPLE_SIZE]
         envelopes = []
         for roll_number in sample:
             pace()
@@ -289,9 +337,12 @@ def run_load_house_rollcalls(client: ZeroDBClient) -> None:
 
     report = HouseRollCallLoader(client, pace=_pacer(1.1)).load(rows)
     logger.info(
-        "load_house_rollcalls: %d roll call(s) written, %d skipped",
+        "load_house_rollcalls: %d roll call(s) written, %d skipped, "
+        "%d new provenance entry(ies), %d rollcall.ingested event(s) emitted",
         report.row_count,
         len(skipped),
+        len(report.provenance_written),
+        len(report.events_emitted),
     )
 
 
@@ -491,16 +542,23 @@ def run_recompute_candidate_positions(client: ZeroDBClient) -> None:
     cadence than the ingest would leave positions a fixed amount of time stale
     for no saving, and a faster one would poll an empty event list.
 
-    No precondition. Unlike `load_house_rollcalls` (blocked on
+    No precondition. Unlike `load_house_rollcalls` (gated on
     `CONGRESS_GOV_API_KEY`) this needs only the project's own credentials.
-    What it needs and does not have is *events to consume*: nothing in this
-    codebase emits `rollcall.ingested` yet — story 5.1's loader does not, and
-    `app.scoring.positions.emit_rollcall_ingested` exists for that story to
-    call when it is wired. So today this job reads an empty list and does
-    nothing, which is an honest no-op rather than a failure, and the day the
-    ingest emits its first event the recompute starts running with no further
-    change here. The mirror image of story 6.1's finding, which emitted
-    `methodology.published` with no consumer.
+
+    **Story 5.7 gave it events to consume.** When 6.2 shipped, this docstring
+    read "nothing in this codebase emits `rollcall.ingested` yet ... today
+    this job reads an empty list and does nothing". That is no longer true:
+    `app.ingest.house_rollcalls.HouseRollCallLoader` now calls
+    `emit_rollcall_ingested` for every roll call whose content actually
+    changed, so the hourly House sync feeds this job directly.
+
+    What it still does not do is write positions, and that is a different and
+    still-honest gap: roll calls carry `topic_ids: []` until story 5.5
+    classifies them, and `votes_for_stance` matches on `topic_ids`, so the
+    recompute finds no evidence and correctly declines to invent a position.
+    The difference matters for triage — this job now exercises its real path
+    (reads events, resolves voters, recomputes) rather than returning early
+    on an empty list.
 
     The log line carries counts and ids only. Nothing voter-derived is
     reachable from the scorer's position path — positions are computed from

@@ -223,9 +223,7 @@ def already_synced_once(
 
 
 @when(parsers.parse('the source corrects roll call "{roll_call_id}" and I sync it again'))
-def sync_corrected(
-    loader: HouseRollCallLoader, result: dict[str, Any], roll_call_id: str
-) -> None:
+def sync_corrected(loader: HouseRollCallLoader, result: dict[str, Any], roll_call_id: str) -> None:
     envelope = copy.deepcopy(_fixture_envelopes()["item_final_passage"])
     envelope["houseRollCallVote"]["result"] = "Agreed to"
     report = loader.load([transform_roll_call(envelope)])
@@ -265,9 +263,7 @@ def exact_event_count(fake: FakeZeroDBTransport, count: int, topic: str) -> None
 
 
 @then(parsers.parse('the "{topic}" event carries roll_call_id "{roll_call_id}"'))
-def event_carries_roll_call_id(
-    fake: FakeZeroDBTransport, topic: str, roll_call_id: str
-) -> None:
+def event_carries_roll_call_id(fake: FakeZeroDBTransport, topic: str, roll_call_id: str) -> None:
     payloads = [event["event_payload"] for event in _events(fake, topic)]
     assert any(p.get("roll_call_id") == roll_call_id for p in payloads), payloads
 
@@ -439,10 +435,10 @@ def source_total_is(result: dict[str, Any], total: int) -> None:
     assert result["source_total"] == total
 
 
-@given(parsers.parse("{count:d} roll calls are stored for congress {congress:d} session {session:d}"))
-def rolls_stored(
-    zerodb: ZeroDBClient, count: int, congress: int, session: int
-) -> None:
+@given(
+    parsers.parse("{count:d} roll calls are stored for congress {congress:d} session {session:d}")
+)
+def rolls_stored(zerodb: ZeroDBClient, count: int, congress: int, session: int) -> None:
     repo: Repository[RollCall] = Repository(client=zerodb, model=RollCall)
     for n in range(1, count + 1):
         repo.upsert(
@@ -458,9 +454,7 @@ def rolls_stored(
 
 
 @when(parsers.parse("I reconcile congress {congress:d} session {session:d}"))
-def reconcile(
-    zerodb: ZeroDBClient, result: dict[str, Any], congress: int, session: int
-) -> None:
+def reconcile(zerodb: ZeroDBClient, result: dict[str, Any], congress: int, session: int) -> None:
     result["reconciliation"] = reconcile_congress_session(
         zerodb, congress=congress, session=session, api_key="test-key"
     )
