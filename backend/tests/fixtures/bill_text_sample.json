@@ -1,0 +1,230 @@
+{
+  "text_versions_hr3424": {
+    "pagination": {
+      "count": 4
+    },
+    "request": {
+      "billNumber": "3424",
+      "billType": "hr",
+      "billUrl": "https://api.congress.gov/v3/bill/119/hr/3424?format=json",
+      "congress": "119",
+      "contentType": "application/json",
+      "format": "json"
+    },
+    "textVersions": [
+      {
+        "date": "2025-09-09T04:00:00Z",
+        "formats": [
+          {
+            "type": "Formatted Text",
+            "url": "https://www.congress.gov/119/bills/hr3424/BILLS-119hr3424rfs.htm"
+          },
+          {
+            "type": "PDF",
+            "url": "https://www.congress.gov/119/bills/hr3424/BILLS-119hr3424rfs.pdf"
+          },
+          {
+            "type": "Formatted XML",
+            "url": "https://www.congress.gov/119/bills/hr3424/BILLS-119hr3424rfs.xml"
+          }
+        ],
+        "type": "Referred in Senate"
+      },
+      {
+        "date": "2025-09-08T04:00:00Z",
+        "formats": [
+          {
+            "type": "Formatted Text",
+            "url": "https://www.congress.gov/119/bills/hr3424/BILLS-119hr3424rh.htm"
+          },
+          {
+            "type": "PDF",
+            "url": "https://www.congress.gov/119/bills/hr3424/BILLS-119hr3424rh.pdf"
+          },
+          {
+            "type": "Formatted XML",
+            "url": "https://www.congress.gov/119/bills/hr3424/BILLS-119hr3424rh.xml"
+          }
+        ],
+        "type": "Reported in House"
+      },
+      {
+        "date": "2025-09-08T04:00:00Z",
+        "formats": [
+          {
+            "type": "Formatted Text",
+            "url": "https://www.congress.gov/119/bills/hr3424/BILLS-119hr3424eh.htm"
+          },
+          {
+            "type": "PDF",
+            "url": "https://www.congress.gov/119/bills/hr3424/BILLS-119hr3424eh.pdf"
+          },
+          {
+            "type": "Formatted XML",
+            "url": "https://www.congress.gov/119/bills/hr3424/BILLS-119hr3424eh.xml"
+          }
+        ],
+        "type": "Engrossed in House"
+      },
+      {
+        "date": "2025-05-15T04:00:00Z",
+        "formats": [
+          {
+            "type": "Formatted Text",
+            "url": "https://www.congress.gov/119/bills/hr3424/BILLS-119hr3424ih.htm"
+          },
+          {
+            "type": "PDF",
+            "url": "https://www.congress.gov/119/bills/hr3424/BILLS-119hr3424ih.pdf"
+          },
+          {
+            "type": "Formatted XML",
+            "url": "https://www.congress.gov/119/bills/hr3424/BILLS-119hr3424ih.xml"
+          }
+        ],
+        "type": "Introduced in House"
+      }
+    ]
+  },
+  "text_versions_hr1": {
+    "pagination": {
+      "count": 6
+    },
+    "request": {
+      "billNumber": "1",
+      "billType": "hr",
+      "billUrl": "https://api.congress.gov/v3/bill/119/hr/1?format=json",
+      "congress": "119",
+      "contentType": "application/json",
+      "format": "json"
+    },
+    "textVersions": [
+      {
+        "date": null,
+        "formats": [
+          {
+            "type": "Formatted Text",
+            "url": "https://www.congress.gov/119/bills/hr1/BILLS-119hr1enr.htm"
+          },
+          {
+            "type": "PDF",
+            "url": "https://www.congress.gov/119/bills/hr1/BILLS-119hr1enr.pdf"
+          },
+          {
+            "type": "United States Legislative Markup",
+            "url": "https://www.congress.gov/119/bills/hr1/BILLS-119hr1enr_uslm.xml"
+          },
+          {
+            "type": "Formatted XML",
+            "url": "https://www.congress.gov/119/bills/hr1/BILLS-119hr1enr.xml"
+          }
+        ],
+        "type": "Enrolled Bill"
+      },
+      {
+        "date": "2025-07-01T04:00:00Z",
+        "formats": [
+          {
+            "type": "Formatted Text",
+            "url": "https://www.congress.gov/119/bills/hr1/BILLS-119hr1eas.htm"
+          },
+          {
+            "type": "PDF",
+            "url": "https://www.congress.gov/119/bills/hr1/BILLS-119hr1eas.pdf"
+          },
+          {
+            "type": "Formatted XML",
+            "url": "https://www.congress.gov/119/bills/hr1/BILLS-119hr1eas.xml"
+          }
+        ],
+        "type": "Engrossed Amendment Senate"
+      },
+      {
+        "date": "2025-06-28T04:00:00Z",
+        "formats": [
+          {
+            "type": "Formatted Text",
+            "url": "https://www.congress.gov/119/bills/hr1/BILLS-119hr1pcs.htm"
+          },
+          {
+            "type": "PDF",
+            "url": "https://www.congress.gov/119/bills/hr1/BILLS-119hr1pcs.pdf"
+          },
+          {
+            "type": "Formatted XML",
+            "url": "https://www.congress.gov/119/bills/hr1/BILLS-119hr1pcs.xml"
+          }
+        ],
+        "type": "Placed on Calendar Senate"
+      },
+      {
+        "date": "2025-05-22T04:00:00Z",
+        "formats": [
+          {
+            "type": "Formatted Text",
+            "url": "https://www.congress.gov/119/bills/hr1/BILLS-119hr1eh.htm"
+          },
+          {
+            "type": "PDF",
+            "url": "https://www.congress.gov/119/bills/hr1/BILLS-119hr1eh.pdf"
+          },
+          {
+            "type": "Formatted XML",
+            "url": "https://www.congress.gov/119/bills/hr1/BILLS-119hr1eh.xml"
+          }
+        ],
+        "type": "Engrossed in House"
+      },
+      {
+        "date": "2025-05-20T04:00:00Z",
+        "formats": [
+          {
+            "type": "Formatted Text",
+            "url": "https://www.congress.gov/119/bills/hr1/BILLS-119hr1rh.htm"
+          },
+          {
+            "type": "PDF",
+            "url": "https://www.congress.gov/119/bills/hr1/BILLS-119hr1rh.pdf"
+          },
+          {
+            "type": "Formatted XML",
+            "url": "https://www.congress.gov/119/bills/hr1/BILLS-119hr1rh.xml"
+          }
+        ],
+        "type": "Reported in House"
+      },
+      {
+        "date": "2025-07-05T03:59:59Z",
+        "formats": [
+          {
+            "type": "Formatted Text",
+            "url": "https://www.congress.gov/119/plaws/publ21/PLAW-119publ21.htm"
+          },
+          {
+            "type": "PDF",
+            "url": "https://www.congress.gov/119/plaws/publ21/PLAW-119publ21.pdf"
+          },
+          {
+            "type": "United States Legislative Markup",
+            "url": "https://www.congress.gov/119/plaws/publ21/PLAW-119publ21_uslm.xml"
+          }
+        ],
+        "type": "Public Law"
+      }
+    ]
+  },
+  "documents": {
+    "hr3424_rfs_xml": {
+      "url": "https://www.congress.gov/119/bills/hr3424/BILLS-119hr3424rfs.xml",
+      "content_type": "application/xml",
+      "size": 4233,
+      "text": "<?xml version=\"1.0\"?>\n<?xml-stylesheet type=\"text/xsl\" href=\"billres.xsl\"?>\n<!DOCTYPE bill PUBLIC \"-//US Congress//DTDs/bill.dtd//EN\" \"bill.dtd\">\n<bill bill-stage=\"Referred-in-Senate\" dms-id=\"H755051BEA4234A059B0E07B971D86CB6\" public-private=\"public\" key=\"G\" bill-type=\"olc\" stage-count=\"1\"><metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n<dublinCore>\n<dc:title>119 HR 3424 : Shared Property Agency Collaboration and Engagement Act of 2025</dc:title>\n<dc:publisher>U.S. House of Representatives</dc:publisher>\n<dc:date>2025-09-09</dc:date>\n<dc:format>text/xml</dc:format>\n<dc:language>EN</dc:language>\n<dc:rights>Pursuant to Title 17 Section 105 of the United States Code, this file is not subject to copyright protection and is in the public domain.</dc:rights>\n</dublinCore>\n</metadata>\n<form>\n<distribution-code display=\"yes\">IIB</distribution-code><congress display=\"yes\">119th CONGRESS</congress><session display=\"yes\">1st Session</session><legis-num display=\"yes\">H. R. 3424</legis-num><current-chamber display=\"yes\">IN THE SENATE OF THE UNITED STATES</current-chamber><action><action-date date=\"20250909\">September 9, 2025</action-date><action-desc>Received; read twice and referred to the <committee-name committee-id=\"SSEV00\">Committee on Environment and Public Works</committee-name></action-desc></action><legis-type>AN ACT</legis-type><official-title display=\"yes\">To require the Administrator of the General Services Administration to collaborate with Federal tenants with respect to shared-space arrangements, and for other purposes.</official-title></form><legis-body id=\"H869BE8394D064F4284A0AEC8F00FC629\" style=\"OLC\"><section id=\"H88B19429B2924AD48DA911D1638DA2BB\" section-type=\"section-one\"><enum>1.</enum><header>Short title</header><text display-inline=\"no-display-inline\">This Act may be cited as the <quote><short-title>Shared Property Agency Collaboration and Engagement Act of 2025</short-title></quote> or the <quote><short-title>SPACE Act of 2025</short-title></quote>.</text></section><section id=\"HA3FB0FBCD3BF4EF1B176B5C59F1D2F83\" section-type=\"subsequent-section\"><enum>2.</enum><header>GSA collaboration with Federal tenants</header><subsection id=\"H0008F25972604D0B85AE402070E9D9DF\"><enum>(a)</enum><header>In general</header><text display-inline=\"yes-display-inline\">In carrying out section 2302 of the Thomas R. Carper Water Resources Development Act of 2024 (<external-xref legal-doc=\"usc\" parsable-cite=\"usc/40/584\">40 U.S.C. 584</external-xref> note), the Administrator of the General Services Administration shall\u2014</text><paragraph id=\"HD83E8AD6377F43129427840F1D712520\"><enum>(1)</enum><text display-inline=\"yes-display-inline\">collaborate with tenants of federally-leased space to better identify concerns among Federal agencies around shared-space arrangements;</text></paragraph><paragraph id=\"HDB3CA11FEAA14CC5821DA5D38967EE2D\"><enum>(2)</enum><text>work to develop a criteria that would facilitate the expanded use of space-sharing or collocating;</text></paragraph><paragraph id=\"H3DD2F88B7DD24885A812F95795797D09\"><enum>(3)</enum><text>identify how special-use spaces can be used to improve space-sharing or collocating; and</text></paragraph><paragraph id=\"HBAF518397F4C45E0A2B235A667AE796A\"><enum>(4)</enum><text>establish measurable objectives, in consultation with the tenants of federally-leased space, to quantify the success of shared-space arrangements among Federal agencies. </text></paragraph></subsection><subsection id=\"H5E04730378444A958F72BF575D2FC9FC\"><enum>(b)</enum><header>Briefing</header><text display-inline=\"yes-display-inline\">Not later than 6 months after the date of enactment of this Act, the Administrator shall brief the Committee on Transportation and Infrastructure of the House of Representatives and the Committee on Environment and Public Works of the Senate on the implementation of the requirements described in subsection (a). </text></subsection></section></legis-body><attestation><attestation-group><attestation-date date=\"20250908\" chamber=\"House\">Passed the House of Representatives September 8, 2025.</attestation-date><attestor display=\"yes\">Kevin F. McCumber,</attestor><role>Clerk.</role></attestation-group></attestation></bill> \n\n"
+    },
+    "hr3424_ih_htm": {
+      "url": "https://www.congress.gov/119/bills/hr3424/BILLS-119hr3424ih.htm",
+      "content_type": "text/html",
+      "size": 2583,
+      "text": "<html><body><pre>\n[Congressional Bills 119th Congress]\n[From the U.S. Government Publishing Office]\n[H.R. 3424 Introduced in House (IH)]\n\n&lt;DOC&gt;\n\n\n\n\n\n\n119th CONGRESS\n  1st Session\n                                H. R. 3424\n\nTo require the Administrator of the General Services Administration to \n     collaborate with Federal tenants with respect to shared-space \n                 arrangements, and for other purposes.\n\n\n_______________________________________________________________________\n\n\n                    IN THE HOUSE OF REPRESENTATIVES\n\n                              May 15, 2025\n\n  Mr. Onder introduced the following bill; which was referred to the \n             Committee on Transportation and Infrastructure\n\n_______________________________________________________________________\n\n                                 A BILL\n\n\n \nTo require the Administrator of the General Services Administration to \n     collaborate with Federal tenants with respect to shared-space \n                 arrangements, and for other purposes.\n\n    Be it enacted by the Senate and House of Representatives of the \nUnited States of America in Congress assembled,\n\nSECTION 1. SHORT TITLE.\n\n    This Act may be cited as the ``Shared Property Agency Collaboration \nand Engagement Act of 2025'' or the ``SPACE Act of 2025''.\n\nSEC. 2. GSA COLLABORATION WITH FEDERAL TENANTS.\n\n    (a) In General.--In carrying out section 2302 of the Thomas R. \nCarper Water Resources Development Act of 2024 (40 U.S.C. 584 note), \nthe Administrator of the General Services Administration shall--\n            (1) collaborate with tenants of federally-leased space to \n        better identify concerns among Federal agencies around shared-\n        space arrangements;\n            (2) work to develop a criteria that would facilitate the \n        expanded use of space-sharing or collocating;\n            (3) identify how special-use spaces can be used to improve \n        space-sharing or collocating; and\n            (4) establish measurable objectives, in consultation with \n        the tenants of federally-leased space, to quantify the success \n        of shared-space arrangements among Federal agencies.\n    (b) Briefing.--Not later than 6 months after the date of enactment \nof this Act, the Administrator shall brief the Committee on \nTransportation and Infrastructure of the House of Representatives and \nthe Committee on Environment and Public Works of the Senate on the \nimplementation of the requirements described in subsection (a).\n                                 &lt;all&gt;\n</pre></body></html>\n"
+    }
+  }
+}
