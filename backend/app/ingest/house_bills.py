@@ -145,6 +145,13 @@ logger = logging.getLogger(__name__)
 #: api.congress.gov.
 ADAPTER_VERSION = "house_bills/v1"
 
+#: The subjects endpoint's documented maximum page size, and what
+#: `fetch_bill_subjects` must ask for explicitly -- the endpoint's DEFAULT is
+#: 20 and it truncates silently. See that function's docstring for the live
+#: finding (H.R. 1's 239 subject terms came back as 19) and why truncation here
+#: produces a confidently wrong classification rather than a smaller one.
+SUBJECTS_PAGE_LIMIT = 250
+
 
 class HouseBillSourceError(Exception):
     """The bill source did not answer as the fetch functions expect.
@@ -244,18 +251,61 @@ def fetch_bill_subjects(
     """The bill's subjects envelope (`{"subjects": {"policyArea": {...},
     "legislativeSubjects": [...]}}`).
 
+    **Asks for `limit=250` explicitly, and that is a bug fix, not a tidy-up.**
+    Found live during story 5.5 (2026-10-19): without an explicit `limit` the
+    endpoint defaults to **20** and silently truncates, with the real count
+    only visible in a `pagination` object this function discards. H.R. 1 of the
+    119th Congress has 239 legislative subject terms and came back with 19.
+
+    Why that was a serious bug rather than a cosmetic one: story 5.5's
+    classifier reads `subjects[]` and applies prd.md's omnibus rule to the
+    number of distinct topics it reaches. A 239-term reconciliation bill
+    truncated to 19 terms looks like an ordinary single-subject bill, so the
+    breadth rule does not fire and the omnibus gets *accepted* topic tags --
+    exactly the "a vote on a 1,000-page bill is not a vote for every clause"
+    failure the rule exists to prevent. Truncation here produces a confidently
+    wrong classification downstream, not a smaller one.
+
+    250 is the endpoint's documented maximum. Bills above it are not paged:
+    `pagination.count` is checked and a truncating response is RAISED rather
+    than returned, because a silently short subject list is the bug this
+    docstring is about and returning a partial one quietly would reintroduce
+    it one bill higher up. No real bill observed in the 117th-119th Congresses
+    exceeds 250 (the maximum seen is 240, on H.R. 1), so this is a guard
+    against a future bill rather than a case that needs paging today -- and
+    when one appears, it fails loudly with the real count in the message.
+
     Raises:
-        HouseBillSourceError: the request failed or did not come back 200.
+        HouseBillSourceError: the request failed, did not come back 200, or
+            reported more subject terms than one page can carry.
     """
     url = f"{base_url}/bill/{congress}/{bill_type.lower()}/{bill_number}/subjects"
-    return _get_json(url, api_key=api_key, timeout_seconds=timeout_seconds)
+    body = _get_json(
+        url, api_key=api_key, timeout_seconds=timeout_seconds, limit=SUBJECTS_PAGE_LIMIT
+    )
+    pagination = body.get("pagination")
+    if isinstance(pagination, dict):
+        count = pagination.get("count")
+        if isinstance(count, int) and count > SUBJECTS_PAGE_LIMIT:
+            raise HouseBillSourceError(
+                f"GET {url} reports {count} subject terms, more than one page of "
+                f"{SUBJECTS_PAGE_LIMIT}. A truncated subject list makes an omnibus "
+                f"bill look single-subject and defeats story 5.5's breadth rule, so "
+                f"this is refused rather than returned short. Add paging here."
+            )
+    return body
 
 
-def _get_json(url: str, *, api_key: str, timeout_seconds: float) -> dict[str, Any]:
+def _get_json(
+    url: str, *, api_key: str, timeout_seconds: float, limit: int | None = None
+) -> dict[str, Any]:
+    params: dict[str, Any] = {"api_key": api_key, "format": "json"}
+    if limit is not None:
+        params["limit"] = limit
     try:
         response = httpx.get(
             url,
-            params={"api_key": api_key, "format": "json"},
+            params=params,
             headers={"User-Agent": CONGRESS_GOV_USER_AGENT},
             timeout=timeout_seconds,
         )

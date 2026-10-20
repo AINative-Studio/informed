@@ -85,3 +85,4 @@ Thumbs.db
 
 # Story 14.1: local virtualenv used to run the backend suite
 backend/.venv/
+.venv312/
