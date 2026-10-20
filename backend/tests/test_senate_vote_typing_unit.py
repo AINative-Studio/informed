@@ -659,3 +659,51 @@ def test_the_guard_accepts_none_rather_than_guessing() -> None:
     `_SkipRollCall` already covers it); this guard must not claim it as its
     own, or the skip report would blame the wrong thing."""
     guard_recorded_vote(None)
+
+
+# --- 8.4: the reason reaching the UI, end to end ------------------------------
+#
+# 8.4's acceptance criterion is "the UI explains it", and the UI reads the
+# alignment API's citations, not `roll_calls` directly. A reason stored on the
+# row but dropped on the way out is a reason the UI still cannot render, so
+# these pin the whole path: member_votes -> VoteEvidence -> Citation.
+
+
+def test_vote_evidence_carries_the_bundled_reason() -> None:
+    """`app.scoring.positions.VoteEvidence` is what story 6.7 cites from."""
+    from app.repositories.models import MemberVote
+    from app.scoring.positions import VoteEvidence
+
+    assert "bundled_reason" in VoteEvidence.__dataclass_fields__
+    assert "bundled_reason" in MemberVote.model_fields
+
+
+def test_the_alignment_citation_publishes_the_bundled_reason() -> None:
+    """The API model the UI actually reads. Without this field the page can
+    show "bundled" but not why, which is exactly what 8.4 forbids."""
+    from app.scoring.models import Citation
+
+    assert "bundled_reason" in Citation.model_fields
+    citation = Citation(
+        roll_call_id="us-senate:119-2:20",
+        position="yea",
+        vote_type="final_passage",
+        voted_at="2026-01-15T12:00:00Z",
+        is_bundled=True,
+        bundled_reason=BundledReason.OMNIBUS_MARKER.value,
+    )
+    assert explain_bundled_reason(citation.bundled_reason)
+
+
+def test_an_unbundled_citation_publishes_no_reason() -> None:
+    from app.scoring.models import Citation
+
+    citation = Citation(
+        roll_call_id="us-senate:119-2:20",
+        position="yea",
+        vote_type="final_passage",
+        voted_at="2026-01-15T12:00:00Z",
+    )
+    assert citation.is_bundled is False
+    assert citation.bundled_reason is None
+    assert explain_bundled_reason(citation.bundled_reason) is None

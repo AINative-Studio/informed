@@ -261,6 +261,9 @@ class AlignmentService:
                     voted_at=vote.voted_at,
                     bill_id=vote.bill_id,
                     is_bundled=vote.is_bundled,
+                    # Story 8.4: the reason travels with the flag, so the page
+                    # can explain a discounted vote rather than just mark it.
+                    bundled_reason=vote.bundled_reason,
                 )
                 # Only the votes that actually evidenced the position: an
                 # abstention is in `member_votes` for this stance's topic but
