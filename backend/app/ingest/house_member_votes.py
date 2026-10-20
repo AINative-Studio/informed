@@ -165,6 +165,7 @@ import httpx
 
 from app.ingest.house_rollcalls import (
     CONGRESS_GOV_BASE_URL,
+    CONGRESS_GOV_USER_AGENT,
     HouseRollCallSourceError,
 )
 
@@ -251,7 +252,10 @@ def fetch_member_votes(
     url = f"{base_url}/house-vote/{congress}/{session}/{roll_call_number}/members"
     try:
         response = httpx.get(
-            url, params={"api_key": api_key, "format": "json"}, timeout=timeout_seconds
+            url,
+            params={"api_key": api_key, "format": "json"},
+            headers={"User-Agent": CONGRESS_GOV_USER_AGENT},
+            timeout=timeout_seconds,
         )
     except httpx.HTTPError as exc:
         raise HouseRollCallSourceError(f"could not reach {url}: {exc}") from exc

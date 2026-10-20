@@ -356,7 +356,7 @@ def test_a_speaker_election_tally_is_zero_and_the_record_still_ingests() -> None
 def test_fetch_roll_call_numbers_returns_every_roll_call_number(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fake_get(url: str, *, params: dict, timeout: float) -> httpx.Response:
+    def fake_get(url: str, *, params: dict, headers: dict, timeout: float) -> httpx.Response:
         assert "house-vote/118/2" in url
         assert params["api_key"] == "test-key"
         body = {"houseRollCallVotes": [{"rollCallNumber": 397}, {"rollCallNumber": 398}]}
@@ -374,7 +374,7 @@ def test_fetch_roll_call_numbers_returns_every_roll_call_number(
 
 
 def test_fetch_roll_call_numbers_raises_on_non_200(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_get(url: str, *, params: dict, timeout: float) -> httpx.Response:
+    def fake_get(url: str, *, params: dict, headers: dict, timeout: float) -> httpx.Response:
         return httpx.Response(403, json={"error": {"code": "API_KEY_INVALID"}})
 
     monkeypatch.setattr(house_rollcalls_module.httpx, "get", fake_get)
@@ -385,7 +385,7 @@ def test_fetch_roll_call_numbers_raises_on_non_200(monkeypatch: pytest.MonkeyPat
 def test_fetch_roll_call_numbers_raises_when_body_shape_is_unexpected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fake_get(url: str, *, params: dict, timeout: float) -> httpx.Response:
+    def fake_get(url: str, *, params: dict, headers: dict, timeout: float) -> httpx.Response:
         return httpx.Response(200, json={"somethingElse": []})
 
     monkeypatch.setattr(house_rollcalls_module.httpx, "get", fake_get)
@@ -394,7 +394,7 @@ def test_fetch_roll_call_numbers_raises_when_body_shape_is_unexpected(
 
 
 def test_fetch_roll_call_numbers_wraps_a_transport_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_get(url: str, *, params: dict, timeout: float) -> httpx.Response:
+    def fake_get(url: str, *, params: dict, headers: dict, timeout: float) -> httpx.Response:
         raise httpx.ConnectError("boom")
 
     monkeypatch.setattr(house_rollcalls_module.httpx, "get", fake_get)
@@ -410,7 +410,7 @@ def test_fetch_roll_call_numbers_skips_an_entry_with_a_non_int_roll_call_number(
     skipped, not fatal" posture for the list endpoint itself.
     """
 
-    def fake_get(url: str, *, params: dict, timeout: float) -> httpx.Response:
+    def fake_get(url: str, *, params: dict, headers: dict, timeout: float) -> httpx.Response:
         body = {
             "houseRollCallVotes": [
                 {"rollCallNumber": 397},
@@ -428,7 +428,7 @@ def test_fetch_roll_call_numbers_skips_an_entry_with_a_non_int_roll_call_number(
 def test_fetch_roll_call_item_returns_the_full_envelope(monkeypatch: pytest.MonkeyPatch) -> None:
     expected = _envelope()
 
-    def fake_get(url: str, *, params: dict, timeout: float) -> httpx.Response:
+    def fake_get(url: str, *, params: dict, headers: dict, timeout: float) -> httpx.Response:
         assert "house-vote/119/2/452" in url
         return httpx.Response(200, json=expected)
 
@@ -442,7 +442,7 @@ def test_fetch_roll_call_item_returns_the_full_envelope(monkeypatch: pytest.Monk
 def test_fetch_roll_call_item_raises_when_vote_object_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fake_get(url: str, *, params: dict, timeout: float) -> httpx.Response:
+    def fake_get(url: str, *, params: dict, headers: dict, timeout: float) -> httpx.Response:
         return httpx.Response(200, json={"nope": True})
 
     monkeypatch.setattr(house_rollcalls_module.httpx, "get", fake_get)
@@ -451,7 +451,7 @@ def test_fetch_roll_call_item_raises_when_vote_object_missing(
 
 
 def test_fetch_roll_call_item_raises_on_non_200(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_get(url: str, *, params: dict, timeout: float) -> httpx.Response:
+    def fake_get(url: str, *, params: dict, headers: dict, timeout: float) -> httpx.Response:
         return httpx.Response(404, json={"error": {"code": "NOT_FOUND"}})
 
     monkeypatch.setattr(house_rollcalls_module.httpx, "get", fake_get)
@@ -460,7 +460,7 @@ def test_fetch_roll_call_item_raises_on_non_200(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_fetch_roll_call_item_wraps_a_transport_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_get(url: str, *, params: dict, timeout: float) -> httpx.Response:
+    def fake_get(url: str, *, params: dict, headers: dict, timeout: float) -> httpx.Response:
         raise httpx.ConnectError("boom")
 
     monkeypatch.setattr(house_rollcalls_module.httpx, "get", fake_get)

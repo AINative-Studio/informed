@@ -125,7 +125,11 @@ from typing import Any
 
 import httpx
 
-from app.ingest.house_rollcalls import CONGRESS_GOV_BASE_URL, HOUSE_BODY
+from app.ingest.house_rollcalls import (
+    CONGRESS_GOV_BASE_URL,
+    CONGRESS_GOV_USER_AGENT,
+    HOUSE_BODY,
+)
 from app.repositories import ProvenanceContext, Repository
 from app.repositories.models import Bill
 from app.repositories.provenance import content_hash_for
@@ -249,7 +253,10 @@ def fetch_bill_subjects(
 def _get_json(url: str, *, api_key: str, timeout_seconds: float) -> dict[str, Any]:
     try:
         response = httpx.get(
-            url, params={"api_key": api_key, "format": "json"}, timeout=timeout_seconds
+            url,
+            params={"api_key": api_key, "format": "json"},
+            headers={"User-Agent": CONGRESS_GOV_USER_AGENT},
+            timeout=timeout_seconds,
         )
     except httpx.HTTPError as exc:
         raise HouseBillSourceError(f"could not reach {url}: {exc}") from exc

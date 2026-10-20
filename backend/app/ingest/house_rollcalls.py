@@ -259,6 +259,16 @@ logger = logging.getLogger(__name__)
 #: with no key. See the module docstring's blocker note.
 CONGRESS_GOV_BASE_URL = "https://api.congress.gov/v3"
 
+#: Congress.gov returns a 403 with NO body distinguishing it from an invalid
+#: API key when a request carries no `User-Agent` at all -- confirmed live
+#: during story 5.2/5.3 (httpx sends none by default). Every fetch in this
+#: ingest family (`house_rollcalls.py`, `house_member_votes.py`,
+#: `house_bills.py`) sends this header for exactly that reason: a real,
+#: working key that still 403s because of a missing header looks identical to
+#: an invalid key from the response alone, and cost real debugging time
+#: before this was found.
+CONGRESS_GOV_USER_AGENT = "informed-voter-app/0.1 (+https://github.com/ainative-studio/informed)"
+
 #: datamodel.md's documented body id for this table's rows.
 HOUSE_BODY = "us-house"
 
@@ -409,6 +419,7 @@ def _fetch_list_page(
                 "limit": limit,
                 "offset": offset,
             },
+            headers={"User-Agent": CONGRESS_GOV_USER_AGENT},
             timeout=timeout_seconds,
         )
     except httpx.HTTPError as exc:
@@ -583,7 +594,10 @@ def fetch_roll_call_item(
     url = f"{base_url}/house-vote/{congress}/{session}/{roll_call_number}"
     try:
         response = httpx.get(
-            url, params={"api_key": api_key, "format": "json"}, timeout=timeout_seconds
+            url,
+            params={"api_key": api_key, "format": "json"},
+            headers={"User-Agent": CONGRESS_GOV_USER_AGENT},
+            timeout=timeout_seconds,
         )
     except httpx.HTTPError as exc:
         raise HouseRollCallSourceError(f"could not reach {url}: {exc}") from exc
@@ -1141,6 +1155,7 @@ __all__ = [
     "ADAPTER_VERSION",
     "BACKFILL_CONGRESS_SESSIONS",
     "CONGRESS_GOV_BASE_URL",
+    "CONGRESS_GOV_USER_AGENT",
     "LIST_PAGE_SIZE",
     "Reconciliation",
     "fetch_source_total",
