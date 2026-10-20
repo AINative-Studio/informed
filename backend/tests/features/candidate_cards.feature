@@ -54,7 +54,7 @@ Feature: Candidate cards read model (story 7.2)
   Scenario: Reading a card is a single-row fetch, not an aggregation
     Given the card for that candidacy has been rebuilt
     When the ballot reads that candidate's card
-    Then exactly one ZeroDB read was made
+    Then exactly 1 table was read
     And no row was read from candidate_positions
     And no row was read from verdicts
     And no row was read from member_votes

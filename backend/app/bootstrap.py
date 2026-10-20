@@ -296,6 +296,19 @@ TABLE_SCHEMAS: dict[str, dict[str, str]] = {
     },
     "candidate_cards": {
         "id": "string",
+        # Story 7.2 adds these five to datamodel.md's documented field list,
+        # and `app.repositories.models.CandidateCard` argues each one. The
+        # four ids exist because datamodel.md's own line says this table is
+        # queried "By (election, district)" while listing no field that could
+        # serve that query -- `district` is the readable seat name, not an id,
+        # and the election is not named at all. `person_id` is additionally
+        # the key both rebuild events arrive on. `methodology_version` is
+        # prd.md's "every verdict links to the methodology version that
+        # produced it" applied to the summarised positions a card renders.
+        "candidacy_id": "string",
+        "election_id": "string",
+        "district_id": "string",
+        "person_id": "string",
         "person_name": "string",
         "party": "string",
         "district": "string",
@@ -303,6 +316,7 @@ TABLE_SCHEMAS: dict[str, dict[str, str]] = {
         "verdict_counts": "object",
         "say_do_gap": "number",
         "positions_summary": "array",
+        "methodology_version": "string",
         "updated_at": "string",
     },
     "candidate_statements": {

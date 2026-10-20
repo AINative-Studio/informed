@@ -1007,6 +1007,222 @@ class CandidatePosition(RowModel):
         return self
 
 
+class VerdictCounts(BaseModel):
+    """How many of a candidate's promises landed in each verdict value.
+
+    datamodel.md spells this field `verdict_counts {kept, partial, broken, …}`
+    — three names and an ellipsis. The ellipsis is `VerdictValue`'s remaining
+    three (`no_opportunity`, `absent`, `not_testable`), enumerated here rather
+    than left as a free-form dict for the reason every other vocabulary in
+    this module is a `Literal`: a typo'd key would silently read as zero, and
+    "zero promises broken" is a claim about a real person.
+
+    Zero is the right default **for a count that was actually computed**: a
+    card rebuilt from a real set of verdicts that happens to contain no
+    `broken` one genuinely has `broken: 0`. The "nothing has computed this
+    yet" case is carried one level up, by `CandidateCard.verdict_counts`
+    being `None` — see that field.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kept: int = Field(default=0, ge=0)
+    partial: int = Field(default=0, ge=0)
+    broken: int = Field(default=0, ge=0)
+    no_opportunity: int = Field(default=0, ge=0)
+    absent: int = Field(default=0, ge=0)
+    not_testable: int = Field(default=0, ge=0)
+
+    @property
+    def total(self) -> int:
+        """Every counted verdict, whatever its value."""
+        return (
+            self.kept
+            + self.partial
+            + self.broken
+            + self.no_opportunity
+            + self.absent
+            + self.not_testable
+        )
+
+
+class PositionSummaryEntry(BaseModel):
+    """One stance's computed position, as the ballot view renders it.
+
+    datamodel.md types `positions_summary` as an array and does not say of
+    what. This is the smallest shape that makes story 7.1's ballot view a
+    single read: the stance the position is about, the signed value, its
+    confidence, and how many records it rests on. All four are already on the
+    `candidate_positions` row this entry is copied from — so this is
+    datamodel.md rule 2's denormalisation, not new computation.
+
+    `evidence_count` is carried rather than dropped because story 6.5's
+    confidence badge is a function of it (`app.scoring.badges`), and a ballot
+    view that had to re-read `candidate_positions` to render a badge would be
+    exactly the request-time aggregation this table exists to remove.
+
+    What an entry deliberately does NOT carry is the roll calls behind the
+    position. `app.scoring.positions.VoteEvidence` holds those and story 6.7's
+    cited reasons read them — on the candidate *detail* page (story 7.3),
+    which is a different and deliberately slower screen. Copying a member's
+    whole voting record into every card would make the read model larger than
+    the tables it summarises.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    stance_id: str
+    s_value: float = Field(ge=-1.0, le=1.0)
+    confidence: float = Field(ge=0.0, le=1.0)
+    evidence_count: int = Field(ge=0)
+
+
+class CandidateCard(RowModel):
+    """The per-candidacy read model the ballot view reads (story 7.2).
+
+    datamodel.md: id pattern `{candidacy_id}`; fields person_name, party,
+    district, photo_url, `verdict_counts {kept, partial, broken, …}`,
+    say_do_gap, positions_summary, updated_at; queried "By (election,
+    district)".
+
+    ===========================================================================
+    WHY THIS TABLE EXISTS AT ALL
+    ===========================================================================
+
+    datamodel.md rule 4: "`candidate_cards` is rebuilt from events, so the
+    ballot view never aggregates at request time." Every field here is a copy
+    of something already stored elsewhere, which in a relational schema would
+    be a normalisation error and here is the entire point: there are no joins,
+    so a ballot view wanting a candidate's name, party, seat, verdict tallies
+    and position summary would otherwise read `candidacies`, `people`,
+    `districts`, `verdicts` and `candidate_positions` — five tables, the last
+    two of which it would have to *aggregate* — per candidate, for 6-15
+    candidates per ballot. `app.ballot.service`'s own docstring already names
+    this table as the fix for the full-table `people` read it does today.
+
+    ===========================================================================
+    THE FOUR FIELDS datamodel.md's LINE DOES NOT LIST, AND WHY THEY ARE HERE
+    ===========================================================================
+
+    `election_id` and `district_id` are not in datamodel.md's field list, and
+    they are added because the SAME LINE says the table is queried "**By
+    (election, district)**". Neither listed field can serve that query:
+
+      * `district` sits beside `person_name` and `party` as display data, and
+        `app.summary_card.models.CandidateSummaryCard` — shipped by story 14.6
+        against this same spec — already types it as a "Human-readable
+        district/seat name" ("Congressional District 11"). That is not an id,
+        and it is not unique across states;
+      * nothing listed names the election at all, so "the cards for the 2026
+        general in CA-11" would be unanswerable from a row.
+
+    This is datamodel.md rule 2 ("each row carries the fields its main query
+    filters on") applied to the query datamodel.md itself states for this
+    table. Both ids are *recoverable* from the card's own id, since
+    `{candidacy_id}` is `{election_id}:{district_id}:{person_id}` — but then
+    every reader re-implements that split, and an OCD-ID contains colons of
+    its own, so the parse is not even unambiguous. Stored fields instead.
+
+    `person_id` is here for the same reason plus one more: it is the key both
+    rebuild events arrive on. `positions.recomputed` and `verdict.published`
+    carry a `person_id` and no candidacy id, so "which cards does this event
+    affect" is a query for every candidacy of one person.
+
+    `candidacy_id` duplicates `id`, because `references` resolves *fields*,
+    not the id — without the field the repository could not check that the
+    candidacy exists, and a reader should not have to know that this table's
+    id happens to be another table's id.
+
+    ===========================================================================
+    WHY THE THREE COMPUTED FIELDS ARE NULLABLE
+    ===========================================================================
+
+    `verdict_counts`, `say_do_gap` and `positions_summary` are each `None`
+    until something has actually computed them, and that is prd.md's "evidence
+    over opinion" rather than laziness. The two rebuild triggers know about
+    different halves of the card:
+
+      * `positions.recomputed` knows positions. It fills `positions_summary`
+        and must leave `verdict_counts` alone — writing `kept: 0` would tell a
+        voter this candidate kept none of their promises, when the truth is
+        that no verdict has been published about them at all (epic 11 is
+        unbuilt; the live project holds zero `verdicts` rows, measured
+        2026-10-19).
+      * `verdict.published` knows verdicts. It fills `verdict_counts` and
+        `say_do_gap` and must leave `positions_summary` alone.
+
+    So a rebuild is a **partial** rebuild by construction, and
+    `app.ballot.cards.CandidateCardBuilder` merges onto what is already stored
+    rather than restating the whole row. `None` means "not computed yet"; a
+    zero inside a populated `VerdictCounts` is a real counted zero.
+
+    `say_do_gap` is additionally `None` when it is genuinely undefined rather
+    than merely uncomputed — a candidate all of whose verdicts are
+    `no_opportunity`/`not_testable` has no testable promise to have kept or
+    broken, so there is no gap to report. See `app.ballot.cards.say_do_gap_for`.
+
+    ===========================================================================
+    NOT APPEND-ONLY, DELIBERATELY
+    ===========================================================================
+
+    `version_key` is None, so this table is written with `upsert` and never
+    `append_version`. datamodel.md rule 6 names exactly three append-only
+    tables — "verdicts, positions and the provenance log" — and this is not
+    one of them, because a read model holds no history of its own: every fact
+    in it is a copy of a row in a table that DOES keep its history, and a
+    second append-only history of derived values would give the
+    reproducibility record two spellings that could disagree. `updated_at`
+    says when the copy was refreshed; the `verdicts` and
+    `candidate_positions` rows say what was true when.
+    """
+
+    table_name: ClassVar[str] = "candidate_cards"
+    #: Empty, like `Person`'s: datamodel.md's id pattern here is
+    #: `{candidacy_id}` — the id IS the candidacy's id, not a composition of
+    #: this row's own fields. Deriving it from
+    #: `(election_id, district_id, person_id)` would reproduce the candidacy id
+    #: by coincidence rather than by rule, and would silently mint a different
+    #: id the day `Candidacy.natural_key` changed. The builder passes the
+    #: candidacy's own id straight through.
+    natural_key: ClassVar[tuple[str, ...]] = ()
+    references: ClassVar[dict[str, str]] = {
+        # Checked before every write, which is what makes "a card always names
+        # a real candidacy" true rather than hoped for. `person_id` is checked
+        # too: the rebuild resolves it from the candidacy, so a card naming a
+        # person who does not exist would mean the candidacy itself was corrupt.
+        "candidacy_id": "candidacies",
+        "person_id": "people",
+    }
+    version_key: ClassVar[tuple[str, ...] | None] = None
+
+    candidacy_id: str
+    election_id: str
+    district_id: str
+    person_id: str
+
+    person_name: str
+    party: str | None = None
+    #: The district's readable name ("Congressional District 11"), copied from
+    #: the `districts` row, falling back to the raw OCD-ID when that row is
+    #: unreadable — exactly as `SummaryCardService._district_name` already
+    #: does: a legible id beats a 500 for a display string.
+    district: str
+    photo_url: str | None = None
+
+    verdict_counts: VerdictCounts | None = None
+    say_do_gap: float | None = Field(default=None, ge=0.0, le=1.0)
+    positions_summary: list[PositionSummaryEntry] | None = None
+    #: Which methodology produced the summarised positions. Not in
+    #: datamodel.md's field list, and carried for a reason prd.md states as a
+    #: rule rather than a nicety: "every verdict links to the methodology
+    #: version that produced it". A card is the surface a voter actually
+    #: reads, and a position summary whose weights cannot be named is exactly
+    #: the unciteable number prd.md forbids. Null until a positions rebuild
+    #: fills it, like the summary itself.
+    methodology_version: str | None = None
+    updated_at: str
+
+
 # --- Governance and provenance --------------------------------------------
 
 
@@ -1488,6 +1704,7 @@ class ProvenanceLog(RowModel):
 __all__ = [
     "Bill",
     "Body",
+    "CandidateCard",
     "CandidatePosition",
     "Chamber",
     "District",
@@ -1496,6 +1713,7 @@ __all__ = [
     "JurisdictionLevel",
     "MemberVote",
     "Person",
+    "PositionSummaryEntry",
     "PromiseSource",
     "ProvenanceLog",
     "QaStatus",
@@ -1507,6 +1725,7 @@ __all__ = [
     "Tally",
     "Term",
     "Verdict",
+    "VerdictCounts",
     "VerdictValue",
     "VotePosition",
     "VoteType",
