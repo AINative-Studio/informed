@@ -68,7 +68,42 @@ def test_default_jobs_registers_exactly_the_documented_jobs() -> None:
         # producer. A no-op until something emits that event; see
         # `run_recompute_candidate_positions`'s docstring for that gap.
         "recompute_candidate_positions",
+        # Story 7.2. The consumer of BOTH events datamodel.md names as
+        # producers of `candidate_cards`. Registered immediately after the
+        # recompute above, deliberately: that job's own `positions.recomputed`
+        # events are this one's freshest input.
+        "rebuild_candidate_cards",
     ]
+
+
+def test_the_card_rebuild_runs_at_half_the_five_minute_promise() -> None:
+    """backlog.md 11.6: "cards update within 5 minutes of publish".
+
+    Asserted against the named promise rather than against
+    `timedelta(minutes=2, seconds=30)`, so this test pins the PROMISE and not
+    a restated cadence — the same shape as the 2-hour publication check. A
+    verdict published just after one run becomes visible on the next, so
+    worst-case visible lag is one interval plus one run's duration; half the
+    promise leaves a run the other half as margin.
+    """
+    job = next(j for j in jobs_module.default_jobs() if j.name == "rebuild_candidate_cards")
+    assert job.precondition is None
+    assert job.interval * 2 <= jobs_module.CANDIDATE_CARD_REBUILD_PROMISE
+
+
+def test_the_card_rebuild_runs_after_the_position_recompute() -> None:
+    """Order in the registry is load-bearing here, not cosmetic.
+
+    `recompute_candidate_positions` is the only live producer of the events
+    `rebuild_candidate_cards` consumes, so running the rebuild immediately
+    after means one invocation of the runner carries a position change all the
+    way to the card a voter reads. Reversed, the same change would wait a full
+    interval.
+    """
+    names = [job.name for job in jobs_module.default_jobs()]
+    assert names.index("rebuild_candidate_cards") == (
+        names.index("recompute_candidate_positions") + 1
+    )
 
 
 def test_the_panel_gate_check_runs_daily_with_no_precondition() -> None:

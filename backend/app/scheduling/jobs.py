@@ -1,6 +1,6 @@
 """The real job registry: every periodic task this codebase needs, named once.
 
-Eight jobs today, one per story that flagged the scheduling gap:
+Ten jobs today, one per story that flagged the scheduling gap:
 
   * `sweep_correction_emails` — story 12.4's 90-day contact-email retention
     sweep. Daily. The most urgent of the three (see `app.corrections.retention`'s
@@ -70,6 +70,19 @@ Eight jobs today, one per story that flagged the scheduling gap:
     and this consumer has real events to read. It still writes no positions
     until story 5.5 classifies roll calls into `topic_ids` (6.2's own
     scoping note), but the wiring 6.2 documented as missing is closed.
+  * `rebuild_candidate_cards` — story 7.2's consumer of BOTH events
+    datamodel.md names as producers of the `candidate_cards` read model
+    (`app.ballot.cards.CandidateCardRebuildConsumer`). Every 2.5 minutes:
+    half of backlog.md 11.6's "cards update within 5 minutes of publish"
+    promise, so a run that goes long still keeps it — the same margin
+    reasoning `HOUSE_PUBLICATION_LAG_PROMISE` sets out. No precondition.
+    Registered immediately after `recompute_candidate_positions`, whose
+    `positions.recomputed` events are this job's freshest real input. Its
+    OTHER input, `verdict.published`, has no producer at all: epic 11's
+    verdict engine is unbuilt and the live event log holds zero of them
+    (measured 2026-10-19), so this job reads one real topic and one empty
+    one until story 11.6 wires the second — at which point no change here is
+    needed.
 
 Each job calls directly into the already-tested `app.ingest.*` / `app.corrections.*`
 / `app.integrity.*` logic, using the `ZeroDBClient` the runner injects — exactly
@@ -100,6 +113,7 @@ from collections.abc import Callable
 from datetime import timedelta
 
 from app.agent_memory import sweep_expired_session_memory
+from app.ballot.cards import CandidateCardRebuildConsumer
 from app.corrections.retention import sweep_expired_contact_emails
 from app.ingest.candidacies import (
     ALL_STATES,
@@ -158,6 +172,23 @@ logger = logging.getLogger(__name__)
 #: see `house_sync_event_backfill.feature`, "meets the 2-hour publication
 #: promise".
 HOUSE_PUBLICATION_LAG_PROMISE = timedelta(hours=2)
+
+#: backlog.md 11.6's acceptance criterion, as a number this codebase can
+#: assert against: "Cards update within 5 minutes of publish."
+#:
+#: The same shape as `HOUSE_PUBLICATION_LAG_PROMISE` above and for the same
+#: reason: the promise is a LATENCY bound and nothing in
+#: `app.ballot.cards` can satisfy it alone — it is a property of the cadence
+#: `rebuild_candidate_cards` is registered at. Named here rather than left
+#: implicit in `timedelta(minutes=...)` so a feature file can assert the
+#: promise instead of restating the cadence.
+#:
+#: Story 7.2 registers the job at half this interval, which is as much of
+#: 11.6 as 7.2 can honestly deliver: the consumer and its cadence exist, and
+#: no `verdict.published` event does, so the promise is *met by construction*
+#: but not yet *observed*. Story 11.6 wires the producer and is where the
+#: end-to-end measurement belongs.
+CANDIDATE_CARD_REBUILD_PROMISE = timedelta(minutes=5)
 
 #: How many of the most recently listed House roll calls one hourly run loads.
 #: Deliberately small, matching `scripts/load_house_rollcalls.py --limit`'s own
@@ -576,6 +607,60 @@ def run_recompute_candidate_positions(client: ZeroDBClient) -> None:
     )
 
 
+# --- story 7.2: rebuild_candidate_cards -------------------------------------
+
+
+def run_rebuild_candidate_cards(client: ZeroDBClient) -> None:
+    """Rebuild `candidate_cards` for every unhandled rebuild event.
+
+    datamodel.md's Events table gives `candidate_cards` two producers —
+    `verdict.published` and `positions.recomputed` — and story 7.2 built the
+    consumer (`app.ballot.cards.CandidateCardRebuildConsumer`). This job is
+    how it runs, because the alternative (`ZeroDBClient.subscribe_events`)
+    registers a webhook and needs a publicly reachable URL this deployment
+    does not have — the same reason `recompute_candidate_positions` polls.
+
+    **The two producers are in genuinely different states, and the cadence is
+    set by the one that exists.**
+
+      * `positions.recomputed` is real: `run_recompute_candidate_positions`
+        above emits it whenever a position actually changes, and the live
+        project holds real events of that topic. Registering this job
+        immediately after that one in `default_jobs` is deliberate — a
+        recompute's own events are then the freshest input this job reads.
+      * `verdict.published` does not exist yet. Epic 11's verdict engine is
+        unbuilt, nothing emits the topic, and the live event log holds zero of
+        them (measured 2026-10-19). This job reads the topic anyway, so the
+        day story 11.6 wires the producer, cards start rebuilding with no
+        change here.
+
+    **Why 5 minutes.** backlog.md 11.6's acceptance criterion is "cards update
+    within 5 minutes of publish", and like story 5.6's 2-hour publication
+    promise that is a property of the registered interval rather than of any
+    code — a verdict published just after one run becomes visible on the next,
+    so worst-case visible lag is one interval plus one run's duration. The
+    interval is therefore *half* the promise
+    (`CANDIDATE_CARD_REBUILD_PROMISE`), leaving a run two and a half minutes
+    of margin, for exactly the reason `HOUSE_PUBLICATION_LAG_PROMISE` explains
+    at length: an interval equal to the promise breaks it the first time a run
+    goes long.
+
+    That makes this the most frequent job in the registry, and the cost is
+    bounded and small: a poll of two event topics, which is two reads when
+    nothing has happened. The fan-out work only happens when an event is
+    actually waiting.
+
+    No precondition. Like the integrity jobs and unlike
+    `load_house_rollcalls`, this needs only the project's own credentials.
+
+    The log line carries counts and public ids only. Nothing voter-derived is
+    reachable from a read model over public candidate records — see
+    `app.ballot.cards.RebuildResult`.
+    """
+    result = CandidateCardRebuildConsumer(client, pace=_pacer(1.0)).run()
+    logger.info("rebuild_candidate_cards: %s", result.summary())
+
+
 # --- the registry itself ----------------------------------------------------
 
 
@@ -659,6 +744,24 @@ def default_jobs() -> list[JobRegistration]:
             interval=timedelta(hours=1),
             run=run_recompute_candidate_positions,
         ),
+        JobRegistration(
+            # Story 7.2. The consumer of BOTH events datamodel.md names as
+            # producers of `candidate_cards`. Registered immediately after
+            # the position recompute above, deliberately: that job's own
+            # `positions.recomputed` events are this one's freshest input.
+            #
+            # Half of backlog.md 11.6's 5-minute promise, so a run that goes
+            # long still keeps it — the same margin reasoning
+            # `HOUSE_PUBLICATION_LAG_PROMISE` sets out. The most frequent job
+            # here, and the cheapest when idle: two event reads and nothing
+            # else when no event is waiting.
+            #
+            # No precondition: only the project's own credentials, like the
+            # integrity jobs.
+            name="rebuild_candidate_cards",
+            interval=CANDIDATE_CARD_REBUILD_PROMISE / 2,
+            run=run_rebuild_candidate_cards,
+        ),
     ]
 
 
@@ -668,6 +771,7 @@ def default_jobs() -> list[JobRegistration]:
 #: does not use it (the hourly sync always targets the current congress/session,
 #: never the earliest one).
 __all__ = [
+    "CANDIDATE_CARD_REBUILD_PROMISE",
     "EARLIEST_CONGRESS",
     "HOUSE_ROLLCALLS_CONGRESS",
     "HOUSE_ROLLCALLS_SAMPLE_SIZE",
@@ -681,6 +785,7 @@ __all__ = [
     "run_load_senate_rollcalls",
     "run_nightly_integrity_checks",
     "run_panel_gate_check",
+    "run_rebuild_candidate_cards",
     "run_recompute_candidate_positions",
     "run_repair_member_votes_drift",
     "run_sweep_correction_emails",
