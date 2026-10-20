@@ -91,7 +91,7 @@ const ALIGNMENT_WITH_REASONS = {
           position: 'yea',
           vote_type: 'final_passage',
           voted_at: '2026-03-01T00:00:00Z',
-          bill_id: 'us-bill:119:hr1',
+          bill_id: 'us-house:119:hr-1',
           is_bundled: false,
           bundled_reason: null,
         },
@@ -109,7 +109,7 @@ const ALIGNMENT_WITH_REASONS = {
           position: 'nay',
           vote_type: 'final_passage',
           voted_at: '2026-04-01T00:00:00Z',
-          bill_id: null,
+          bill_id: 'us-house:119:hr-8',
           is_bundled: false,
           bundled_reason: null,
         },
@@ -152,7 +152,15 @@ async function stubBallotCards(): Promise<void> {
 }
 
 async function stubAlignment(body: unknown): Promise<void> {
-  await world.page.route('**/v1/candidates/*/alignment*', async (route) => {
+  // `**` between `/candidates/` and `/alignment`, not `*`: a real candidacy
+  // id contains slashes (an OCD-ID district segment embedded in it — see
+  // `backend/app/scoring/router.py`'s own docstring on why its route uses a
+  // `:path` converter for exactly this reason), and Playwright's glob `*`
+  // does not match across `/`. A single `*` here silently never matches the
+  // real request and the test would hang on a real network call instead of
+  // hitting this stub — found by running this suite and seeing the request
+  // actually leave the page.
+  await world.page.route('**/v1/candidates/**/alignment*', async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -204,6 +212,13 @@ Then('each row shows how many pieces of evidence it rests on', async () => {
 
 Then('every row has at least one link a voter can actually open', async () => {
   const detail = world.page.getByRole('region', { name: /candidate detail/i });
+  // Wait for the breakdown to actually render before counting links:
+  // `locator.count()` is a single snapshot with no auto-retry (unlike
+  // `expect(...).toBeVisible()`, which polls), so without this the step can
+  // run before the alignment query resolves and see zero links that are
+  // about to appear a moment later — found by this step flaking against the
+  // real async render.
+  await expect(detail.getByRole('listitem').first()).toBeVisible();
   const links = detail.getByRole('link');
   const count = await links.count();
   expect(count).toBeGreaterThanOrEqual(2);

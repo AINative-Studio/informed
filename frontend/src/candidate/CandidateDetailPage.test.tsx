@@ -1,10 +1,10 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import type { ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { CandidateAlignment } from '../api/alignment';
-import { CandidateDetailPage } from './CandidateDetailPage';
+import { CandidateDetailPage, billUrlFor } from './CandidateDetailPage';
 
 /**
  * Unit tests for the candidate detail page (story 7.3).
@@ -39,7 +39,7 @@ const ALIGNMENT: CandidateAlignment = {
           position: 'yea',
           vote_type: 'final_passage',
           voted_at: '2026-03-01T00:00:00Z',
-          bill_id: 'us-bill:119:hr1',
+          bill_id: 'us-house:119:hr-1',
           is_bundled: false,
           bundled_reason: null,
         },
@@ -57,6 +57,38 @@ const ALIGNMENT: CandidateAlignment = {
           position: 'nay',
           vote_type: 'final_passage',
           voted_at: '2026-04-01T00:00:00Z',
+          bill_id: 'us-house:119:hr-8',
+          is_bundled: false,
+          bundled_reason: null,
+        },
+      ],
+    },
+  ],
+  methodology_version: '2026.1',
+};
+
+/** A reason whose only citation is a procedural vote with no bill attached. */
+const ALIGNMENT_WITH_NO_BILL_CITATION: CandidateAlignment = {
+  candidacy_id: 'election:district:person-1',
+  person_id: 'person:ZZ000001',
+  score: 60,
+  confidence_badge: 'low',
+  evidence_count: 1,
+  scored_interest_count: 1,
+  dealbreaker_warnings: [],
+  reasons: [
+    {
+      stance_id: 'topic:procedure:cloture',
+      direction: 'raised',
+      s_value: 0.3,
+      confidence: 0.4,
+      evidence_count: 1,
+      citations: [
+        {
+          roll_call_id: 'us-senate:119-2:12',
+          position: 'yea',
+          vote_type: 'cloture',
+          voted_at: '2026-02-01T00:00:00Z',
           bill_id: null,
           is_bundled: false,
           bundled_reason: null,
@@ -119,9 +151,10 @@ describe('CandidateDetailPage', () => {
     respondWith(ALIGNMENT);
     renderWithQuery(<CandidateDetailPage candidacyId={ALIGNMENT.candidacy_id} profileId="demo-user-1" />);
 
-    await screen.findByRole('list', { name: /interest-by-interest|breakdown/i });
-    expect(screen.getByText(/agrees/i)).toBeInTheDocument();
-    expect(screen.getByText(/disagrees/i)).toBeInTheDocument();
+    const list = await screen.findByRole('list', { name: /interest-by-interest|breakdown/i });
+    const rows = within(list).getAllByRole('listitem');
+    expect(within(rows[0]).getByText(/^agrees with your stance$/i)).toBeInTheDocument();
+    expect(within(rows[1]).getByText(/^disagrees with your stance$/i)).toBeInTheDocument();
   });
 
   it('shows each row evidence count', async () => {
@@ -147,6 +180,20 @@ describe('CandidateDetailPage', () => {
     }
   });
 
+  it('shows the roll call as plain text, never a fabricated link, when no bill is attached', async () => {
+    respondWith(ALIGNMENT_WITH_NO_BILL_CITATION);
+    renderWithQuery(
+      <CandidateDetailPage
+        candidacyId={ALIGNMENT_WITH_NO_BILL_CITATION.candidacy_id}
+        profileId="demo-user-1"
+      />,
+    );
+
+    await screen.findByRole('list', { name: /interest-by-interest|breakdown/i });
+    expect(screen.getByText(/us-senate:119-2:12/)).toBeInTheDocument();
+    expect(screen.queryByRole('link')).not.toBeInTheDocument();
+  });
+
   it('shows an honest empty state when nothing has been measured', async () => {
     respondWith(NO_POSITIONS);
     renderWithQuery(<CandidateDetailPage candidacyId={NO_POSITIONS.candidacy_id} profileId="demo-user-1" />);
@@ -170,5 +217,29 @@ describe('CandidateDetailPage', () => {
     renderWithQuery(<CandidateDetailPage candidacyId="x" profileId="demo-user-1" />);
 
     expect(await screen.findByRole('alert')).toBeInTheDocument();
+  });
+});
+
+describe('billUrlFor', () => {
+  it('derives the real congress.gov bill page from a House bill id', () => {
+    expect(billUrlFor('us-house:119:hr-1')).toBe(
+      'https://www.congress.gov/bill/119th-congress/house-bill/1',
+    );
+  });
+
+  it('derives the real congress.gov bill page from a Senate bill id', () => {
+    expect(billUrlFor('us-senate:119:s-42')).toBe(
+      'https://www.congress.gov/bill/119th-congress/senate-bill/42',
+    );
+  });
+
+  it('derives a joint-resolution bill page', () => {
+    expect(billUrlFor('us-house:119:hjres-3')).toBe(
+      'https://www.congress.gov/bill/119th-congress/house-joint-resolution/3',
+    );
+  });
+
+  it('returns null for an id that does not match the documented shape', () => {
+    expect(billUrlFor('not-a-real-bill-id')).toBeNull();
   });
 });

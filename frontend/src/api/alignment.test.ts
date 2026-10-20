@@ -67,9 +67,11 @@ describe('fetchAlignment', () => {
 
     expect(result).toEqual(RESPONSE);
     const [url] = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(String(url)).toContain(
-      `/v1/candidates/${encodeURIComponent(RESPONSE.candidacy_id)}/alignment`,
-    );
+    // Not URI-encoded: the backend route uses a `:path` converter precisely
+    // because a real candidacy id contains slashes (an OCD-ID district
+    // segment) — see `backend/app/scoring/router.py`'s docstring. Encoding
+    // the id here would turn those slashes into `%2F` and break the match.
+    expect(String(url)).toContain(`/v1/candidates/${RESPONSE.candidacy_id}/alignment`);
     expect(String(url)).toContain('profile_id=demo-user-1');
   });
 

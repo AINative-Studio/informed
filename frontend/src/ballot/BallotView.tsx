@@ -26,6 +26,15 @@
  * candidates render in the stable name order `/v1/ballot/cards` returns
  * them. Nothing here re-sorts by score — prd.md: the app never recommends
  * who to vote for.
+ *
+ * "View details" (story 7.3): each candidate with a `candidacy_id` gets a
+ * button to this candidate's detail page
+ * (`src/candidate/CandidateDetailPage.tsx`), which breaks their score down
+ * interest by interest. A callback prop rather than a link, because there is
+ * still no routing library in this app (see `App.tsx`'s own docstring) — the
+ * screen that owns navigation state (`BallotPage`) decides what happens when
+ * a voter asks to see one candidate's detail, the same posture `ShareButton`
+ * already takes for a different per-candidate action on this same row.
  */
 import { useQuery } from '@tanstack/react-query';
 import { useId } from 'react';
@@ -53,20 +62,39 @@ const BADGE_LABEL: Record<ConfidenceBadge, string> = {
  * blocks another — a voter with a House race loaded and a stalled Senate
  * fetch still sees the House race.
  */
-export function BallotView({ races }: { races: Race[] }) {
+export function BallotView({
+  races,
+  onViewDetails,
+}: {
+  races: Race[];
+  /**
+   * Called with a candidacy id when a voter asks to see that candidate's
+   * detail page. Optional: a caller that has not wired up a detail screen
+   * yet (or a BDD fixture proving only the card list) simply omits it, and
+   * no button is rendered — no per-candidate affordance has to exist before
+   * the view it points at does.
+   */
+  onViewDetails?: (candidacyId: string) => void;
+}) {
   if (races.length === 0) return null;
 
   return (
     <section aria-label="Your ballot">
       <h2>Your ballot</h2>
       {races.map((race) => (
-        <RaceView key={race.id} race={race} />
+        <RaceView key={race.id} race={race} onViewDetails={onViewDetails} />
       ))}
     </section>
   );
 }
 
-function RaceView({ race }: { race: Race }) {
+function RaceView({
+  race,
+  onViewDetails,
+}: {
+  race: Race;
+  onViewDetails?: (candidacyId: string) => void;
+}) {
   const headingId = useId();
   const electionId = electionIdFor(race);
 
@@ -99,6 +127,7 @@ function RaceView({ race }: { race: Race }) {
               <CandidateRow
                 candidate={candidate}
                 card={candidate.candidacy_id ? cardsByCandidacy.get(candidate.candidacy_id) : undefined}
+                onViewDetails={onViewDetails}
               />
             </li>
           ))}
@@ -111,9 +140,11 @@ function RaceView({ race }: { race: Race }) {
 function CandidateRow({
   candidate,
   card,
+  onViewDetails,
 }: {
   candidate: Race['candidates'][number];
   card: CandidateCardView | undefined;
+  onViewDetails?: (candidacyId: string) => void;
 }) {
   return (
     <>
@@ -122,6 +153,24 @@ function CandidateRow({
       {' — '}
       <IncumbencyLabel isIncumbent={candidate.is_incumbent} />
       {card ? <CardScore card={card} /> : <span>Scores not available yet.</span>}
+      {onViewDetails && candidate.candidacy_id ? (
+        <>
+          {' '}
+          {/* Visible text stays generic ("View details"), with the candidate's
+              name only in the accessible name (`aria-label`) rather than in
+              both: `ballot_view.steps.ts`'s existing `getByText('Rep.
+              Synthetic Example')` locator (story 7.1, already merged) would
+              otherwise ambiguously match this button too, since Playwright's
+              text matcher is substring by default. */}
+          <button
+            type="button"
+            aria-label={`View details for ${candidate.name}`}
+            onClick={() => onViewDetails(candidate.candidacy_id as string)}
+          >
+            View details
+          </button>
+        </>
+      ) : null}
     </>
   );
 }
