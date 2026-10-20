@@ -489,6 +489,64 @@ SPANNING_TERMS_LEFT_OUT: dict[str, str] = {
 }
 
 
+#: The 7 taxonomy subtopics this table reaches NOTHING for, with the reason.
+#:
+#: Recorded rather than left as an arithmetic gap, for the same reason
+#: `POLICY_AREA_TO_TOPIC` lists its `None` entries: a subtopic nothing maps to
+#: is permanently unscoreable from votes, so a voter who picks a stance under
+#: one of these gets "no evidence" forever rather than a wrong answer. That is
+#: the right failure, but it has to be *visible* -- prd.md's confidence badges
+#: are supposed to tell a voter when a record is thin, and they cannot
+#: distinguish "thin" from "structurally impossible" unless someone writes the
+#: second one down.
+#:
+#: **Every one of these is a granularity mismatch, not an oversight.** CRS's
+#: vocabulary is coarser than this taxonomy at exactly these points, and the
+#: firearms case is the one most worth a reviewer's attention: CRS has a single
+#: `Firearms and explosives` term, so which of the three firearms subtopics
+#: receives it is a judgment this table makes and two of them are then
+#: unreachable by construction.
+#:
+#: `test_the_uncovered_subtopics_are_the_documented_ones` pins this against the
+#: taxonomy, so covering one -- or losing coverage of another -- has to be a
+#: deliberate edit with its reason updated.
+UNREACHABLE_SUBTOPICS: dict[str, str] = {
+    "firearm-categories-and-capacity-limits": (
+        "CRS has one firearms term (`Firearms and explosives`), mapped here to "
+        "background-checks-and-purchase-rules; it cannot distinguish an "
+        "assault-weapons bill from a background-check bill"
+    ),
+    "carry-permits-and-preemption": (
+        "the same single CRS firearms term; carry permits and state preemption "
+        "have no term of their own"
+    ),
+    "public-funding-of-abortion": (
+        "CRS has `Abortion` only, mapped to gestational-limits-and-exceptions. "
+        "The Hyde-Amendment question has no separate term"
+    ),
+    "student-loan-repayment-and-forgiveness": (
+        "CRS has `Student aid and college costs`, mapped to "
+        "tuition-and-institutional-aid; there is no repayment or cancellation "
+        "term. (`Student loans` is NOT a CRS term -- one of the 18 invented "
+        "keys this story caught and corrected.)"
+    ),
+    "retirement-age-and-eligibility": (
+        "no CRS retirement-age term exists (`Retirement` is not one either); "
+        "`Social security and elderly assistance` is mapped to solvency"
+    ),
+    "status-of-long-term-residents": (
+        "`Immigration status and procedures` is too broad to separate "
+        "long-term-resident status from visa policy, and no deportation term "
+        "exists in the observed vocabulary"
+    ),
+    "free-speech-and-assembly": (
+        "no speech or assembly term appeared in the ~2,300 bills sampled. "
+        "Unlike the others this may be a SAMPLING gap rather than a structural "
+        "limit, and is the one entry here worth re-checking"
+    ),
+}
+
+
 def all_mapped_subtopic_slugs() -> frozenset[str]:
     """Every subtopic slug this table maps something to.
 
@@ -538,6 +596,7 @@ def subtopic_for_subject_term(term: str | None) -> str | None:
 
 __all__ = [
     "CRS_POLICY_AREAS",
+    "UNREACHABLE_SUBTOPICS",
     "MAPPING_VERSION",
     "POLICY_AREA_TO_TOPIC",
     "SPANNING_TERMS_LEFT_OUT",

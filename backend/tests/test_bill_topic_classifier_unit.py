@@ -65,6 +65,7 @@ from app.ingest.bill_topic_mapping import (
     POLICY_AREA_TO_TOPIC,
     SPANNING_TERMS_LEFT_OUT,
     SUBJECT_TERM_TO_SUBTOPIC,
+    UNREACHABLE_SUBTOPICS,
     all_mapped_subtopic_slugs,
     normalise_term,
     topic_id,
@@ -1030,3 +1031,27 @@ def test_the_unchanged_check_reads_the_stored_row_not_the_argument() -> None:
         "the second run rewrote an identical row: the unchanged-check is reading the "
         "stale argument again, not the stored row"
     )
+
+
+def test_the_uncovered_subtopics_are_the_documented_ones() -> None:
+    """Which subtopics are unreachable must be a recorded decision, not a gap.
+
+    A subtopic nothing maps to is permanently unscoreable from votes, so a
+    voter who picks a stance under it gets "no evidence" forever. That is the
+    right failure -- prd.md prefers a gap to a guess -- but it has to be
+    visible: confidence badges cannot distinguish "thin record" from
+    "structurally impossible" unless someone writes the second one down.
+
+    `UNREACHABLE_SUBTOPICS` is that record, with a reason per entry (every one
+    a CRS granularity mismatch). This asserts it matches reality exactly in
+    BOTH directions, so covering one of them, or accidentally losing coverage
+    of another, forces the list and its reasons to be updated.
+    """
+    _, subs = _taxonomy_slugs()
+    actually_uncovered = subs - all_mapped_subtopic_slugs()
+    assert actually_uncovered == set(UNREACHABLE_SUBTOPICS), {
+        "uncovered_but_undocumented": sorted(actually_uncovered - set(UNREACHABLE_SUBTOPICS)),
+        "documented_but_now_covered": sorted(set(UNREACHABLE_SUBTOPICS) - actually_uncovered),
+    }
+    for slug, reason in UNREACHABLE_SUBTOPICS.items():
+        assert len(reason) > 40, f"{slug}'s reason is too thin to review: {reason!r}"
