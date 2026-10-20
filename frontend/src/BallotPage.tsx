@@ -33,6 +33,7 @@ import {
 import { ProfileSaveError, followPerson, unfollowPerson } from './api/profiles';
 import { SummaryCardError, fetchSummaryCard, shareTextFor } from './api/summaryCard';
 import { BallotView } from './ballot/BallotView';
+import { CandidateDetailPage } from './candidate/CandidateDetailPage';
 
 export function BallotPage() {
   const inputId = useId();
@@ -45,6 +46,13 @@ export function BallotPage() {
    */
   const [submitted, setSubmitted] = useState<string | null>(null);
   const [validationError, setValidationError] = useState<string | null>(null);
+  /**
+   * The candidacy whose detail page a voter has asked to see (story 7.3), or
+   * null when they are looking at the ballot. No router in this app (see
+   * `App.tsx`'s own docstring on why), so navigating to and from the detail
+   * page is this plain piece of state rather than a URL.
+   */
+  const [detailCandidacyId, setDetailCandidacyId] = useState<string | null>(null);
 
   const query = useQuery({
     queryKey: ['ballot', submitted],
@@ -65,6 +73,17 @@ export function BallotPage() {
     }
     setValidationError(null);
     setSubmitted(trimmed);
+  }
+
+  if (detailCandidacyId) {
+    return (
+      <main>
+        <button type="button" onClick={() => setDetailCandidacyId(null)}>
+          Back to my ballot
+        </button>
+        <CandidateDetailPage candidacyId={detailCandidacyId} profileId={ensureDemoUserId()} />
+      </main>
+    );
   }
 
   return (
@@ -100,7 +119,9 @@ export function BallotPage() {
 
       {query.isError ? <p role="alert">{messageFrom(query.error)}</p> : null}
 
-      {query.isSuccess ? <Delegation ballot={query.data} /> : null}
+      {query.isSuccess ? (
+        <Delegation ballot={query.data} onViewDetails={setDetailCandidacyId} />
+      ) : null}
     </main>
   );
 }
@@ -129,7 +150,13 @@ function candidacyIdsByPerson(ballot: Ballot): Map<string, string> {
 }
 
 /** The district, its two chambers, and the whole ballot view (story 7.1). */
-function Delegation({ ballot }: { ballot: Ballot }) {
+function Delegation({
+  ballot,
+  onViewDetails,
+}: {
+  ballot: Ballot;
+  onViewDetails: (candidacyId: string) => void;
+}) {
   const house = ballot.officeholders.filter((person) => person.body_id === HOUSE_BODY_ID);
   const senate = ballot.officeholders.filter((person) => person.body_id === SENATE_BODY_ID);
   const candidacyIds = candidacyIdsByPerson(ballot);
@@ -151,7 +178,7 @@ function Delegation({ ballot }: { ballot: Ballot }) {
           emptyMessage="We don't have this state's senators yet."
         />
       </section>
-      <BallotView races={ballot.races ?? []} />
+      <BallotView races={ballot.races ?? []} onViewDetails={onViewDetails} />
     </>
   );
 }
