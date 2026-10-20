@@ -54,6 +54,7 @@ from app.observability import MetricsMiddleware, MetricsRegistry, render_prometh
 from app.observability.ingest_lag import compute_ingest_lag, render_ingest_lag_prometheus_text
 from app.panel_review import router as panel_review_router
 from app.profiles import router as profiles_router
+from app.promises.router import router as promises_router
 from app.ratelimit import RateLimitMiddleware
 from app.scheduling.jobs import default_jobs
 from app.scoring.router import router as alignment_router
@@ -272,6 +273,7 @@ def create_app(
     app.include_router(summary_card_router)
     app.include_router(analytics_router)
     app.include_router(alignment_router)
+    app.include_router(promises_router)
 
     return app
 
