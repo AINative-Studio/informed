@@ -46,6 +46,7 @@ from app import __version__
 from app.analytics import router as analytics_router
 from app.ballot import router as ballot_router
 from app.ballot.router import zerodb_client
+from app.bills.router import router as bills_router
 from app.corrections import router as corrections_router
 from app.methodology import router as methodology_router
 from app.observability import MetricsMiddleware, MetricsRegistry, render_prometheus_text
@@ -259,6 +260,7 @@ def create_app(
         return Response(content=body, media_type="text/plain; version=0.0.4; charset=utf-8")
 
     app.include_router(ballot_router)
+    app.include_router(bills_router)
     app.include_router(topics_router)
     app.include_router(stances_router)
     app.include_router(profiles_router)

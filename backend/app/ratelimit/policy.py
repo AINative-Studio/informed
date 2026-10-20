@@ -145,6 +145,12 @@ PUBLIC_READ = RateLimitPolicy(
         "/v1/topics",
         "/v1/topics/{topic_id}/stances",
         "/v1/ballot",
+        # Story 5.4. A published read like the rest of this band: the bill ids
+        # are public and the archived document is public record. The 60/minute
+        # allowance also bounds how fast a scraper can mint presigned URLs,
+        # which matters more here than on the other paths — each call produces
+        # a working, if short-lived, download link to a stored object.
+        "/v1/bills/{bill_id}/text",
         "/v1/methodology",
         "/v1/methodology/versions",
         "/v1/methodology/{version}",

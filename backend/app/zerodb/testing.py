@@ -93,6 +93,17 @@ class FakeZeroDBTransport:
     #: object behind it, and keeping the two apart is what lets this fake
     #: reproduce that state instead of papering over it.
     file_content: dict[str, bytes] = field(default_factory=dict)
+    #: When set, the binary-upload route reports THIS as its measured
+    #: `sha256_hash` instead of the hash of the body it received.
+    #:
+    #: Exists to drive the one integrity check in this codebase that is made by
+    #: something other than the code computing the hash: the live
+    #: `POST /files/upload` response carries ZeroDB's OWN sha256 over the bytes
+    #: it received, and `app.ingest.bill_text` refuses to record an archive when
+    #: that disagrees with what it hashed. Without a seam here, the only way to
+    #: exercise that refusal would be to corrupt bytes in transit, which no
+    #: test can do.
+    upload_sha256_override: str | None = None
     events: list[dict[str, Any]] = field(default_factory=list)
     subscriptions: list[dict[str, Any]] = field(default_factory=list)
     ontology: dict[str, Any] = field(default_factory=dict)
@@ -815,7 +826,11 @@ class FakeZeroDBTransport:
                 # Measured over the received body, as the live endpoint does,
                 # never taken from a caller-supplied number.
                 "size_bytes": len(content),
-                "sha256_hash": hashlib.sha256(content).hexdigest(),
+                "sha256_hash": (
+                    self.upload_sha256_override
+                    if self.upload_sha256_override is not None
+                    else hashlib.sha256(content).hexdigest()
+                ),
                 # The binary endpoint does NOT echo `file_metadata` back; the
                 # client carries the sent metadata through itself. Returning it
                 # here would hide that, and a test asserting on the round trip
@@ -850,10 +865,18 @@ class FakeZeroDBTransport:
             # fine for a file registered through the metadata-only route, which
             # is precisely how `get_file` and `download_file` tell the two
             # apart.
+            #
+            # `sha256_hash` is dropped here, and that is not an oversight:
+            # measured live 2026-10-19, this route returns `sha256_hash: null`
+            # even for a file whose `POST /files/upload` response carried one.
+            # Only the caller-supplied `file_metadata["sha256"]` survives a
+            # round trip. A fake that echoed the measured hash back would make
+            # any caller relying on it pass here and fail live — the same class
+            # of divergence the `file_metadata: None` note above guards against.
             file_id = segments[-1]
             if file_id not in self.files:
                 return _not_found(f"File '{file_id}' not found")
-            return _ok(self.files[file_id])
+            return _ok({**self.files[file_id], "sha256_hash": None})
 
         return _ok({"total": len(self.files), "data": list(self.files.values())})
 

@@ -125,6 +125,14 @@ def test_routes_are_only_the_ones_built_so_far(client: TestClient) -> None:
         # candidacy id embeds an OCD-ID containing slashes — the OpenAPI
         # schema still renders it as `{candidacy_id}`.
         "/v1/candidates/{candidacy_id}/alignment",
+        # Story 5.4: a short-lived presigned URL for one bill's archived text,
+        # so a voter can open what a vote was actually on and verify it
+        # themselves. Public and identity-free like 14.6's summary card above:
+        # the bill ids and the archived documents are both public record. The
+        # response carries the archived bytes' sha256 and the www.congress.gov
+        # source url precisely so the archive can be checked against the
+        # primary source without trusting Informed — see `app.bills.models`.
+        "/v1/bills/{bill_id}/text",
     }
 
     # Story 12.4's deliberate omission, asserted rather than only described:
