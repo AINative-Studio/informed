@@ -34,6 +34,7 @@ import { ProfileSaveError, followPerson, unfollowPerson } from './api/profiles';
 import { SummaryCardError, fetchSummaryCard, shareTextFor } from './api/summaryCard';
 import { BallotView } from './ballot/BallotView';
 import { CandidateDetailPage } from './candidate/CandidateDetailPage';
+import { CompareView } from './compare/CompareView';
 
 export function BallotPage() {
   const inputId = useId();
@@ -53,6 +54,12 @@ export function BallotPage() {
    * page is this plain piece of state rather than a URL.
    */
   const [detailCandidacyId, setDetailCandidacyId] = useState<string | null>(null);
+  /**
+   * The candidacy ids a voter has asked to compare (story 7.4), or null when
+   * they are looking at the ballot. Same plain-state posture as
+   * `detailCandidacyId` above, for the same reason (no router in this app).
+   */
+  const [compareCandidacyIds, setCompareCandidacyIds] = useState<string[] | null>(null);
 
   const query = useQuery({
     queryKey: ['ballot', submitted],
@@ -82,6 +89,21 @@ export function BallotPage() {
           Back to my ballot
         </button>
         <CandidateDetailPage candidacyId={detailCandidacyId} profileId={ensureDemoUserId()} />
+      </main>
+    );
+  }
+
+  if (compareCandidacyIds) {
+    return (
+      <main>
+        <button type="button" onClick={() => setCompareCandidacyIds(null)}>
+          Back to my ballot
+        </button>
+        <CompareView
+          candidacyIds={compareCandidacyIds}
+          namesByCandidacyId={query.data ? namesByCandidacyId(query.data) : {}}
+          profileId={ensureDemoUserId()}
+        />
       </main>
     );
   }
@@ -120,7 +142,11 @@ export function BallotPage() {
       {query.isError ? <p role="alert">{messageFrom(query.error)}</p> : null}
 
       {query.isSuccess ? (
-        <Delegation ballot={query.data} onViewDetails={setDetailCandidacyId} />
+        <Delegation
+          ballot={query.data}
+          onViewDetails={setDetailCandidacyId}
+          onCompare={setCompareCandidacyIds}
+        />
       ) : null}
     </main>
   );
@@ -149,13 +175,33 @@ function candidacyIdsByPerson(ballot: Ballot): Map<string, string> {
   return byPerson;
 }
 
+/**
+ * `candidacy_id` -> readable name, for story 7.4's compare view column
+ * headers. Built the same way `candidacyIdsByPerson` above is, from
+ * `ballot.races` — the one place a candidate's name and candidacy id are
+ * both already on hand together.
+ */
+function namesByCandidacyId(ballot: Ballot): Record<string, string> {
+  const names: Record<string, string> = {};
+  for (const race of ballot.races ?? []) {
+    for (const candidate of race.candidates) {
+      if (candidate.candidacy_id) {
+        names[candidate.candidacy_id] = candidate.name;
+      }
+    }
+  }
+  return names;
+}
+
 /** The district, its two chambers, and the whole ballot view (story 7.1). */
 function Delegation({
   ballot,
   onViewDetails,
+  onCompare,
 }: {
   ballot: Ballot;
   onViewDetails: (candidacyId: string) => void;
+  onCompare: (candidacyIds: string[]) => void;
 }) {
   const house = ballot.officeholders.filter((person) => person.body_id === HOUSE_BODY_ID);
   const senate = ballot.officeholders.filter((person) => person.body_id === SENATE_BODY_ID);
@@ -178,7 +224,7 @@ function Delegation({
           emptyMessage="We don't have this state's senators yet."
         />
       </section>
-      <BallotView races={ballot.races ?? []} onViewDetails={onViewDetails} />
+      <BallotView races={ballot.races ?? []} onViewDetails={onViewDetails} onCompare={onCompare} />
     </>
   );
 }

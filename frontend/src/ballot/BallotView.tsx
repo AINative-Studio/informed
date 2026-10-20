@@ -48,6 +48,20 @@
  * screen that owns navigation state (`BallotPage`) decides what happens when
  * a voter asks to see one candidate's detail, the same posture `ShareButton`
  * already takes for a different per-candidate action on this same row.
+ *
+ * Select-to-compare (story 7.4): each candidate with a `candidacy_id` also
+ * gets a checkbox — "Select ... to compare" — local to its own race's
+ * `selectedForCompare` state, because comparing is always within one race
+ * (voters do not compare a House candidate against a Senate one). Checking
+ * a FIFTH candidate when a race already has `MAX_COMPARE` (4) selected is
+ * blocked by disabling every unchecked box once the cap is hit — never by
+ * silently dropping the oldest selection, which would be a confusing thing
+ * to have happen to a choice the voter just made. A "Compare" button appears
+ * only once at least `MIN_COMPARE` (2) are selected (prd.md's acceptance:
+ * "supports 2-4 candidates") and calls `onCompare` with the selected
+ * candidacy ids in selection order — same callback-prop posture as
+ * `onViewDetails`, for the same reason: this component does not own
+ * navigation, `BallotPage` does.
  */
 import { useQuery } from '@tanstack/react-query';
 import { useId, useState } from 'react';
@@ -68,6 +82,10 @@ const BADGE_LABEL: Record<ConfidenceBadge, string> = {
   insufficient: 'Insufficient confidence',
 };
 
+/** Story 7.4's acceptance: "supports 2-4 candidates". */
+const MIN_COMPARE = 2;
+const MAX_COMPARE = 4;
+
 /**
  * Every race on this voter's ballot, each with its candidates' cards.
  *
@@ -78,6 +96,7 @@ const BADGE_LABEL: Record<ConfidenceBadge, string> = {
 export function BallotView({
   races,
   onViewDetails,
+  onCompare,
 }: {
   races: Race[];
   /**
@@ -88,6 +107,15 @@ export function BallotView({
    * the view it points at does.
    */
   onViewDetails?: (candidacyId: string) => void;
+  /**
+   * Called with 2-4 candidacy ids, in the order the voter selected them,
+   * when a voter uses one race's "Compare" button (story 7.4). Optional for
+   * the same reason `onViewDetails` is: a caller with no compare screen
+   * wired up yet simply omits it, and the selection checkboxes still render
+   * (a voter can still select) but no Compare button ever appears, since
+   * there would be nothing for it to do.
+   */
+  onCompare?: (candidacyIds: string[]) => void;
 }) {
   if (races.length === 0) return null;
 
@@ -95,7 +123,7 @@ export function BallotView({
     <section aria-label="Your ballot">
       <h2>Your ballot</h2>
       {races.map((race) => (
-        <RaceView key={race.id} race={race} onViewDetails={onViewDetails} />
+        <RaceView key={race.id} race={race} onViewDetails={onViewDetails} onCompare={onCompare} />
       ))}
     </section>
   );
@@ -104,9 +132,11 @@ export function BallotView({
 function RaceView({
   race,
   onViewDetails,
+  onCompare,
 }: {
   race: Race;
   onViewDetails?: (candidacyId: string) => void;
+  onCompare?: (candidacyIds: string[]) => void;
 }) {
   const headingId = useId();
   const sortToggleId = useId();
@@ -117,6 +147,23 @@ function RaceView({
   // they're studying closely has no bearing on how a Senate race they
   // haven't looked at yet is presented.
   const [sortByScore, setSortByScore] = useState(false);
+
+  // Local to this one race, same reasoning as `sortByScore` above: a voter
+  // comparing candidates in a House race has no bearing on a Senate race's
+  // own selection. Holds candidacy ids in the order the voter checked them,
+  // so `onCompare` gets a stable, predictable order rather than whatever
+  // order `race.candidates` happens to list them in.
+  const [selectedForCompare, setSelectedForCompare] = useState<string[]>([]);
+
+  function toggleCompareSelection(candidacyId: string) {
+    setSelectedForCompare((current) => {
+      if (current.includes(candidacyId)) {
+        return current.filter((id) => id !== candidacyId);
+      }
+      if (current.length >= MAX_COMPARE) return current;
+      return [...current, candidacyId];
+    });
+  }
 
   const query = useQuery({
     queryKey: ['ballot-cards', electionId, race.district_id],
@@ -173,10 +220,27 @@ function RaceView({
                 candidate={candidate}
                 card={candidate.candidacy_id ? cardsByCandidacy.get(candidate.candidacy_id) : undefined}
                 onViewDetails={onViewDetails}
+                isSelectedForCompare={
+                  candidate.candidacy_id ? selectedForCompare.includes(candidate.candidacy_id) : false
+                }
+                compareSelectionDisabled={
+                  selectedForCompare.length >= MAX_COMPARE &&
+                  !(candidate.candidacy_id && selectedForCompare.includes(candidate.candidacy_id))
+                }
+                onToggleCompareSelection={
+                  candidate.candidacy_id ? () => toggleCompareSelection(candidate.candidacy_id as string) : undefined
+                }
               />
             </li>
           ))}
         </ul>
+      ) : null}
+      {query.isSuccess && selectedForCompare.length >= MIN_COMPARE && onCompare ? (
+        <p>
+          <button type="button" onClick={() => onCompare(selectedForCompare)}>
+            Compare {selectedForCompare.length} selected candidates
+          </button>
+        </p>
       ) : null}
     </article>
   );
@@ -186,13 +250,31 @@ function CandidateRow({
   candidate,
   card,
   onViewDetails,
+  isSelectedForCompare,
+  compareSelectionDisabled,
+  onToggleCompareSelection,
 }: {
   candidate: Race['candidates'][number];
   card: CandidateCardView | undefined;
   onViewDetails?: (candidacyId: string) => void;
+  isSelectedForCompare: boolean;
+  compareSelectionDisabled: boolean;
+  onToggleCompareSelection?: () => void;
 }) {
   return (
     <>
+      {onToggleCompareSelection ? (
+        <label>
+          <input
+            type="checkbox"
+            checked={isSelectedForCompare}
+            disabled={compareSelectionDisabled}
+            onChange={onToggleCompareSelection}
+            aria-label={`Select ${candidate.name} to compare`}
+          />
+        </label>
+      ) : null}
+      {' '}
       <span>{candidate.name}</span>
       {candidate.party ? <span> ({candidate.party})</span> : null}
       {' — '}
