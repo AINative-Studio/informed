@@ -8,25 +8,33 @@ ZeroDB involved at all.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from typing import Any
 
 import httpx
 import pytest
 
+from app.bootstrap import Bootstrapper
 from app.ingest.lis_crosswalk import (
     LEGISLATORS_YAML_URL,
     LIS_EXTERNAL_ID_KEY,
     CoverageReport,
     LisCrosswalk,
     LisCrosswalkSourceError,
+    LisCrosswalkWriter,
     SittingSenator,
     UnmappedLisMemberIdError,
     check_coverage,
     fetch_roster,
+    load_crosswalk,
     render_coverage_prometheus_text,
     sitting_senators_from_roster,
 )
+from app.repositories import Repository
+from app.repositories.models import Person
+from app.zerodb import ZeroDBClient
+from app.zerodb.testing import FakeZeroDBTransport
 
 
 def _record(
@@ -120,6 +128,40 @@ def test_a_non_dict_record_is_skipped_rather_than_crashing_the_whole_roster() ->
     assert [s.bioguide_id for s in sitting_senators_from_roster(roster)] == ["S000004"]
 
 
+def test_a_record_whose_id_block_is_not_a_mapping_is_skipped() -> None:
+    roster = [{"id": "A000001", "terms": [{"type": "sen", "start": "2025-01-03"}]}]
+    assert sitting_senators_from_roster(roster) == []
+
+
+def test_a_record_whose_terms_block_is_not_a_list_is_skipped() -> None:
+    assert sitting_senators_from_roster([{"id": {"bioguide": "S000009"}, "terms": "sen"}]) == []
+
+
+def test_a_record_whose_latest_term_is_not_a_mapping_is_skipped() -> None:
+    assert sitting_senators_from_roster([{"id": {"bioguide": "S000010"}, "terms": ["sen"]}]) == []
+
+
+def test_a_record_with_a_blank_bioguide_is_skipped() -> None:
+    roster = [{"id": {"bioguide": "  ", "lis": "S011"}, "terms": [{"type": "sen"}]}]
+    assert sitting_senators_from_roster(roster) == []
+
+
+def test_canonical_name_is_empty_when_the_name_block_is_not_a_mapping() -> None:
+    """Defensive, not expected live: a malformed name must cost the senator
+    their display name, never their mapping -- the mapping is the point.
+    """
+    roster = [
+        {
+            "id": {"bioguide": "S000012", "lis": "S012"},
+            "name": "Jo Smith",
+            "terms": [{"type": "sen"}],
+        }
+    ]
+    senators = sitting_senators_from_roster(roster)
+    assert [s.bioguide_id for s in senators] == ["S000012"]
+    assert senators[0].canonical_name == ""
+
+
 def test_canonical_name_falls_back_to_first_and_last_when_official_full_is_absent() -> None:
     roster = [
         {
@@ -191,7 +233,7 @@ def test_resolve_bioguide_id_does_not_alert_unless_asked() -> None:
 
 def test_require_bioguide_id_raises_naming_the_id() -> None:
     with pytest.raises(UnmappedLisMemberIdError, match="S999"):
-        LisCrosswalk({}).resolve_bioguide_id("S999") or LisCrosswalk({}).require_bioguide_id("S999")
+        LisCrosswalk({}).require_bioguide_id("S999")
 
 
 def test_require_bioguide_id_returns_the_bioguide_when_mapped() -> None:
@@ -434,6 +476,126 @@ def test_the_external_id_key_matches_the_one_legislators_already_writes() -> Non
     assert LIS_EXTERNAL_ID_KEY == "lis"
 
 
+# --- load_crosswalk and the writer, against the in-memory fake ---------------
+
+
+def _client() -> ZeroDBClient:
+    transport = FakeZeroDBTransport()
+    transport.break_server_side_filter()
+    client = ZeroDBClient(
+        transport=transport, project_id="proj-test", backoff_base=0.0, sleep=lambda _: None
+    )
+    Bootstrapper(client, pace=lambda: None).run()
+    return client
+
+
+def test_load_crosswalk_pages_past_the_first_page_of_people() -> None:
+    """The live `people` table is 542 rows against a 500-row page, and the
+    client's filtered read is documented as unreliable past the first page,
+    so a crosswalk that read one page would silently miss senators. 501 rows
+    with the mapping on the LAST one is what pins the paging.
+    """
+    client = _client()
+    people: Repository[Person] = Repository(client=client, model=Person)
+    for index in range(500):
+        people.upsert({"id": f"person:FILLER{index:04d}", "canonical_name": "Filler"})
+    people.upsert(
+        {
+            "id": "person:B001261",
+            "canonical_name": "John Barrasso",
+            "external_ids": {"lis": "S313"},
+        }
+    )
+
+    crosswalk = load_crosswalk(client)
+    assert crosswalk.resolve_bioguide_id("S313") == "B001261"
+
+
+def test_load_crosswalk_ignores_a_people_row_with_no_lis_id() -> None:
+    client = _client()
+    people: Repository[Person] = Repository(client=client, model=Person)
+    people.upsert({"id": "person:P000197", "canonical_name": "A Representative"})
+    assert len(load_crosswalk(client)) == 0
+
+
+def test_refresh_reports_a_senator_with_no_people_row_rather_than_inventing_one() -> None:
+    """Story 2.2's roster load is what creates `people` rows. Conjuring a thin
+    one here would hide an out-of-date roster behind a crosswalk that looks
+    complete.
+    """
+    client = _client()
+    report = LisCrosswalkWriter(client, pace=lambda: None).refresh([_senator("Z000099", "S999")])
+    assert report.missing_people_rows == ["person:Z000099"]
+    assert report.mapped == []
+    assert len(load_crosswalk(client)) == 0
+
+
+def test_refresh_does_not_rewrite_a_row_whose_mapping_is_already_correct() -> None:
+    """The common path on every re-run. Re-PUTting an identical row is a
+    wasted request against the documented ~60 req/min ceiling, so the row's
+    `updated_at` must not move -- while the senator still counts as mapped.
+    """
+    client = _client()
+    people: Repository[Person] = Repository(client=client, model=Person)
+    people.upsert(
+        {
+            "id": "person:B001261",
+            "canonical_name": "John Barrasso",
+            "external_ids": {"lis": "S313"},
+        }
+    )
+    before = client.get_row("people", "person:B001261")
+    assert before is not None
+
+    report = LisCrosswalkWriter(client, pace=lambda: None).refresh([_senator("B001261", "S313")])
+    after = client.get_row("people", "person:B001261")
+    assert after is not None
+    assert report.mapped == ["person:B001261"]
+    assert after.updated_at == before.updated_at
+
+
+def test_refresh_corrects_a_row_whose_mapping_is_stale() -> None:
+    """The Senate reissuing an id, or a bad earlier write: the roster is the
+    source of truth, so the row is corrected rather than left alone.
+    """
+    client = _client()
+    people: Repository[Person] = Repository(client=client, model=Person)
+    people.upsert(
+        {
+            "id": "person:B001261",
+            "canonical_name": "John Barrasso",
+            "external_ids": {"lis": "S-stale"},
+        }
+    )
+    LisCrosswalkWriter(client, pace=lambda: None).refresh([_senator("B001261", "S313")])
+    assert load_crosswalk(client).resolve_bioguide_id("S313") == "B001261"
+
+
+def test_refresh_preserves_the_terms_already_on_the_row() -> None:
+    """`Repository.upsert` replaces a row wholesale (ZeroDB's PUT), so the
+    merge has to carry `terms[]` across too -- not just `external_ids`. A
+    crosswalk refresh that wiped story 2.2's terms would break
+    `BallotService`'s delegation lookup.
+    """
+    client = _client()
+    people: Repository[Person] = Repository(client=client, model=Person)
+    people.upsert(
+        {
+            "id": "person:B001261",
+            "canonical_name": "John Barrasso",
+            "external_ids": {"govtrack": "400050"},
+            "terms": [{"body_id": "us-senate", "party": "Republican", "start": "2021-01-03"}],
+        }
+    )
+    LisCrosswalkWriter(client, pace=lambda: None).refresh([_senator("B001261", "S313")])
+
+    person = people.get("person:B001261")
+    assert person is not None
+    assert person.external_ids == {"govtrack": "400050", "lis": "S313"}
+    assert [term.body_id for term in person.terms] == ["us-senate"]
+    assert person.canonical_name == "John Barrasso"
+
+
 def test_the_roster_url_is_the_one_legislators_already_fetches() -> None:
     from app.ingest.legislators import LEGISLATORS_CURRENT_URL
 
@@ -441,8 +603,21 @@ def test_the_roster_url_is_the_one_legislators_already_fetches() -> None:
 
 
 def test_coverage_report_is_frozen() -> None:
+    """A measured acceptance criterion must not be mutable after the fact."""
     coverage = CoverageReport(
         sitting_count=1, mapped_count=1, unmapped_person_ids=[], unmapped_lis_ids=[]
     )
-    with pytest.raises(Exception):  # noqa: B017 - pydantic/dataclass frozen error type varies
+    with pytest.raises(dataclasses.FrozenInstanceError):
         coverage.sitting_count = 2  # type: ignore[misc]
+
+
+def test_a_stale_mapping_for_a_departed_senator_is_reported_but_is_not_a_failure() -> None:
+    """A retired senator's LIS id still resolving is how a 118th-Congress
+    roll call keeps joining to a person -- reported, never a coverage
+    failure. See `CoverageReport.unmapped_lis_ids`.
+    """
+    coverage = check_coverage(
+        LisCrosswalk({"S1": "A000001", "S-old": "Z000099"}), [_senator("A000001", "S1")]
+    )
+    assert coverage.is_complete
+    assert coverage.unmapped_lis_ids == ["S-old"]

@@ -26,7 +26,6 @@ from app.bootstrap import Bootstrapper
 from app.ingest.lis_crosswalk import (
     LIS_EXTERNAL_ID_KEY,
     CoverageReport,
-    LisCrosswalk,
     LisCrosswalkWriter,
     UnmappedLisMemberIdError,
     check_coverage,
@@ -131,9 +130,7 @@ def senators_exist(people: Repository[Person]) -> None:
         )
 
 
-@given(
-    parsers.parse('the people row "{person_id}" already carries external id "{key}" "{value}"')
-)
+@given(parsers.parse('the people row "{person_id}" already carries external id "{key}" "{value}"'))
 def person_has_external_id(
     people: Repository[Person], person_id: str, key: str, value: str
 ) -> None:
@@ -161,7 +158,9 @@ def refreshed_from_sample(people: Repository[Person], writer: LisCrosswalkWriter
     writer.refresh(sitting_senators_from_roster(_roster()))
 
 
-@given(parsers.parse('the crosswalk has been refreshed from a roster missing senator "{person_id}"'))
+@given(
+    parsers.parse('the crosswalk has been refreshed from a roster missing senator "{person_id}"')
+)
 def refreshed_missing_one(
     people: Repository[Person], writer: LisCrosswalkWriter, person_id: str
 ) -> None:
@@ -183,10 +182,12 @@ def refresh_again(writer: LisCrosswalkWriter, result: dict[str, Any]) -> None:
     result["report"] = writer.refresh(sitting_senators_from_roster(_roster()))
 
 
-@when(parsers.parse('I refresh the LIS crosswalk from a roster whose senator "{person_id}" has no LIS id'))
-def refresh_missing_lis(
-    writer: LisCrosswalkWriter, result: dict[str, Any], person_id: str
-) -> None:
+@when(
+    parsers.parse(
+        'I refresh the LIS crosswalk from a roster whose senator "{person_id}" has no LIS id'
+    )
+)
+def refresh_missing_lis(writer: LisCrosswalkWriter, result: dict[str, Any], person_id: str) -> None:
     bioguide = person_id.removeprefix("person:")
     result["report"] = writer.refresh(
         sitting_senators_from_roster(_roster_without_lis_for(bioguide))
@@ -212,7 +213,9 @@ def load_and_resolve_alerting(
     result["records"] = list(caplog.records)
 
 
-@when(parsers.parse('I load the crosswalk from ZeroDB and resolve LIS ids "{lis_ids}" with alerting'))
+@when(
+    parsers.parse('I load the crosswalk from ZeroDB and resolve LIS ids "{lis_ids}" with alerting')
+)
 def load_and_resolve_many_alerting(
     zerodb: ZeroDBClient, result: dict[str, Any], lis_ids: str, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -227,7 +230,11 @@ def load_and_resolve_many_alerting(
 # --- when: coverage ----------------------------------------------------------
 
 
-@when(parsers.parse("I check the crosswalk covers the {count:d} sitting senators in the sample roster"))
+@when(
+    parsers.parse(
+        "I check the crosswalk covers the {count:d} sitting senators in the sample roster"
+    )
+)
 def check_coverage_step(zerodb: ZeroDBClient, result: dict[str, Any], count: int) -> None:
     senators = sitting_senators_from_roster(_roster())
     assert len(senators) == count
