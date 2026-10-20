@@ -59,6 +59,15 @@ def test_default_jobs_registers_exactly_the_documented_jobs() -> None:
         # lacks an approved-or-grandfathered panel decision at its current
         # version.
         "run_panel_gate_check",
+        # Story 12.1. Nightly, beside the panel gate it sits next to in
+        # spirit: both are neutrality guarantees that have to break loudly
+        # rather than be re-verified by hand. The only job here that WRITES
+        # synthetic data — auditing the real pipeline end to end cannot be
+        # done without putting something through it — and it deletes every
+        # row of it in a `finally`, keeping only the `audit_runs` row its own
+        # acceptance criterion calls for. Preconditioned on the profile root
+        # key, since it scores through the real `VoterProfileService`.
+        "run_nightly_symmetry_audit",
         # Story 13.5. Registered from day one rather than left to a human with
         # a script, which is the gap story 12.4's own module docstring
         # documented at length before this registry existed.
