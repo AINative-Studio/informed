@@ -77,6 +77,9 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.repositories.models import PositionSummaryEntry, VerdictCounts
+from app.scoring.badges import ConfidenceBadge
+
 
 class DataState(StrEnum):
     """How complete the candidate list in this ballot is.
@@ -261,9 +264,123 @@ class BallotResponse(BaseModel):
     )
 
 
+class CandidateCardView(BaseModel):
+    """One candidate's card, as `GET /v1/ballot/cards` renders it (story 7.1).
+
+    Almost entirely a pass-through of story 7.2's stored `CandidateCard` row —
+    this type adds exactly the two things that row cannot carry and this
+    story's acceptance criteria require:
+
+      * **`is_incumbent`** is a `candidacies` field (datamodel.md line 65), not
+        a card field (line 87's field list does not include it), so it is read
+        from `candidacies` for the race rather than invented here. See
+        `app.ballot.cards_service` for why that second read does not violate
+        7.2's "never aggregates at request time" rule.
+      * **`confidence_badge`** is computed from `positions_summary`'s own
+        `evidence_count` fields through `app.scoring.badges.badge_for` — a
+        pure function over data already on the row, not a read of
+        `candidate_positions`. `None` when `positions_summary` itself is
+        `None` (nothing has been computed yet), which badges as
+        `"insufficient"` rather than being silently omitted — a voter should
+        see "we don't have enough evidence" rather than see nothing.
+
+    What this type deliberately does NOT carry: a personalized alignment
+    score. That is `GET /v1/candidates/{id}/alignment?profile_id=`'s job
+    (story 6.4), computed per request from one voter's profile and never
+    stored — a `candidate_cards` row holds no voter reference at all
+    (datamodel.md), so there is nothing here for a per-voter score to be.
+    `say_do_gap` is the one alignment-shaped number this view can show without
+    a profile: votes against testable promises, the same for every voter.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    candidacy_id: str = Field(description="`candidacies` row id for this candidate in this race")
+    person_id: str = Field(description="`people` row id this card is about")
+    person_name: str = Field(description="The candidate's name, as filed for this race")
+    party: str | None = Field(default=None, description="Party as recorded on the candidacy")
+    district: str = Field(description="Human-readable district/seat name")
+    photo_url: str | None = Field(default=None, description="A photo of the candidate, if known")
+    is_incumbent: bool = Field(
+        description=(
+            "Whether this candidate currently holds the seat. Read from the "
+            "`candidacies` row for this race, not inferred — a candidate who "
+            "has never held this or any seat is `false`."
+        )
+    )
+    verdict_counts: VerdictCounts | None = Field(
+        default=None,
+        description=(
+            "How many of this candidate's promises landed in each verdict "
+            "value. `null` until a verdict has been published about them "
+            "(epic 11); never a fabricated all-zero count."
+        ),
+    )
+    say_do_gap: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Share of this candidate's testable promises they did not keep, "
+            "0.0-1.0. `null` when it is not yet computed, or when it is "
+            "genuinely undefined (no testable promise to have kept or "
+            "broken) — never a 0.0 that would read as a clean record with no "
+            "evidence behind it."
+        ),
+    )
+    positions_summary: list[PositionSummaryEntry] | None = Field(
+        default=None,
+        description=(
+            "This candidate's current position on each stance the ballot "
+            "view can show, with its signed value, confidence and the number "
+            "of records it rests on. `null` until a positions recompute has "
+            "run for this candidate."
+        ),
+    )
+    confidence_badge: ConfidenceBadge = Field(
+        description=(
+            "How much evidence `positions_summary` rests on — high, medium, "
+            "low or insufficient — computed from the evidence counts already "
+            "on this card, never from a fresh read of `candidate_positions`. "
+            "`insufficient` when `positions_summary` itself is null."
+        )
+    )
+    methodology_version: str | None = Field(
+        default=None,
+        description="Which methodology version computed `positions_summary`, if any",
+    )
+    updated_at: str = Field(description="When this card was last rebuilt from its source tables")
+
+
+class BallotCardsResponse(BaseModel):
+    """What `GET /v1/ballot/cards?election_id=&district_id=` returns.
+
+    One race's candidates, each a `CandidateCardView` — never a per-voter
+    score, never an order that implies a recommendation (prd.md). Cards come
+    back in the same stable name order `CandidateCardReader.cards_for_race`
+    already returns; this response adds no ranking of its own.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    election_id: str = Field(description="Which election this race belongs to")
+    district_id: str = Field(description="OCD-ID of the seat these cards are for")
+    cards: list[CandidateCardView] = Field(
+        default_factory=list,
+        description=(
+            "This race's candidates with a card, in a stable name order — "
+            "never ranked by score. A candidacy with no card yet (no "
+            "`positions.recomputed` or `verdict.published` event has touched "
+            "it) is simply absent, not a placeholder row of zeros."
+        ),
+    )
+
+
 __all__ = [
     "BallotCandidate",
+    "BallotCardsResponse",
     "BallotResponse",
+    "CandidateCardView",
     "DataState",
     "DistrictSummary",
     "Officeholder",
