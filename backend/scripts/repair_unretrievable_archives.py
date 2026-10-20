@@ -41,11 +41,17 @@ a judgment call:
 
     **This script reports those rows and does not delete them.** Deleting
     live reference data is a decision for a human with the backlog in front of
-    them, and it needs `promise_sources` deletion plumbing (a repository
-    `delete`, and `list_files`/`delete_file` on the client) that does not exist
-    yet — adding it inside a correctness fix would widen the blast radius of
-    that fix. What the report gives is the exact list, with the evidence for
-    each, so that decision can be made and executed deliberately.
+    them, not something a repair pass does on its way past — so the report
+    gives the exact list, with the evidence for each, and stops there.
+
+    The plumbing is no longer the obstacle it was: `ZeroDBClient.delete_file`
+    now exists (and `delete_row` always did), so executing that decision is
+    mechanically possible today. These particular rows name files whose bytes
+    were never stored, so `delete_file` on them requires its explicit
+    `allow_missing_content=True` — which is exactly the deliberate, named
+    opt-in a retirement like this should have to pass through. What is still
+    missing is the human decision, and `promise_sources` deletion at the
+    repository layer to carry it out tidily.
 
 Re-running `scripts/archive_campaign_sites.py` captures the pages as they are
 TODAY, under new ids. That is a NEW capture, not a repair of a lost one, and
