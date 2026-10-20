@@ -18,6 +18,7 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.10.1",
     "@cucumber/cucumber": "^11.0.1",
     "@playwright/test": "^1.48.0",
     "@testing-library/dom": "^10.4.0",
