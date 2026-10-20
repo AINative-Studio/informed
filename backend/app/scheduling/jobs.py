@@ -1,6 +1,6 @@
 """The real job registry: every periodic task this codebase needs, named once.
 
-Ten jobs today, one per story that flagged the scheduling gap:
+Eleven jobs today, one per story that flagged the scheduling gap:
 
   * `sweep_correction_emails` — story 12.4's 90-day contact-email retention
     sweep. Daily. The most urgent of the three (see `app.corrections.retention`'s
@@ -52,6 +52,16 @@ Ten jobs today, one per story that flagged the scheduling gap:
     because it has no ZeroDB credentials; see
     `scripts/check_panel_gate.py`'s module docstring for the CI-safe half
     and for why `grandfathered` passes deliberately rather than by omission.
+  * `run_nightly_symmetry_audit` — story 12.1's neutrality audit
+    (`app.neutrality.audit`). Nightly, beside the panel gate it sits next to
+    in spirit: both are neutrality guarantees that have to break loudly. The
+    only job here that WRITES synthetic data (it has to: the point is to put
+    something through the real scoring pipeline end to end) and it deletes
+    every row of it in a `finally`, keeping only the `audit_runs` row its own
+    acceptance criterion calls for. Preconditioned on
+    `$ZERODB_PROFILE_ROOT_KEY` — the audit scores through the real
+    `VoterProfileService`, so with no key it reports `blocked` rather than
+    silently auditing a pipeline missing its encryption path.
   * `sweep_qa_session_memory` — story 13.5's 1-day Q&A memory retention. Every
     6 hours, not daily: a daily sweep of a 1-day window lets a turn survive up
     to 48 hours, which would make datamodel.md's "retention: 1 day" false of
@@ -145,7 +155,9 @@ from app.ingest.senate_rollcalls import (
 )
 from app.integrity.checks import run_all_checks
 from app.integrity.repair import repair_member_votes_drift
+from app.neutrality.audit import run_symmetry_audit
 from app.panel_review.gate import check_panel_gate
+from app.profiles.crypto import ROOT_KEY_ENV_VAR
 from app.scheduling.registry import JobRegistration
 from app.scoring.positions import PositionRecomputeConsumer
 from app.seed_elections import UPCOMING_ELECTIONS, ElectionSeeder
@@ -535,6 +547,63 @@ def run_panel_gate_check(client: ZeroDBClient) -> None:
         )
 
 
+# --- story 12.1: run_nightly_symmetry_audit ---------------------------------
+
+
+def run_nightly_symmetry_audit(client: ZeroDBClient) -> None:
+    """Score mirrored synthetic candidates and profiles; raise if skewed.
+
+    Story 12.1's acceptance criterion is "mirrored synthetic candidates and
+    profiles scored every night ... fails if mirrored scores differ by more
+    than 0.5", and prd.md names it as a nightly job directly: "A nightly
+    symmetry audit runs the same synthetic profiles against all candidates and
+    flags skew." This is that nightly job.
+
+    Delegates entirely to `app.neutrality.audit.run_symmetry_audit`, which
+    never raises on its own findings (same contract as `run_all_checks` and
+    `check_panel_gate`). This function is where a finding becomes a job
+    FAILURE rather than a quietly-logged report, exactly as
+    `run_nightly_integrity_checks` and `run_panel_gate_check` already do —
+    which is what makes `ScheduledJobRunner` record it `FAILED` in its
+    `RunReport`.
+
+    **It writes synthetic data and deletes it again.** That is unlike every
+    other job in this registry, and it is deliberate: the only way to audit
+    the real pipeline end to end is to put something through it. Everything
+    the audit writes is labelled `SYMMETRY-AUDIT` in its own id and removed in
+    a `finally` before the report is returned — see
+    `app.neutrality.audit`'s module docstring for why leaving a fabricated
+    `candidate_positions` row behind would be the worst thing this codebase
+    could do to its own database. The one row it keeps is the `audit_runs`
+    row, which is the story's own acceptance criterion.
+
+    **Precondition on `$ZERODB_PROFILE_ROOT_KEY`**, like
+    `load_house_rollcalls`'s on its API key and for the same reason: the audit
+    saves two encrypted synthetic profiles through the real
+    `VoterProfileService`, precisely so a bug in the encryption/validation
+    path could skew a score and be caught. With no root key that path cannot
+    run, and the honest report is `blocked` ("a human needs to configure
+    this") rather than `failed` ("this raised and should be investigated").
+    An audit that quietly skipped the profile path would be checking a
+    pipeline the product does not have.
+
+    The log line carries counts, deltas and synthetic ids only. Nothing
+    voter-derived is reachable from the report — the two profiles are this
+    module's own fabrications and are deleted before it returns (see
+    `MirroredPairResult`).
+    """
+    report = run_symmetry_audit(client)
+    logger.info("run_nightly_symmetry_audit: %s", report.summary())
+    if not report.passed:
+        for asymmetry in report.asymmetries:
+            logger.error("run_nightly_symmetry_audit: %s", asymmetry)
+        raise ZeroDBError(
+            f"the nightly symmetry audit found {len(report.asymmetries)} asymmetry(ies) "
+            f"over {len(report.pairs)} mirrored pair(s), max delta {report.max_delta:.4f} "
+            f"(tolerance {report.tolerance}): " + "; ".join(report.asymmetries)
+        )
+
+
 # --- story 13.5: sweep_qa_session_memory ------------------------------------
 
 
@@ -723,6 +792,23 @@ def default_jobs() -> list[JobRegistration]:
             run=run_panel_gate_check,
         ),
         JobRegistration(
+            # Story 12.1: prd.md's nightly symmetry audit. Nightly, as both
+            # prd.md and backlog.md 12.1 name it directly, and registered
+            # immediately after the panel gate because the two are the same
+            # kind of thing — a neutrality guarantee that has to break loudly
+            # rather than be re-verified by hand.
+            #
+            # Preconditioned on the profile root key: the audit writes two
+            # encrypted synthetic profiles through the real
+            # VoterProfileService so a bug in that path could skew a score and
+            # be caught. Without a key that path cannot run, and `blocked` is
+            # the honest report — see run_nightly_symmetry_audit's docstring.
+            name="run_nightly_symmetry_audit",
+            interval=timedelta(days=1),
+            run=run_nightly_symmetry_audit,
+            precondition=_require_env(ROOT_KEY_ENV_VAR),
+        ),
+        JobRegistration(
             # Every 6 hours rather than daily. A daily sweep of a 1-day window
             # means a turn can survive up to 48 hours — its own day, plus up to
             # a day waiting for the sweep — which would make datamodel.md's
@@ -784,6 +870,7 @@ __all__ = [
     "run_load_house_rollcalls",
     "run_load_senate_rollcalls",
     "run_nightly_integrity_checks",
+    "run_nightly_symmetry_audit",
     "run_panel_gate_check",
     "run_rebuild_candidate_cards",
     "run_recompute_candidate_positions",

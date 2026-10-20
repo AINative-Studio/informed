@@ -66,6 +66,24 @@ jobs:
       - name: Panel gate check (story 12.5)
         run: python scripts/check_panel_gate.py
 
+      # Story 12.1: prd.md's symmetry audit, as a release gate. Drives the
+      # REAL scoring pipeline (PositionComputer, AlignmentService, the
+      # formula, the badge, the dealbreaker check, the reason ranking) over
+      # mirrored synthetic candidates and profiles in an in-memory ZeroDB,
+      # and fails the build if the two directions of a political axis score
+      # differently by more than 0.5 points.
+      #
+      # Unlike the panel gate above, --fake here is NOT a weaker check than
+      # --live: the question is whether the scoring CODE is symmetric, and
+      # the code in CI is the code that ships (the fixture is synthetic by
+      # design, so there is no live data for it to be missing). It
+      # self-checks its own failing path with a deliberate 8-point skew
+      # first, so a green build has proven both that the pipeline is
+      # symmetric and that the audit would have noticed if it were not. See
+      # scripts/check_symmetry_audit.py's module docstring.
+      - name: Symmetry audit release gate (story 12.1)
+        run: python scripts/check_symmetry_audit.py
+
   frontend:
     name: Frontend (Vitest + Playwright/Cucumber)
     runs-on: ubuntu-latest

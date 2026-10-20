@@ -26,8 +26,8 @@ from app.bootstrap import Bootstrapper
 from app.methodology.publish import MethodologyPublisher
 from app.neutrality.audit import (
     SYMMETRY_TOLERANCE,
-    SymmetryAuditReport,
     SymmetryAuditor,
+    SymmetryAuditReport,
     audit_runs_table_row_id,
     check_symmetry_gate,
 )
@@ -147,9 +147,7 @@ def _run(zerodb: ZeroDBClient, profiles: VoterProfileService, state: dict[str, A
 
 
 @when("I run the nightly symmetry audit")
-def run_audit(
-    zerodb: ZeroDBClient, profiles: VoterProfileService, state: dict[str, Any]
-) -> None:
+def run_audit(zerodb: ZeroDBClient, profiles: VoterProfileService, state: dict[str, Any]) -> None:
     _run(zerodb, profiles, state)
 
 

@@ -530,33 +530,94 @@ def verdict_no_opportunity(
     )
 
 
-# --- Neutrality (epic 11) ------------------------------------------------
+# --- Neutrality (story 12.1) ---------------------------------------------
+#
+# No longer pending. The pending marker here named story "11.1", which was a
+# mis-numbering twice over: prd.md's "Symmetry audit" scenario is backlog.md
+# story **12.1** (epic 12, trust and neutrality), and 11.1 is the verdict
+# engine. Retired rather than re-pointed, because the behaviour now exists —
+# `app.neutrality.audit`.
+#
+# These steps drive the REAL audit rather than the `CandidateBuilder` /
+# `VoterProfileBuilder` sketches the rest of this file uses for pending
+# scenarios. That is the point of the story: the builders describe a mirrored
+# pair, where the auditor writes one into storage, recomputes positions
+# through `PositionComputer` and scores both sides through
+# `AlignmentService`. A PRD acceptance scenario asserting on the builders
+# would be asserting that the test fixture is symmetric, which was never the
+# claim prd.md makes.
 
 
-@given("two synthetic candidates with mirrored voting records")
-def mirrored_candidates(context: ScenarioContext) -> None:
-    left = context.candidate("A")
-    left.voted("synthetic-bill-1", "Yea").voted("synthetic-bill-2", "Nay")
-    right = left.mirrored()
-    context.candidates[right.name] = right
+@given("two synthetic candidates with mirrored voting records", target_fixture="symmetry_stack")
+def mirrored_candidates() -> tuple[Any, Any]:
+    """The real mirrored fixture's stack: an in-memory ZeroDB and a profile
+    service. The candidates themselves are written by the auditor when it
+    runs, from `app.neutrality.audit.default_pairs()` — every roll call in
+    one candidate's record is the other's with Yea and Nay exchanged.
+    """
+    from app.bootstrap import Bootstrapper
+    from app.methodology.publish import MethodologyPublisher
+    from app.profiles.crypto import ProfileKeyring, ProfileRootKey
+    from app.profiles.service import VoterProfileService
+    from app.zerodb import ZeroDBClient
+    from app.zerodb.testing import FakeZeroDBTransport
+
+    transport = FakeZeroDBTransport()
+    transport.break_server_side_filter()
+    client = ZeroDBClient(
+        transport=transport, project_id="proj-prd-symmetry", backoff_base=0.0, sleep=lambda _: None
+    )
+    Bootstrapper(client, pace=lambda: None).run()
+    MethodologyPublisher(client).publish_new_version("2027.1")
+    profiles = VoterProfileService(
+        client=client,
+        keyring=ProfileKeyring(client=client, root_key=ProfileRootKey(bytes(range(32)))),
+    )
+    return client, profiles
 
 
 @given("two synthetic voters with mirrored profiles")
-def mirrored_voters(context: ScenarioContext) -> None:
-    context.voter = VoterProfileBuilder().add("Topic one", "primary", "for")
-    # The mirror is built here so the symmetry audit step can assert on both.
-    context.scores["mirror_ready"] = 1.0
+def mirrored_voters() -> None:
+    """Also the auditor's, and derived from one declaration rather than
+    hand-written: the mirrored voter picks the opposite stance card on the
+    same topic, at the same tier and the same intensity. See
+    `app.neutrality.audit.SymmetryAuditor._profile_payload`.
+    """
 
 
-@when("scores are computed")
-def scores_are_computed(context: ScenarioContext) -> None:
-    context.response = {"requested": "scores"}
+@when("scores are computed", target_fixture="symmetry_report")
+def scores_are_computed(symmetry_stack: tuple[Any, Any]) -> Any:
+    from app.neutrality.audit import SymmetryAuditor
+
+    client, profiles = symmetry_stack
+    return SymmetryAuditor(client=client, profiles=profiles).run()
 
 
 @then("each voter's score for their aligned candidate is identical within 0.5 points")
-def symmetry_within_tolerance(request: pytest.FixtureRequest, context: ScenarioContext) -> None:
-    assert len(context.candidates) == 2, "the symmetry audit needs a mirrored pair"
-    pending(request, "11.1", "symmetry audit over mirrored candidates and voters")
+def symmetry_within_tolerance(symmetry_report: Any) -> None:
+    """prd.md's property, asserted on real scores from the real pipeline.
+
+    "Identical" is the right word and not an approximation of "complementary":
+    the voter's stance direction and the candidate's record are BOTH mirrored
+    here, so `s_value` negates twice and the two scores must be equal. The
+    complementary relationship (`left + right == 100`, from mirroring the
+    record alone) is the other half and is asserted in
+    `tests/features/symmetry_audit.feature`.
+    """
+    from app.neutrality.audit import SYMMETRY_TOLERANCE
+
+    assert symmetry_report.pairs, "the symmetry audit scored no mirrored pair at all"
+    for pair in symmetry_report.pairs:
+        assert pair.left_score is not None and pair.mirrored_voter_score is not None, (
+            f"{pair.name}: a mirrored pair that cannot be scored is unmeasured, not symmetric"
+        )
+        delta = abs(pair.left_score - pair.mirrored_voter_score)
+        assert delta <= SYMMETRY_TOLERANCE, (
+            f"{pair.name}: the voter scored its aligned candidate {pair.left_score} but the "
+            f"mirrored voter scored its aligned candidate {pair.mirrored_voter_score} "
+            f"(delta {delta} > {SYMMETRY_TOLERANCE})"
+        )
+    assert symmetry_report.passed, symmetry_report.summary()
 
 
 # --- Agent answers are grounded (epic 14) --------------------------------

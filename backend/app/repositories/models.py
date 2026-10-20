@@ -1701,7 +1701,76 @@ class ProvenanceLog(RowModel):
     adapter_version: str
 
 
+class AuditRun(RowModel):
+    """One night's symmetry audit, keyed `aud:{date}` (story 12.1).
+
+    datamodel.md: id pattern `aud:{date}`; fields run_at, methodology_version,
+    max_delta, passed, report_file_id; main query "Latest".
+
+    **One row per UTC day, and the id is why.** `aud:{date}` has no room for a
+    second run on the same day, which is a choice datamodel.md made and this
+    model honours: a re-run restates that day's verdict rather than appending
+    a second one, so "Latest" is answerable by sorting ids (an ISO date sorts
+    lexicographically into chronological order). A second-per-day row would
+    need an id scheme datamodel.md does not document, and a governance table
+    whose latest row is ambiguous is worse than one that records only the
+    day's final answer.
+
+    **Not append-only, unlike `verdicts` and `candidate_positions`.** No
+    `version_key`, so this table is written with `upsert`. Those two are
+    append-only because a score computed in March has to stay reproducible —
+    someone can be shown the verdict that was in force when they read it. An
+    audit run is a measurement of the code as it stood, not a claim about a
+    person, and what a reader needs is today's answer; yesterday's is in
+    yesterday's row. CLAUDE.md's append-only rule names "verdicts, positions
+    and the provenance log" specifically, and this is none of the three.
+
+    **`natural_key` and `references` are both empty.** The id is composed from
+    a timestamp, not from other rows' ids, so there is nothing for `build_id`
+    to join. `methodology_version` holds a `methodology_versions` id and is
+    deliberately NOT declared as a reference: the audit must record which
+    methodology scored it even after that version is superseded, and a
+    declared reference would make the record of a past run contingent on the
+    row it names still being resolvable.
+
+    `max_delta` is bounded below at 0 (it is an absolute difference) and not
+    above: `app.neutrality.audit` records a sentinel well outside the 0-100
+    score range when a pair could not be scored at all, and refusing that
+    write would lose the record of exactly the run that failed worst.
+
+    `report_file_id` is optional and is None today — see
+    `app.neutrality.audit`'s module docstring for why a stored report file is
+    flagged rather than half-built.
+    """
+
+    table_name: ClassVar[str] = "audit_runs"
+
+    run_at: str = Field(min_length=1)
+    methodology_version: str = Field(min_length=1)
+    max_delta: float = Field(ge=0.0)
+    passed: bool
+    report_file_id: str | None = None
+
+    @model_validator(mode="after")
+    def _the_id_is_date_keyed(self) -> AuditRun:
+        """datamodel.md's `aud:{date}`, checked rather than trusted.
+
+        A row written under any other id would store fine and then never be
+        found by the "Latest" query, which reads the date out of the id — a
+        silent disappearance of the one record a release gate depends on.
+        Skipped when `id` is None, like every other model here: the repository
+        fills it before writing.
+        """
+        if self.id is not None and not self.id.startswith("aud:"):
+            raise ValueError(
+                f"audit_runs id {self.id!r} does not follow datamodel.md's `aud:{{date}}` "
+                "pattern; the 'Latest' query reads the date out of the id"
+            )
+        return self
+
+
 __all__ = [
+    "AuditRun",
     "Bill",
     "Body",
     "CandidateCard",

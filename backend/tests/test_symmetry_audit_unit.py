@@ -39,7 +39,6 @@ from app.neutrality.audit import (
     mirrored_position,
 )
 
-
 # --- the mirror operation itself -------------------------------------------
 
 
@@ -248,7 +247,7 @@ def test_a_report_over_perfectly_mirrored_pairs_passes() -> None:
 
 
 def test_a_delta_exactly_at_the_tolerance_passes() -> None:
-    """"more than 0.5" fails, so 0.5 itself does not. Pinned because the
+    """ "more than 0.5" fails, so 0.5 itself does not. Pinned because the
     inequality's direction is the whole acceptance criterion and an off-by-one
     here would either hide a real skew or block every release.
     """
